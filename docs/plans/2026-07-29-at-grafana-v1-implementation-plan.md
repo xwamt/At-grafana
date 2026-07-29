@@ -299,10 +299,18 @@
 
 **Estimated scope:** L (7 tools; consider splitting into two tasks — instances/dashboards/folders vs. alert rules/history — if it exceeds ~5 files per the planning-and-task-breakdown sizing guideline).
 
+**Status (2026-07-29):** Done, commit `3695c49`. Kept as one task/commit rather than splitting: 14 files touched (5 created — `src/mcp/bridgeSchemas.ts`, `src/agent/GrafanaAgentToolService.ts`, `src/grafana/correlateAlertState.ts`, `test/mcp/bridgeSchemas.test.ts`, `test/agent/GrafanaAgentToolService.test.ts`; 9 modified, mostly small — `src/mcp/toolCatalog.ts`, `src/mcp/BridgeServer.ts`, `src/extension.ts`, `src/tree/AlertTreeProvider.ts`, `src/tree/GrafanaTreeItems.ts`, three test files, this doc), each individually small and single-purpose. Key decisions:
+  - **Unknown vs. disabled instance:** ADR-004 doesn't literally mandate identical wording for the two rejection cases, but `GrafanaAgentToolService` returns the exact same `VALIDATION_ERROR` message for both — an agent that can't touch a given `instanceId` shouldn't be able to tell "wrong id" from "exists but access disabled" by diffing error text (see the class doc on `UNAUTHORIZED_INSTANCE_MESSAGE`).
+  - **Alert-state correlation extracted, not duplicated:** `src/grafana/correlateAlertState.ts` now holds `normalizeAlertState`/`ALERT_STATE_RANK`/`correlateAlertState` (moved out of `GrafanaTreeItems.ts`), shared by `AlertTreeProvider` (tree UI) and `GrafanaAgentToolService` (`grafana_list_alert_rules`) so both surfaces agree on what "firing"/"unknown" mean for a rule with no matching live-state entry.
+  - **Non-interactive TLS trust for Agent calls:** `GrafanaAgentToolService` builds its own `certVerifier` from the injected `GrafanaCertTrustStore` that only ever checks `store.check(...) === 'trusted'` — it never prompts (mirrors `GrafanaEmbedProxy`'s `defaultCertVerifier`), since a background Agent call has no user available to answer a TOFU modal.
+  - **Bridge vs. service responsibility split:** `BridgeServer.handleInvoke` validates the request envelope, looks up the catalog entry, Zod-validates `arguments`, then delegates to `GrafanaAgentToolService.invoke` — which independently re-validates (defense in depth) and owns the actual ADR-004 authorization decision. `BridgeServer` never re-implements that authorization check itself.
+  - `grafana_get_alert_history` passes through `GrafanaApiClient.getAlertRuleHistory()`'s result unmodified, per its still-unverified-against-a-live-instance status from Task 2.1 — no additional transformation added here.
+  - 232/232 tests passing (29 new in `test/mcp/bridgeSchemas.test.ts`, 17 new in `test/agent/GrafanaAgentToolService.test.ts`, plus extensions to `test/mcp/toolCatalog.test.ts`/`test/mcp/BridgeServer.test.ts`/`test/mcp/bridgePublish.test.ts`/`test/mcp/McpConfigInstaller.test.ts` to reflect the now-populated catalog). `npm run typecheck` / `npm test` / `npm run build` all clean.
+
 ### Checkpoint: Phase 5
 
-- [ ] All 7 management tools reachable via a direct `POST /invoke` test against a running Bridge (no Hub needed yet)
-- [ ] Review with human before proceeding to Phase 6
+- [x] All 7 management tools reachable via a direct `POST /invoke` test against a running Bridge (no Hub needed yet) — verified via `test/mcp/BridgeServer.test.ts`'s fake-`toolService` dispatch tests, not a live Bridge process (no Hub/live Grafana instance available in this environment)
+- [x] Review with human before proceeding to Phase 6 — proceeding per subagent-mode instruction; flagging `grafana_get_alert_history`'s pass-through shape as still needing real-instance verification (inherited from Task 2.1)
 
 ---
 

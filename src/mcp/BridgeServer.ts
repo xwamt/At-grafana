@@ -9,8 +9,10 @@ import {
   FsBridgePublisher,
   type HostApp
 } from '@at-series/mcp-hub';
+import type { GrafanaAgentToolService } from '../agent/GrafanaAgentToolService';
 import { formatError } from '../utils/errors';
 import { AT_GRAFANA_PLUGIN_DISPLAY_NAME } from './BridgeProtocol';
+import { BRIDGE_SCHEMAS_BY_TOOL_NAME, describeZodError } from './bridgeSchemas';
 import { AT_GRAFANA_PLUGIN_ID, AT_GRAFANA_TOOL_CATALOG } from './toolCatalog';
 
 /** Heartbeat cadence for `~/.at-series` registry freshness (protocol: <=30s). */
@@ -20,6 +22,8 @@ export interface BridgeServerOptions {
   home?: string;
   hostApp: HostApp;
   pluginVersion?: string;
+  /** Omitted only in tests exercising pre-Task-5.1 behavior; see createBridgeRequestHandler's doc. */
+  toolService?: GrafanaAgentToolService;
 }
 
 export interface BridgeHandlerDependencies {
@@ -28,6 +32,7 @@ export interface BridgeHandlerDependencies {
   hostApp: HostApp;
   pluginVersion: string;
   pluginDisplayName?: string;
+  toolService?: GrafanaAgentToolService;
 }
 
 export interface BridgeRequest {
@@ -48,9 +53,12 @@ const DEFAULT_PLUGIN_VERSION = '0.0.0';
  * Localhost Bridge implementing AT Series Hub Protocol v1
  * (`GET /health`, `GET /tools`, `POST /invoke`).
  *
- * Tool dispatch is intentionally empty until Phase 5/6 wire a
- * `GrafanaAgentToolService`-equivalent execution authority; see
- * docs/decisions/ADR-004-mcp-tool-catalog-and-permission-model.md.
+ * Tool dispatch (`POST /invoke`) delegates to the injected
+ * `GrafanaAgentToolService`, which owns the actual ADR-004 authorization
+ * decision and per-tool Grafana API calls; see
+ * docs/decisions/ADR-004-mcp-tool-catalog-and-permission-model.md. This
+ * class's own job stops at transport, auth-header checking, body-size
+ * limiting, and request/response shape validation.
  */
 export class BridgeServer {
   private server: Server | undefined;
@@ -62,11 +70,13 @@ export class BridgeServer {
   private readonly home: string;
   private readonly hostApp: HostApp;
   private readonly pluginVersion: string;
+  private readonly toolService: GrafanaAgentToolService | undefined;
 
   constructor(options: BridgeServerOptions) {
     this.home = options.home ?? homedir();
     this.hostApp = options.hostApp;
     this.pluginVersion = options.pluginVersion ?? DEFAULT_PLUGIN_VERSION;
+    this.toolService = options.toolService;
   }
 
   async start(): Promise<void> {
@@ -78,7 +88,8 @@ export class BridgeServer {
       bridgeId: this.bridgeId,
       token: this.token,
       hostApp: this.hostApp,
-      pluginVersion: this.pluginVersion
+      pluginVersion: this.pluginVersion,
+      toolService: this.toolService
     });
     this.server = createServer((request, response) => {
       void handleNodeRequest(handler, request, response);
@@ -174,7 +185,7 @@ export function createBridgeRequestHandler(dependencies: BridgeHandlerDependenci
       }
 
       if (path === '/invoke' && method === 'POST') {
-        return await handleInvoke(request.body);
+        return await handleInvoke(request.body, dependencies.toolService);
       }
 
       if (method !== 'GET' && method !== 'POST') {
@@ -203,7 +214,7 @@ function buildHealthResponse(dependencies: BridgeHandlerDependencies, pluginDisp
   };
 }
 
-async function handleInvoke(body: string | undefined): Promise<BridgeResponse> {
+async function handleInvoke(body: string | undefined, toolService: GrafanaAgentToolService | undefined): Promise<BridgeResponse> {
   let raw: unknown = {};
   if (body) {
     try {
@@ -226,8 +237,45 @@ async function handleInvoke(body: string | undefined): Promise<BridgeResponse> {
   }
 
   const name = (raw as { name: string }).name;
-  // No tools are registered until Phase 5/6; every call is currently unknown.
-  return bridgeError(404, 'NOT_FOUND', `Unknown tool: ${name}`);
+  const args = (raw as { arguments: Record<string, unknown> }).arguments;
+
+  const catalogEntry = AT_GRAFANA_TOOL_CATALOG.find((tool) => tool.name === name);
+  if (!catalogEntry) {
+    return bridgeError(404, 'NOT_FOUND', `Unknown tool: ${name}`);
+  }
+
+  // Belt-and-braces: the schema map covers every catalog entry today, but
+  // fail safe (reject) rather than silently skip validation if a future
+  // catalog entry is ever added without a matching schema.
+  const schema = BRIDGE_SCHEMAS_BY_TOOL_NAME[name as keyof typeof BRIDGE_SCHEMAS_BY_TOOL_NAME];
+  if (!schema) {
+    return bridgeError(500, 'INTERNAL_ERROR', `No input schema registered for tool: ${name}`);
+  }
+  const parsedArgs = schema.safeParse(args);
+  if (!parsedArgs.success) {
+    return bridgeError(422, 'VALIDATION_ERROR', `Invalid arguments for ${name}: ${describeZodError(parsedArgs.error)}`);
+  }
+
+  if (!toolService) {
+    return bridgeError(503, 'UNAVAILABLE', 'AT Grafana tool dispatch is not available.');
+  }
+
+  const result = await toolService.invoke(name, args);
+  if (result.ok) {
+    return json(200, { ok: true, name, result: result.result });
+  }
+  return bridgeError(statusForToolErrorCode(result.code), result.code, result.message);
+}
+
+function statusForToolErrorCode(code: string): number {
+  switch (code) {
+    case 'NOT_FOUND':
+      return 404;
+    case 'VALIDATION_ERROR':
+      return 422;
+    default:
+      return 500;
+  }
 }
 
 export async function readLimitedBody(

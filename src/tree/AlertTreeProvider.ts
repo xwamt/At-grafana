@@ -1,19 +1,17 @@
 import * as vscode from 'vscode';
 import type { GrafanaInstanceConfigManager } from '../config/GrafanaInstanceConfigManager';
 import type { GrafanaInstanceConfig } from '../config/schema';
+import { ALERT_STATE_RANK, buildAlertStateIndex, correlateAlertState, type NormalizedAlertState } from '../grafana/correlateAlertState';
 import type { GrafanaApiClient } from '../grafana/GrafanaApiClient';
 import { formatError } from '../utils/errors';
 import {
-  ALERT_STATE_RANK,
   AlertGroupTreeItem,
   AlertRuleTreeItem,
   ErrorTreeItem,
   InstanceTreeItem,
   MessageTreeItem,
-  normalizeAlertState,
   type AlertRuleWithState,
-  type GrafanaTreeItem,
-  type NormalizedAlertState
+  type GrafanaTreeItem
 } from './GrafanaTreeItems';
 
 export type AlertApiClient = Pick<GrafanaApiClient, 'listAlertRules' | 'listAlertRuleStates' | 'getFolders'>;
@@ -118,19 +116,19 @@ export class AlertTreeProvider implements vscode.TreeDataProvider<GrafanaTreeIte
       client.listAlertRuleStates(),
       client.getFolders()
     ]);
-    const stateByUid = new Map(states.map((state) => [state.uid, state]));
+    const stateIndex = buildAlertStateIndex(states);
     const folderTitleByUid = new Map(folders.map((folder) => [folder.uid, folder.title]));
 
     const groups = new Map<string, InstanceAlertGroup>();
     for (const rule of rules) {
-      const liveState = stateByUid.get(rule.uid);
-      const normalized = normalizeAlertState(liveState?.state);
+      const correlated = correlateAlertState(rule.uid, stateIndex);
+      const normalized = correlated.state;
       const ruleWithState: AlertRuleWithState = {
         uid: rule.uid,
         title: rule.title,
         state: normalized,
-        rawState: liveState?.state,
-        activeAt: liveState?.activeAt
+        rawState: correlated.rawState,
+        activeAt: correlated.activeAt
       };
 
       const key = `${rule.folderUid}::${rule.ruleGroup}`;

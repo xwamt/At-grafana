@@ -84,8 +84,12 @@ describe('McpConfigInstaller', () => {
     };
     const autoApprove = parsed.mcpServers[MCP_SERVER_DISPLAY_NAME]?.autoApprove ?? [];
     expect(autoApprove).toContain('at_list_providers');
-    // Placeholder until Phase 5/6 populate AT_GRAFANA_TOOL_CATALOG (see toolCatalog.ts).
-    expect(AT_GRAFANA_TOOL_CATALOG).toHaveLength(0);
+    // Every Task 5.1 tool is risk: read, so all 7 qualify for the Hub installer's
+    // default autoApprove set (ADR-004's Consequences section / Protocol v1 §6/§9.2).
+    expect(AT_GRAFANA_TOOL_CATALOG.length).toBe(7);
+    for (const tool of AT_GRAFANA_TOOL_CATALOG) {
+      expect(autoApprove).toContain(tool.name);
+    }
   });
 
   it('uninstall removes AT Series only', async () => {

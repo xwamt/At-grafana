@@ -1,4 +1,13 @@
 import type { ToolCatalogEntry } from '@at-series/mcp-hub';
+import {
+  GRAFANA_GET_ALERT_HISTORY_INPUT_SCHEMA,
+  GRAFANA_GET_ALERT_RULE_INPUT_SCHEMA,
+  GRAFANA_GET_DASHBOARD_INPUT_SCHEMA,
+  GRAFANA_LIST_ALERT_RULES_INPUT_SCHEMA,
+  GRAFANA_LIST_DASHBOARDS_INPUT_SCHEMA,
+  GRAFANA_LIST_FOLDERS_INPUT_SCHEMA,
+  GRAFANA_LIST_INSTANCES_INPUT_SCHEMA
+} from './bridgeSchemas';
 
 /**
  * Stable reverse-domain plugin id (AT Series Hub Protocol v1 §4.2).
@@ -7,8 +16,81 @@ import type { ToolCatalogEntry } from '@at-series/mcp-hub';
 export const AT_GRAFANA_PLUGIN_ID = 'at.grafana' as const;
 
 /**
- * Populated across Phase 5 (management tools) and Phase 6 (monitoring data tools).
- * See docs/decisions/ADR-004-mcp-tool-catalog-and-permission-model.md for the full
- * catalog design (all `risk: 'read'`, prefix `grafana_`).
+ * Appended to every management-family tool's description so an Agent
+ * reading `/tools` understands this catalog is for a "Grafana management
+ * agent" persona -- inspecting/reasoning about Grafana's own configuration
+ * -- and knows to reach instead for the Phase 6 "monitoring data" tools
+ * (`grafana_list_datasources`/`grafana_query_datasource`) when it actually
+ * needs to analyze the metrics/logs behind a datasource.
  */
-export const AT_GRAFANA_TOOL_CATALOG: ToolCatalogEntry[] = [];
+const MANAGEMENT_FAMILY_SUFFIX =
+  ' This is a Grafana management/configuration tool for an agent inspecting Grafana\'s own setup, not for querying ' +
+  'the metrics/logs behind a datasource -- see the monitoring data tools for that.';
+
+/**
+ * Populated in Task 5.1 (management tools) and Phase 6 (monitoring data
+ * tools). See docs/decisions/ADR-004-mcp-tool-catalog-and-permission-model.md
+ * for the full catalog design (all `risk: 'read'`, prefix `grafana_`) and
+ * src/mcp/bridgeSchemas.ts for the Zod/JSON-Schema pair backing each
+ * `inputSchema` below.
+ */
+export const AT_GRAFANA_TOOL_CATALOG: ToolCatalogEntry[] = [
+  {
+    name: 'grafana_list_instances',
+    title: 'List Grafana instances',
+    description:
+      'List configured Grafana instances that have "Allow Agent background access" enabled, as {id, label, url} ' +
+      '(never the auth token, never a toggled-off instance). Call this first to discover which instanceId values ' +
+      'the other grafana_* management tools will accept.',
+    risk: 'read',
+    inputSchema: GRAFANA_LIST_INSTANCES_INPUT_SCHEMA
+  },
+  {
+    name: 'grafana_list_dashboards',
+    title: 'List Grafana dashboards',
+    description: `List dashboards on a Grafana instance, grouped by folder (uid, title, tags, folder).${MANAGEMENT_FAMILY_SUFFIX}`,
+    risk: 'read',
+    inputSchema: GRAFANA_LIST_DASHBOARDS_INPUT_SCHEMA
+  },
+  {
+    name: 'grafana_get_dashboard',
+    title: 'Get Grafana dashboard',
+    description:
+      `Get the full dashboard JSON model for one dashboard by uid, including every panel's query and datasource ` +
+      `reference.${MANAGEMENT_FAMILY_SUFFIX}`,
+    risk: 'read',
+    inputSchema: GRAFANA_GET_DASHBOARD_INPUT_SCHEMA
+  },
+  {
+    name: 'grafana_list_folders',
+    title: 'List Grafana folders',
+    description: `List the dashboard folder structure on a Grafana instance.${MANAGEMENT_FAMILY_SUFFIX}`,
+    risk: 'read',
+    inputSchema: GRAFANA_LIST_FOLDERS_INPUT_SCHEMA
+  },
+  {
+    name: 'grafana_list_alert_rules',
+    title: 'List Grafana alert rules',
+    description:
+      `List every Unified Alerting rule on a Grafana instance with its current state (firing/pending/normal/` +
+      `unknown).${MANAGEMENT_FAMILY_SUFFIX}`,
+    risk: 'read',
+    inputSchema: GRAFANA_LIST_ALERT_RULES_INPUT_SCHEMA
+  },
+  {
+    name: 'grafana_get_alert_rule',
+    title: 'Get Grafana alert rule',
+    description:
+      `Get the full definition of one alert rule by uid (condition, for, labels, annotations, notification policy ` +
+      `references).${MANAGEMENT_FAMILY_SUFFIX}`,
+    risk: 'read',
+    inputSchema: GRAFANA_GET_ALERT_RULE_INPUT_SCHEMA
+  },
+  {
+    name: 'grafana_get_alert_history',
+    title: 'Get Grafana alert rule history',
+    description: `Get the state-change/event history for one alert rule by uid.${MANAGEMENT_FAMILY_SUFFIX}`,
+    risk: 'read',
+    inputSchema: GRAFANA_GET_ALERT_HISTORY_INPUT_SCHEMA
+  }
+];

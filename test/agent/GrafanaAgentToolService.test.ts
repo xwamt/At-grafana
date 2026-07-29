@@ -1,0 +1,290 @@
+import { describe, expect, it, vi } from 'vitest';
+import { GrafanaAgentToolService, type GrafanaApiClientLike } from '../../src/agent/GrafanaAgentToolService';
+import type { GrafanaInstanceConfig } from '../../src/config/schema';
+import { GrafanaCertTrustStore, type CertTrustMemento } from '../../src/grafana/GrafanaCertTrustStore';
+import { GrafanaApiError, type GrafanaCertVerifier } from '../../src/grafana/GrafanaHttpClient';
+
+class MemoryMemento implements CertTrustMemento {
+  private data = new Map<string, unknown>();
+
+  get<T>(key: string, defaultValue: T): T {
+    return (this.data.has(key) ? this.data.get(key) : defaultValue) as T;
+  }
+
+  async update(key: string, value: unknown): Promise<void> {
+    this.data.set(key, value);
+  }
+}
+
+function instance(overrides: Partial<GrafanaInstanceConfig> = {}): GrafanaInstanceConfig {
+  return {
+    id: 'instance-1',
+    label: 'Production',
+    url: 'https://grafana.example.com',
+    allowBackgroundAccess: true,
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides
+  };
+}
+
+function fakeClient(overrides: Partial<GrafanaApiClientLike> = {}): GrafanaApiClientLike {
+  return {
+    search: async () => [],
+    getFolders: async () => [],
+    getDashboardByUid: async () => {
+      throw new Error('not stubbed');
+    },
+    listAlertRules: async () => [],
+    listAlertRuleStates: async () => [],
+    getAlertRuleHistory: async () => [],
+    ...overrides
+  };
+}
+
+interface ServiceOptions {
+  instances?: GrafanaInstanceConfig[];
+  tokens?: Record<string, string>;
+  client?: GrafanaApiClientLike;
+  trustedHost?: { host: string; port: number; fingerprint: string };
+}
+
+async function makeService(options: ServiceOptions = {}) {
+  const instances = options.instances ?? [instance()];
+  const tokens = options.tokens ?? { [instances[0]?.id ?? '']: 'test-token' };
+  const configManager = {
+    listInstances: async () => instances,
+    getInstance: async (id: string) => instances.find((candidate) => candidate.id === id),
+    getToken: async (id: string) => tokens[id]
+  };
+  const certTrustStore = new GrafanaCertTrustStore(new MemoryMemento());
+  if (options.trustedHost) {
+    await certTrustStore.trust(options.trustedHost.host, options.trustedHost.port, options.trustedHost.fingerprint);
+  } else {
+    // grafana.example.com resolves to https (port 443); trust it by default
+    // so tests that don't care about TLS trust don't have to think about it.
+    await certTrustStore.trust('grafana.example.com', 443, 'trusted-fingerprint');
+  }
+  const client = options.client ?? fakeClient();
+  const createClient = vi.fn((_baseUrl: string, _token: string, _certVerifier: GrafanaCertVerifier) => client);
+  const service = new GrafanaAgentToolService({ configManager, certTrustStore, createClient });
+  return { service, createClient, certTrustStore, configManager };
+}
+
+describe('GrafanaAgentToolService', () => {
+  describe('grafana_list_instances', () => {
+    it('returns only instances with allowBackgroundAccess=true, never a token field', async () => {
+      const { service } = await makeService({
+        instances: [
+          instance({ id: 'on', label: 'Enabled', allowBackgroundAccess: true }),
+          instance({ id: 'off', label: 'Disabled', allowBackgroundAccess: false })
+        ]
+      });
+
+      const result = await service.invoke('grafana_list_instances', {});
+
+      expect(result).toEqual({
+        ok: true,
+        result: [{ id: 'on', label: 'Enabled', url: 'https://grafana.example.com' }]
+      });
+      expect(JSON.stringify(result)).not.toContain('token');
+    });
+
+    it('rejects unknown extra arguments', async () => {
+      const { service } = await makeService();
+      const result = await service.invoke('grafana_list_instances', { instanceId: 'x' });
+      expect(result).toMatchObject({ ok: false, code: 'VALIDATION_ERROR' });
+    });
+  });
+
+  describe('authorization', () => {
+    it('rejects an unknown instanceId with the same error as a disabled instance', async () => {
+      const { service } = await makeService({ instances: [instance({ id: 'known', allowBackgroundAccess: false })] });
+
+      const unknown = await service.invoke('grafana_list_dashboards', { instanceId: 'does-not-exist' });
+      const disabled = await service.invoke('grafana_list_dashboards', { instanceId: 'known' });
+
+      expect(unknown).toMatchObject({ ok: false, code: 'VALIDATION_ERROR' });
+      expect(disabled).toMatchObject({ ok: false, code: 'VALIDATION_ERROR' });
+      expect((unknown as { message: string }).message).toBe((disabled as { message: string }).message);
+    });
+
+    it('rejects every management tool for a disabled instance, not just grafana_list_dashboards', async () => {
+      const { service } = await makeService({ instances: [instance({ id: 'known', allowBackgroundAccess: false })] });
+
+      const toolCalls: Array<[string, Record<string, unknown>]> = [
+        ['grafana_list_dashboards', { instanceId: 'known' }],
+        ['grafana_get_dashboard', { instanceId: 'known', uid: 'd1' }],
+        ['grafana_list_folders', { instanceId: 'known' }],
+        ['grafana_list_alert_rules', { instanceId: 'known' }],
+        ['grafana_get_alert_rule', { instanceId: 'known', uid: 'r1' }],
+        ['grafana_get_alert_history', { instanceId: 'known', uid: 'r1' }]
+      ];
+
+      for (const [name, args] of toolCalls) {
+        const result = await service.invoke(name, args);
+        expect(result).toMatchObject({ ok: false, code: 'VALIDATION_ERROR' });
+      }
+    });
+
+    it('does not call createClient for an unauthorized instance', async () => {
+      const { service, createClient } = await makeService({
+        instances: [instance({ id: 'known', allowBackgroundAccess: false })]
+      });
+
+      await service.invoke('grafana_list_dashboards', { instanceId: 'known' });
+
+      expect(createClient).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('management tools', () => {
+    it('grafana_list_dashboards returns a flat list with folder titles resolved', async () => {
+      const client = fakeClient({
+        search: async () => [
+          { uid: 'd1', title: 'CPU', type: 'dash-db', folderUid: 'f1', tags: ['infra'] },
+          { uid: 'd2', title: 'No folder', type: 'dash-db' }
+        ],
+        getFolders: async () => [{ uid: 'f1', title: 'Infra' }]
+      });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_list_dashboards', { instanceId: 'instance-1' });
+
+      expect(result).toEqual({
+        ok: true,
+        result: [
+          { uid: 'd1', title: 'CPU', tags: ['infra'], folderUid: 'f1', folderTitle: 'Infra' },
+          { uid: 'd2', title: 'No folder', tags: [], folderUid: undefined, folderTitle: undefined }
+        ]
+      });
+    });
+
+    it('grafana_get_dashboard returns the full dashboard model', async () => {
+      const dashboard = { uid: 'd1', title: 'CPU', model: { panels: [{ targets: [{ expr: 'up' }] }] } };
+      const client = fakeClient({ getDashboardByUid: async (uid: string) => (uid === 'd1' ? (dashboard as never) : (undefined as never)) });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_get_dashboard', { instanceId: 'instance-1', uid: 'd1' });
+
+      expect(result).toEqual({ ok: true, result: dashboard });
+    });
+
+    it('grafana_list_folders passes through the client folder list', async () => {
+      const folders = [{ uid: 'f1', title: 'Infra' }];
+      const client = fakeClient({ getFolders: async () => folders });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_list_folders', { instanceId: 'instance-1' });
+
+      expect(result).toEqual({ ok: true, result: folders });
+    });
+
+    it('grafana_list_alert_rules correlates rules with live state, treating an unmatched rule as unknown', async () => {
+      const client = fakeClient({
+        listAlertRules: async () => [
+          { uid: 'r1', title: 'CPU high', folderUid: 'f1', ruleGroup: 'g1', condition: 'B', for: '5m' },
+          { uid: 'r2', title: 'No state', folderUid: 'f1', ruleGroup: 'g1', condition: 'B', for: '5m' }
+        ],
+        listAlertRuleStates: async () => [{ uid: 'r1', name: 'CPU high', state: 'firing', group: 'g1' }]
+      });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_list_alert_rules', { instanceId: 'instance-1' });
+
+      expect(result).toEqual({
+        ok: true,
+        result: [
+          { uid: 'r1', title: 'CPU high', folderUid: 'f1', ruleGroup: 'g1', state: 'firing', rawState: 'firing', activeAt: undefined },
+          { uid: 'r2', title: 'No state', folderUid: 'f1', ruleGroup: 'g1', state: 'unknown', rawState: undefined, activeAt: undefined }
+        ]
+      });
+    });
+
+    it('grafana_get_alert_rule finds the matching rule by uid', async () => {
+      const rule = { uid: 'r1', title: 'CPU high', folderUid: 'f1', ruleGroup: 'g1', condition: 'B', for: '5m' };
+      const client = fakeClient({ listAlertRules: async () => [rule] });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_get_alert_rule', { instanceId: 'instance-1', uid: 'r1' });
+
+      expect(result).toEqual({ ok: true, result: rule });
+    });
+
+    it('grafana_get_alert_rule returns a NOT_FOUND-class failure for an unknown uid', async () => {
+      const client = fakeClient({ listAlertRules: async () => [] });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_get_alert_rule', { instanceId: 'instance-1', uid: 'missing' });
+
+      expect(result).toMatchObject({ ok: false, code: 'NOT_FOUND' });
+    });
+
+    it('grafana_get_alert_history passes through the client history entries unmodified', async () => {
+      const history = [{ time: 1700000000000, state: 'Alerting' }];
+      const client = fakeClient({ getAlertRuleHistory: async () => history });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_get_alert_history', { instanceId: 'instance-1', uid: 'r1' });
+
+      expect(result).toEqual({ ok: true, result: history });
+    });
+  });
+
+  describe('error handling', () => {
+    it('turns a GrafanaApiError into a clean failure without leaking the token used to build the client', async () => {
+      const secretToken = 'glsa_super_secret_value';
+      const client = fakeClient({
+        getFolders: async () => {
+          throw new GrafanaApiError('auth', 'Grafana rejected the request (HTTP 401).');
+        }
+      });
+      const { service } = await makeService({ client, tokens: { 'instance-1': secretToken } });
+
+      const result = await service.invoke('grafana_list_folders', { instanceId: 'instance-1' });
+
+      expect(result).toMatchObject({ ok: false, code: 'INTERNAL_ERROR' });
+      expect(JSON.stringify(result)).not.toContain(secretToken);
+    });
+
+    it('never throws out of invoke() for an unexpected error', async () => {
+      const client = fakeClient({
+        getFolders: async () => {
+          throw new Error('boom');
+        }
+      });
+      const { service } = await makeService({ client });
+
+      await expect(service.invoke('grafana_list_folders', { instanceId: 'instance-1' })).resolves.toMatchObject({
+        ok: false,
+        code: 'INTERNAL_ERROR'
+      });
+    });
+
+    it('rejects a call for an unknown tool name', async () => {
+      const { service } = await makeService();
+      const result = await service.invoke('grafana_delete_everything', { instanceId: 'instance-1' });
+      expect(result).toMatchObject({ ok: false });
+    });
+
+    it('rejects malformed arguments (missing uid) with a validation-class failure', async () => {
+      const { service } = await makeService();
+      const result = await service.invoke('grafana_get_dashboard', { instanceId: 'instance-1' });
+      expect(result).toMatchObject({ ok: false, code: 'VALIDATION_ERROR' });
+    });
+  });
+
+  describe('TLS trust', () => {
+    it('builds a non-interactive certVerifier that only trusts already-recorded fingerprints', async () => {
+      const { service, createClient } = await makeService();
+
+      await service.invoke('grafana_list_folders', { instanceId: 'instance-1' });
+
+      expect(createClient).toHaveBeenCalledWith('https://grafana.example.com', 'test-token', expect.any(Object));
+      const [, , certVerifier] = createClient.mock.calls[0] as [string, string, { verify: (h: string, p: number, f: string) => Promise<boolean> }];
+      await expect(certVerifier.verify('grafana.example.com', 443, 'trusted-fingerprint')).resolves.toBe(true);
+      await expect(certVerifier.verify('grafana.example.com', 443, 'some-other-fingerprint')).resolves.toBe(false);
+      await expect(certVerifier.verify('never-seen.example.com', 443, 'anything')).resolves.toBe(false);
+    });
+  });
+});

@@ -1,35 +1,10 @@
 import * as vscode from 'vscode';
 import type { GrafanaInstanceConfig } from '../config/schema';
-
-/**
- * Grafana's Unified Alerting ruler API reports lowercase state strings that
- * vary slightly by version (`firing` / `pending` / `inactive` / `normal`).
- * Collapsed to a fixed set here so sorting/icon logic doesn't have to guess
- * at every raw string Grafana might send (requirements UI2: Firing sorted
- * first, unmatched/absent state treated as unknown rather than crashing).
- */
-export type NormalizedAlertState = 'firing' | 'pending' | 'normal' | 'unknown';
-
-export const ALERT_STATE_RANK: Record<NormalizedAlertState, number> = {
-  firing: 0,
-  pending: 1,
-  normal: 2,
-  unknown: 3
-};
-
-export function normalizeAlertState(state: string | undefined): NormalizedAlertState {
-  switch (state?.toLowerCase()) {
-    case 'firing':
-      return 'firing';
-    case 'pending':
-      return 'pending';
-    case 'normal':
-    case 'inactive':
-      return 'normal';
-    default:
-      return 'unknown';
-  }
-}
+// NormalizedAlertState/ALERT_STATE_RANK/normalizeAlertState moved to
+// src/grafana/correlateAlertState.ts (Task 5.1), shared with
+// GrafanaAgentToolService; AlertTreeProvider now imports the rank/normalize
+// helpers from there directly instead of through this module.
+import type { NormalizedAlertState } from '../grafana/correlateAlertState';
 
 function alertStateIcon(state: NormalizedAlertState): vscode.ThemeIcon {
   switch (state) {

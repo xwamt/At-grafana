@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { GrafanaAgentToolService } from './agent/GrafanaAgentToolService';
 import { GrafanaInstanceConfigManager } from './config/GrafanaInstanceConfigManager';
 import type { GrafanaInstanceConfig } from './config/schema';
 import { GrafanaApiClient } from './grafana/GrafanaApiClient';
@@ -106,10 +107,21 @@ export function activate(context: vscode.ExtensionContext): void {
       throw error;
     });
 
+  // Reuses the same configManager/certTrustStore constructed above (not a
+  // second GrafanaCertTrustStore instance) so a certificate trusted via one
+  // surface (e.g. a Webview panel) is immediately recognized by Agent tool
+  // calls too, and vice versa.
+  const grafanaAgentToolService = new GrafanaAgentToolService({
+    configManager,
+    certTrustStore,
+    createClient: (baseUrl, token, certVerifier) => new GrafanaApiClient({ baseUrl, token, certVerifier })
+  });
+
   const bridgeServer = new BridgeServer({
     hostApp,
     pluginVersion:
-      typeof context.extension?.packageJSON?.version === 'string' ? context.extension.packageJSON.version : undefined
+      typeof context.extension?.packageJSON?.version === 'string' ? context.extension.packageJSON.version : undefined,
+    toolService: grafanaAgentToolService
   });
   void bridgeServer.start().catch((error) => {
     void showTimedNotification(`AT Grafana MCP bridge failed to start: ${formatError(error)}`, 'warning');

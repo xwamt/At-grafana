@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
 import { BridgeServer } from '../../src/mcp/BridgeServer';
-import { AT_GRAFANA_PLUGIN_ID } from '../../src/mcp/toolCatalog';
+import { AT_GRAFANA_PLUGIN_ID, AT_GRAFANA_TOOL_CATALOG } from '../../src/mcp/toolCatalog';
 
 const tempRoots: string[] = [];
 const servers: BridgeServer[] = [];
@@ -60,7 +60,7 @@ describe('BridgeServer FsBridgePublisher', () => {
     expect(record.token.length).toBeGreaterThan(0);
     expect(record.pid).toBe(process.pid);
     expect(record.updatedAt).toEqual(expect.any(Number));
-    expect(record.tools).toEqual([]);
+    expect(record.tools).toEqual(AT_GRAFANA_TOOL_CATALOG);
 
     await server.dispose();
     servers.pop();
