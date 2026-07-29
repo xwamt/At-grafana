@@ -51,15 +51,14 @@ const folders: GrafanaFolder[] = [
 ];
 
 describe('AlertTreeProvider', () => {
-  it('shows a message node (not an error) when no instances are configured', async () => {
+  it('returns no root children (not an error) when no instances are configured, so the viewsWelcome "Add Instance" button renders', async () => {
     const provider = new AlertTreeProvider({ listInstances: async () => [] }, async () => {
       throw new Error('createClient should not be called with no instances');
     });
 
     const children = await provider.getChildren();
 
-    expect(children).toHaveLength(1);
-    expect(children[0]).toBeInstanceOf(MessageTreeItem);
+    expect(children).toEqual([]);
   });
 
   it('lists one node per configured instance at the root', async () => {

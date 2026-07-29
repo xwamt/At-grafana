@@ -69,7 +69,11 @@ export class AlertTreeProvider implements vscode.TreeDataProvider<GrafanaTreeIte
     try {
       const instances = await this.configManager.listInstances();
       if (instances.length === 0) {
-        return [new MessageTreeItem('No Grafana instances configured. Run "AT Grafana: Add Instance" to get started.')];
+        // Empty (not a MessageTreeItem) so VS Code's `viewsWelcome` contribution
+        // for `atGrafana.alerts` renders instead, with a clickable
+        // "Add Instance" button -- see the identical rationale in
+        // DashboardTreeProvider.getRootChildren().
+        return [];
       }
       return instances.map((instance) => new InstanceTreeItem(instance));
     } catch (error) {

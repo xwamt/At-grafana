@@ -39,11 +39,13 @@
     "commands": [
       {
         "command": "atGrafana.addInstance",
-        "title": "AT Grafana: Add Instance"
+        "title": "AT Grafana: Add Instance",
+        "icon": "$(add)"
       },
       {
         "command": "atGrafana.manageInstances",
-        "title": "AT Grafana: Manage Instances"
+        "title": "AT Grafana: Manage Instances",
+        "icon": "$(settings-gear)"
       },
       {
         "command": "atGrafana.installMcpConfig",
@@ -85,27 +87,47 @@
     "menus": {
       "view/title": [
         {
-          "command": "atGrafana.refreshDashboards",
-          "when": "view == atGrafana.dashboards",
+          "command": "atGrafana.addInstance",
+          "when": "view == atGrafana.dashboards || view == atGrafana.alerts",
           "group": "navigation@1"
         },
         {
-          "command": "atGrafana.filterDashboards",
+          "command": "atGrafana.refreshDashboards",
           "when": "view == atGrafana.dashboards",
           "group": "navigation@2"
         },
         {
-          "command": "atGrafana.clearDashboardFilter",
+          "command": "atGrafana.filterDashboards",
           "when": "view == atGrafana.dashboards",
           "group": "navigation@3"
         },
         {
+          "command": "atGrafana.clearDashboardFilter",
+          "when": "view == atGrafana.dashboards",
+          "group": "navigation@4"
+        },
+        {
           "command": "atGrafana.refreshAlerts",
           "when": "view == atGrafana.alerts",
-          "group": "navigation@1"
+          "group": "navigation@2"
+        },
+        {
+          "command": "atGrafana.manageInstances",
+          "when": "view == atGrafana.dashboards || view == atGrafana.alerts",
+          "group": "navigation@9"
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "atGrafana.dashboards",
+        "contents": "No Grafana instances are configured yet.\n[Add Grafana Instance](command:atGrafana.addInstance)\nAlready configured elsewhere? [Manage Instances](command:atGrafana.manageInstances) lets you edit or remove one."
+      },
+      {
+        "view": "atGrafana.alerts",
+        "contents": "No Grafana instances are configured yet.\n[Add Grafana Instance](command:atGrafana.addInstance)\nAlready configured elsewhere? [Manage Instances](command:atGrafana.manageInstances) lets you edit or remove one."
+      }
+    ],
     "configuration": {
       "title": "AT Grafana",
       "properties": {

@@ -93,7 +93,11 @@ export class DashboardTreeProvider implements vscode.TreeDataProvider<GrafanaTre
     try {
       const instances = await this.configManager.listInstances();
       if (instances.length === 0) {
-        return [new MessageTreeItem('No Grafana instances configured. Run "AT Grafana: Add Instance" to get started.')];
+        // Empty (not a MessageTreeItem) so VS Code's `viewsWelcome` contribution
+        // for `atGrafana.dashboards` renders instead, with a clickable
+        // "Add Instance" button -- a plain-text tree node here would suppress
+        // that welcome view and leave no discoverable entry point in the UI.
+        return [];
       }
       return instances.map((instance) => new InstanceTreeItem(instance));
     } catch (error) {
