@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { GrafanaAgentToolService, type GrafanaApiClientLike } from '../../src/agent/GrafanaAgentToolService';
+import { GrafanaAgentToolService, type GrafanaApiClientLike, type RawQueryLimitsConfig } from '../../src/agent/GrafanaAgentToolService';
 import type { GrafanaInstanceConfig } from '../../src/config/schema';
 import { GrafanaCertTrustStore, type CertTrustMemento } from '../../src/grafana/GrafanaCertTrustStore';
 import { GrafanaApiError, type GrafanaCertVerifier } from '../../src/grafana/GrafanaHttpClient';
@@ -38,6 +38,8 @@ function fakeClient(overrides: Partial<GrafanaApiClientLike> = {}): GrafanaApiCl
     listAlertRules: async () => [],
     listAlertRuleStates: async () => [],
     getAlertRuleHistory: async () => [],
+    listDatasources: async () => [],
+    proxyDatasourceRequest: async () => ({}),
     ...overrides
   };
 }
@@ -47,6 +49,7 @@ interface ServiceOptions {
   tokens?: Record<string, string>;
   client?: GrafanaApiClientLike;
   trustedHost?: { host: string; port: number; fingerprint: string };
+  queryLimitsConfig?: RawQueryLimitsConfig;
 }
 
 async function makeService(options: ServiceOptions = {}) {
@@ -67,7 +70,12 @@ async function makeService(options: ServiceOptions = {}) {
   }
   const client = options.client ?? fakeClient();
   const createClient = vi.fn((_baseUrl: string, _token: string, _certVerifier: GrafanaCertVerifier) => client);
-  const service = new GrafanaAgentToolService({ configManager, certTrustStore, createClient });
+  const service = new GrafanaAgentToolService({
+    configManager,
+    certTrustStore,
+    createClient,
+    getQueryLimitsConfig: options.queryLimitsConfig ? () => options.queryLimitsConfig! : undefined
+  });
   return { service, createClient, certTrustStore, configManager };
 }
 
@@ -109,7 +117,7 @@ describe('GrafanaAgentToolService', () => {
       expect((unknown as { message: string }).message).toBe((disabled as { message: string }).message);
     });
 
-    it('rejects every management tool for a disabled instance, not just grafana_list_dashboards', async () => {
+    it('rejects every management and monitoring-data tool for a disabled instance, not just grafana_list_dashboards', async () => {
       const { service } = await makeService({ instances: [instance({ id: 'known', allowBackgroundAccess: false })] });
 
       const toolCalls: Array<[string, Record<string, unknown>]> = [
@@ -118,7 +126,9 @@ describe('GrafanaAgentToolService', () => {
         ['grafana_list_folders', { instanceId: 'known' }],
         ['grafana_list_alert_rules', { instanceId: 'known' }],
         ['grafana_get_alert_rule', { instanceId: 'known', uid: 'r1' }],
-        ['grafana_get_alert_history', { instanceId: 'known', uid: 'r1' }]
+        ['grafana_get_alert_history', { instanceId: 'known', uid: 'r1' }],
+        ['grafana_list_datasources', { instanceId: 'known' }],
+        ['grafana_query_datasource', { instanceId: 'known', datasourceUid: 'ds1', method: 'GET', path: 'api/v1/query' }]
       ];
 
       for (const [name, args] of toolCalls) {
@@ -228,6 +238,140 @@ describe('GrafanaAgentToolService', () => {
       const result = await service.invoke('grafana_get_alert_history', { instanceId: 'instance-1', uid: 'r1' });
 
       expect(result).toEqual({ ok: true, result: history });
+    });
+  });
+
+  describe('monitoring data tools', () => {
+    it('grafana_list_datasources returns only uid/name/type/url, never a credential-shaped field', async () => {
+      const client = fakeClient({
+        listDatasources: async () => [
+          { uid: 'ds1', name: 'Prometheus', type: 'prometheus', url: 'http://prom:9090', isDefault: true } as never
+        ]
+      });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_list_datasources', { instanceId: 'instance-1' });
+
+      expect(result).toEqual({
+        ok: true,
+        result: [{ uid: 'ds1', name: 'Prometheus', type: 'prometheus', url: 'http://prom:9090' }]
+      });
+      expect(JSON.stringify(result)).not.toContain('isDefault');
+    });
+
+    it('grafana_query_datasource happy path forwards to proxyDatasourceRequest and returns the result unwrapped', async () => {
+      const proxyDatasourceRequest = vi.fn(async () => ({ status: 'success', data: { result: [] } }));
+      const client = fakeClient({ proxyDatasourceRequest });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_query_datasource', {
+        instanceId: 'instance-1',
+        datasourceUid: 'ds1',
+        method: 'GET',
+        path: 'api/v1/query',
+        query: { query: 'up' }
+      });
+
+      expect(result).toEqual({ ok: true, result: { status: 'success', data: { result: [] } } });
+      expect(proxyDatasourceRequest).toHaveBeenCalledWith(
+        'ds1',
+        'GET',
+        'api/v1/query',
+        { query: 'up' },
+        undefined,
+        expect.any(Number)
+      );
+    });
+
+    it('grafana_query_datasource clamps an over-max-range query and marks the result truncated: true, reason: time-range', async () => {
+      const upstreamResult = { status: 'success', data: { result: [] } };
+      const proxyDatasourceRequest = vi.fn(async () => upstreamResult);
+      const client = fakeClient({ proxyDatasourceRequest });
+      const { service } = await makeService({ client, queryLimitsConfig: { maxRangeMs: 3_600_000 } }); // 1h cap
+
+      const end = 1700010000;
+      const start = end - 4 * 60 * 60; // 4h requested, over the 1h cap
+      const result = await service.invoke('grafana_query_datasource', {
+        instanceId: 'instance-1',
+        datasourceUid: 'ds1',
+        method: 'GET',
+        path: 'api/v1/query_range',
+        query: { start: String(start), end: String(end) }
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        result: { truncated: true, reason: 'time-range', maxRangeMs: 3_600_000, result: upstreamResult }
+      });
+      const [, , , forwardedQuery] = proxyDatasourceRequest.mock.calls[0] as unknown as [string, string, string, Record<string, string>];
+      expect(forwardedQuery.start).toBe(String(end - 3_600));
+      expect(forwardedQuery.end).toBe(String(end));
+    });
+
+    it('grafana_query_datasource does not clamp a range the agent already narrowed below the cap', async () => {
+      const proxyDatasourceRequest = vi.fn(async () => ({ ok: true }));
+      const client = fakeClient({ proxyDatasourceRequest });
+      const { service } = await makeService({ client, queryLimitsConfig: { maxRangeMs: 3_600_000 } });
+
+      const query = { start: '1700000000', end: '1700001800' }; // 30 min, under the 1h cap
+      const result = await service.invoke('grafana_query_datasource', {
+        instanceId: 'instance-1',
+        datasourceUid: 'ds1',
+        method: 'GET',
+        path: 'api/v1/query_range',
+        query
+      });
+
+      expect(result).toEqual({ ok: true, result: { ok: true } });
+      expect(proxyDatasourceRequest).toHaveBeenCalledWith('ds1', 'GET', 'api/v1/query_range', query, undefined, expect.any(Number));
+    });
+
+    it('grafana_query_datasource marks an oversized response truncated: true, reason: response-size, without crashing or returning malformed data', async () => {
+      const proxyDatasourceRequest = vi.fn(async () => {
+        throw new GrafanaApiError('response-too-large', 'Grafana response exceeded the configured maximum of 100 bytes.');
+      });
+      const client = fakeClient({ proxyDatasourceRequest });
+      const { service } = await makeService({ client, queryLimitsConfig: { maxResponseBytes: 100 } });
+
+      const result = await service.invoke('grafana_query_datasource', {
+        instanceId: 'instance-1',
+        datasourceUid: 'ds1',
+        method: 'GET',
+        path: 'api/v1/query'
+      });
+
+      expect(result).toMatchObject({ ok: true, result: { truncated: true, reason: 'response-size', maxBytes: 100 } });
+      expect(() => JSON.stringify(result)).not.toThrow();
+      expect((result as { result: { result?: unknown } }).result.result).toBeUndefined();
+    });
+
+    it('grafana_query_datasource rejects a non-GET/POST method at the schema-validation layer, with zero calls reaching the client', async () => {
+      const proxyDatasourceRequest = vi.fn(async () => ({}));
+      const client = fakeClient({ proxyDatasourceRequest });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_query_datasource', {
+        instanceId: 'instance-1',
+        datasourceUid: 'ds1',
+        method: 'DELETE',
+        path: 'api/v1/query'
+      });
+
+      expect(result).toMatchObject({ ok: false, code: 'VALIDATION_ERROR' });
+      expect(proxyDatasourceRequest).not.toHaveBeenCalled();
+    });
+
+    it('grafana_query_datasource rejects an unknown/unauthorized instance the same way management tools do', async () => {
+      const { service } = await makeService({ instances: [instance({ id: 'known', allowBackgroundAccess: false })] });
+
+      const result = await service.invoke('grafana_query_datasource', {
+        instanceId: 'known',
+        datasourceUid: 'ds1',
+        method: 'GET',
+        path: 'api/v1/query'
+      });
+
+      expect(result).toMatchObject({ ok: false, code: 'VALIDATION_ERROR' });
     });
   });
 

@@ -5,8 +5,10 @@ import {
   grafanaGetDashboardSchema,
   grafanaListAlertRulesSchema,
   grafanaListDashboardsSchema,
+  grafanaListDatasourcesSchema,
   grafanaListFoldersSchema,
-  grafanaListInstancesSchema
+  grafanaListInstancesSchema,
+  grafanaQueryDatasourceSchema
 } from '../../src/mcp/bridgeSchemas';
 
 describe('grafanaListInstancesSchema', () => {
@@ -23,7 +25,8 @@ describe('instanceId-only schemas', () => {
   const schemas = {
     grafanaListDashboardsSchema,
     grafanaListFoldersSchema,
-    grafanaListAlertRulesSchema
+    grafanaListAlertRulesSchema,
+    grafanaListDatasourcesSchema
   };
 
   for (const [name, schema] of Object.entries(schemas)) {
@@ -77,4 +80,44 @@ describe('instanceId + uid schemas', () => {
       });
     });
   }
+});
+
+describe('grafanaQueryDatasourceSchema', () => {
+  const validBase = { instanceId: 'abc', datasourceUid: 'ds1', method: 'GET', path: 'api/v1/query' };
+
+  it('accepts the minimal required fields', () => {
+    expect(grafanaQueryDatasourceSchema.safeParse(validBase).success).toBe(true);
+  });
+
+  it('accepts optional query and body', () => {
+    expect(
+      grafanaQueryDatasourceSchema.safeParse({ ...validBase, query: { query: 'up', step: '15s' }, body: { anything: true } }).success
+    ).toBe(true);
+  });
+
+  it('accepts method GET and POST', () => {
+    expect(grafanaQueryDatasourceSchema.safeParse({ ...validBase, method: 'GET' }).success).toBe(true);
+    expect(grafanaQueryDatasourceSchema.safeParse({ ...validBase, method: 'POST' }).success).toBe(true);
+  });
+
+  it('rejects any method other than GET/POST (ADR-004 MON4 method allowlist enforced at the schema-validation layer)', () => {
+    for (const method of ['PUT', 'DELETE', 'PATCH', 'get', 'post', '']) {
+      expect(grafanaQueryDatasourceSchema.safeParse({ ...validBase, method }).success).toBe(false);
+    }
+  });
+
+  it('rejects missing required fields', () => {
+    for (const key of ['instanceId', 'datasourceUid', 'method', 'path'] as const) {
+      const { [key]: _omit, ...rest } = validBase;
+      expect(grafanaQueryDatasourceSchema.safeParse(rest).success).toBe(false);
+    }
+  });
+
+  it('rejects a non-string-valued query entry', () => {
+    expect(grafanaQueryDatasourceSchema.safeParse({ ...validBase, query: { start: 1700000000 } }).success).toBe(false);
+  });
+
+  it('rejects unexpected extra top-level properties', () => {
+    expect(grafanaQueryDatasourceSchema.safeParse({ ...validBase, extra: true }).success).toBe(false);
+  });
 });

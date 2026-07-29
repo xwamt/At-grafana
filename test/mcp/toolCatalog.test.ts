@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AT_GRAFANA_PLUGIN_ID, AT_GRAFANA_TOOL_CATALOG } from '../../src/mcp/toolCatalog';
 
-const EXPECTED_TOOL_NAMES = [
-  'grafana_list_instances',
+const MANAGEMENT_TOOL_NAMES = [
   'grafana_list_dashboards',
   'grafana_get_dashboard',
   'grafana_list_folders',
@@ -10,16 +9,23 @@ const EXPECTED_TOOL_NAMES = [
   'grafana_get_alert_rule',
   'grafana_get_alert_history'
 ];
+const MONITORING_TOOL_NAMES = ['grafana_list_datasources', 'grafana_query_datasource'];
+const EXPECTED_TOOL_NAMES = ['grafana_list_instances', ...MANAGEMENT_TOOL_NAMES, ...MONITORING_TOOL_NAMES];
 
 const INSTANCE_ID_AND_UID_TOOLS = new Set(['grafana_get_dashboard', 'grafana_get_alert_rule', 'grafana_get_alert_history']);
-const INSTANCE_ID_ONLY_TOOLS = new Set(['grafana_list_dashboards', 'grafana_list_folders', 'grafana_list_alert_rules']);
+const INSTANCE_ID_ONLY_TOOLS = new Set([
+  'grafana_list_dashboards',
+  'grafana_list_folders',
+  'grafana_list_alert_rules',
+  'grafana_list_datasources'
+]);
 
 describe('toolCatalog', () => {
   it('uses a stable reverse-domain pluginId', () => {
     expect(AT_GRAFANA_PLUGIN_ID).toBe('at.grafana');
   });
 
-  it('declares exactly the 7 management tools from Task 5.1, in any order', () => {
+  it('declares exactly the 9 tools from Task 5.1 (management) + Task 6.1 (monitoring data), in any order', () => {
     expect(AT_GRAFANA_TOOL_CATALOG.map((tool) => tool.name).sort()).toEqual([...EXPECTED_TOOL_NAMES].sort());
   });
 
@@ -65,10 +71,34 @@ describe('toolCatalog', () => {
     }
   });
 
-  it('management tool descriptions distinguish this family from the future monitoring-data family', () => {
-    for (const name of EXPECTED_TOOL_NAMES.filter((toolName) => toolName !== 'grafana_list_instances')) {
+  it('management tool descriptions distinguish this family from the monitoring-data family', () => {
+    for (const name of MANAGEMENT_TOOL_NAMES) {
       expect(findTool(name).description.toLowerCase()).toContain('management');
     }
+  });
+
+  it('monitoring-data tool descriptions distinguish this family from the management family', () => {
+    for (const name of MONITORING_TOOL_NAMES) {
+      expect(findTool(name).description.toLowerCase()).toContain('monitoring');
+    }
+  });
+
+  it('grafana_list_datasources requires exactly instanceId (instanceId-only shape)', () => {
+    const tool = findTool('grafana_list_datasources');
+    expect(tool.inputSchema.required).toEqual(['instanceId']);
+    expect(tool.inputSchema.additionalProperties).toBe(false);
+  });
+
+  it('grafana_query_datasource requires instanceId/datasourceUid/method/path, with method restricted to GET/POST', () => {
+    const tool = findTool('grafana_query_datasource');
+    expect(tool.inputSchema.required).toEqual(['instanceId', 'datasourceUid', 'method', 'path']);
+    expect(tool.inputSchema.additionalProperties).toBe(false);
+    expect(tool.inputSchema.properties).toMatchObject({
+      instanceId: { type: 'string' },
+      datasourceUid: { type: 'string' },
+      method: { type: 'string', enum: ['GET', 'POST'] },
+      path: { type: 'string' }
+    });
   });
 });
 

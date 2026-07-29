@@ -90,6 +90,39 @@ describe('GrafanaHttpClient.requestJson', () => {
     expect((error as GrafanaApiError).message).not.toContain(SECRET_TOKEN);
   });
 
+  it('aborts and rejects with kind response-too-large when the response exceeds maxResponseBytes (Task 6.1 early-abort)', async () => {
+    server = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ big: 'x'.repeat(1000) }));
+    });
+    const client = new GrafanaHttpClient({ baseUrl: server.url, token: SECRET_TOKEN });
+
+    const error = await client.requestJson('GET', '/api/health', { maxResponseBytes: 10 }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GrafanaApiError);
+    expect((error as GrafanaApiError).kind).toBe('response-too-large');
+  });
+
+  it('does not abort a response at or under maxResponseBytes', async () => {
+    const body = JSON.stringify({ ok: true });
+    server = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(body);
+    });
+    const client = new GrafanaHttpClient({ baseUrl: server.url, token: SECRET_TOKEN });
+
+    await expect(client.requestJson('GET', '/api/health', { maxResponseBytes: Buffer.byteLength(body) })).resolves.toEqual({
+      ok: true
+    });
+  });
+
+  it('is unaffected by maxResponseBytes when omitted, matching pre-Task-6.1 behavior', async () => {
+    server = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ big: 'x'.repeat(10_000) }));
+    });
+    const client = new GrafanaHttpClient({ baseUrl: server.url, token: SECRET_TOKEN });
+
+    const result = await client.requestJson<{ big: string }>('GET', '/api/health');
+    expect(result.big.length).toBe(10_000);
+  });
+
   it('sends the request body as JSON for POST requests', async () => {
     server = await listen(async (req, res) => {
       const chunks: Buffer[] = [];

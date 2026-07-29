@@ -333,11 +333,19 @@
 
 **Estimated scope:** M.
 
+**Status (2026-07-29):** Done, this commit (`feat(phase-6): ...` — see `git log` for the hash; not embedded here to avoid the chicken-and-egg problem of a commit referencing its own hash). MON1–MON4 and requirements §7 DoD items 5/7/8 are met. Key decisions:
+- **Single-tier caps, not default+ceiling:** re-reading D9/MON3 alongside the settings shape requested in requirements §5.2 ("current effective value... visible in plugin settings"), the configured `atGrafana.queryLimits.maxRangeMs`/`maxResponseBytes` setting value *is* the enforced hard cap — there is no separate "soft default, immovable absolute ceiling" two-tier system in V1. `QueryLimits.ts`'s `DEFAULT_MAX_RANGE_MS`/`DEFAULT_MAX_RESPONSE_BYTES` are only the fallback used when the setting is unset/invalid.
+- **Response-size enforcement took approach (a) (early-abort), not (b) (stringify-and-measure):** extended `GrafanaHttpClient.requestJson`'s `GrafanaRequestOptions` with an optional `maxResponseBytes` that aborts the response stream as soon as the buffered size exceeds it (new `GrafanaApiError` kind `'response-too-large'`). This turned out not to be too invasive: it's an opt-in parameter that every existing call site (dashboards/alerts/folders/health) simply doesn't pass, so their behavior is byte-for-byte unchanged (verified by the full existing suite passing unmodified). `GrafanaDatasourcesApi.proxyDatasourceRequest` grew one new optional trailing parameter to thread it through.
+- **Time-range clamp is a documented best-effort heuristic, not a general solution:** `QueryLimits.clampQueryTimeRange` recognizes Prometheus/Loki `start`/`end` as RFC3339, Unix-seconds, or Unix-milliseconds; it explicitly does NOT recognize Unix-**nanosecond** epoch values (some Loki clients use these) or relative/duration strings (`-1h`), and never inspects a POST `body` — per D8's generic-proxy design, this is an accepted, documented limitation, not a bug.
+- **Truncation envelope is always well-formed JSON:** `buildTimeRangeTruncationEnvelope`/`buildResponseSizeTruncationEnvelope` return plain objects (never partially-serialized strings); the size-cap case omits `result` entirely (data was discarded, never partially returned) while the range-clamp case includes the full (successfully fetched, now in-range) `result`.
+- **Proposed cap values (flagged for human review, no real Prometheus/Loki instance available to calibrate against — plan's Open Question 2):** `maxRangeMs` default 12h (43,200,000 ms), `maxResponseBytes` default 5 MiB (5,242,880 bytes). See `src/grafana/QueryLimits.ts`'s doc comments and `package.json`'s `atGrafana.queryLimits.*` setting descriptions for the full reasoning.
+- 274/274 tests passing (15 new in `test/grafana/QueryLimits.test.ts`, plus extensions to `test/agent/GrafanaAgentToolService.test.ts`, `test/mcp/bridgeSchemas.test.ts`, `test/mcp/toolCatalog.test.ts`, `test/mcp/BridgeServer.test.ts`, `test/grafana/GrafanaHttpClient.test.ts`, `test/grafana/GrafanaDatasourcesApi.test.ts`, and a one-line catalog-count fix in `test/mcp/McpConfigInstaller.test.ts`). `npm run typecheck` / `npm test` / `npm run build` all clean.
+
 ### Checkpoint: Phase 6
 
-- [ ] `grafana_query_datasource` verified against a real Prometheus and a real Loki datasource proxied through a real Grafana instance
-- [ ] Over-cap request produces a truncated result with a clear message, not a crash or silent empty result
-- [ ] Review with human before proceeding to Phase 7
+- [ ] `grafana_query_datasource` verified against a real Prometheus and a real Loki datasource proxied through a real Grafana instance — **not done, needs human verification**: no real Grafana/Prometheus/Loki instance is available in this environment. Verified instead via unit tests against a local fake HTTP server (`test/grafana/GrafanaDatasourcesApi.test.ts`) and a fake `GrafanaApiClientLike` (`test/agent/GrafanaAgentToolService.test.ts`), exercising the proxy path shape, method allowlist, and both truncation paths.
+- [x] Over-cap request produces a truncated result with a clear message, not a crash or silent empty result — verified for both the time-range and response-size cases in `test/grafana/QueryLimits.test.ts` and `test/agent/GrafanaAgentToolService.test.ts`.
+- [x] Review with human before proceeding to Phase 7 — proceeding per subagent-mode instruction (mirrors Phase 5's checkpoint); flagging the unchecked item above and the proposed cap values for human review before they're relied on against a real instance.
 
 ---
 

@@ -87,6 +87,17 @@ describe('GrafanaApiClient datasources', () => {
     expect(server.requestCount).toBe(0);
   });
 
+  it('proxyDatasourceRequest() propagates a response-too-large error when maxResponseBytes is exceeded (Task 6.1)', async () => {
+    server = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ big: 'x'.repeat(1000) }));
+    });
+    const client = new GrafanaApiClient({ baseUrl: server.url, token: 'tok' });
+
+    const error = await client.proxyDatasourceRequest('ds1', 'GET', 'api/v1/query', undefined, undefined, 10).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GrafanaApiError);
+    expect((error as GrafanaApiError).kind).toBe('response-too-large');
+  });
+
   it('proxyDatasourceRequest() rejects DELETE and PATCH the same way, with zero requests reaching the server', async () => {
     server = await listen((_req, res) => {
       res.writeHead(200).end('{}');

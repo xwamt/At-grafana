@@ -105,6 +105,25 @@
           "group": "navigation@1"
         }
       ]
+    },
+    "configuration": {
+      "title": "AT Grafana",
+      "properties": {
+        "atGrafana.queryLimits.maxRangeMs": {
+          "type": "number",
+          "default": 43200000,
+          "minimum": 60000,
+          "markdownDescription": "Hard cap, in milliseconds, on the `start`..`end` time range that `grafana_query_datasource` will forward to a datasource. If the Agent's query exceeds this, the start time is moved forward so the effective range equals this cap and the tool result is marked `truncated: true` (reason `time-range`). **Proposed default of 12 hours, pending calibration against a real Prometheus/Loki instance** -- adjust based on your datasources' actual query performance and cardinality.",
+          "order": 1
+        },
+        "atGrafana.queryLimits.maxResponseBytes": {
+          "type": "number",
+          "default": 5242880,
+          "minimum": 1024,
+          "markdownDescription": "Hard cap, in bytes, on a single `grafana_query_datasource` response body. A response exceeding this is discarded (never returned partially or truncated mid-structure) and the tool result is marked `truncated: true` (reason `response-size`). **Proposed default of 5 MiB, pending calibration against a real Prometheus/Loki instance.**",
+          "order": 2
+        }
+      }
     }
   },
   "scripts": {

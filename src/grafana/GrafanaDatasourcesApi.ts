@@ -35,14 +35,16 @@ export class GrafanaDatasourcesApi {
     method: 'GET' | 'POST',
     path: string,
     query?: Record<string, string>,
-    body?: unknown
+    body?: unknown,
+    /** Task 6.1: threaded straight through to GrafanaHttpClient's early-abort; see GrafanaRequestOptions.maxResponseBytes. */
+    maxResponseBytes?: number
   ): Promise<unknown> {
     if (!ALLOWED_PROXY_METHODS.has(method)) {
       throw new GrafanaApiError('validation', `Datasource proxy method must be GET or POST, got: ${String(method)}.`);
     }
     const trimmedPath = path.startsWith('/') ? path.slice(1) : path;
     const proxyPath = `/api/datasources/proxy/uid/${encodeURIComponent(datasourceUid)}/${trimmedPath}`;
-    return this.http.requestJson<unknown>(method, proxyPath, { query, body });
+    return this.http.requestJson<unknown>(method, proxyPath, { query, body, maxResponseBytes });
   }
 }
 

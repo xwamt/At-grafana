@@ -4,6 +4,13 @@ import type { GrafanaCertTrustStore } from '../grafana/GrafanaCertTrustStore';
 import { buildAlertStateIndex, correlateAlertState } from '../grafana/correlateAlertState';
 import type { GrafanaApiClient } from '../grafana/GrafanaApiClient';
 import { GrafanaApiError, type GrafanaCertVerifier } from '../grafana/GrafanaHttpClient';
+import {
+  buildResponseSizeTruncationEnvelope,
+  buildTimeRangeTruncationEnvelope,
+  clampQueryTimeRange,
+  resolveMaxRangeMs,
+  resolveMaxResponseBytes
+} from '../grafana/QueryLimits';
 import { formatError } from '../utils/errors';
 import {
   describeZodError,
@@ -12,19 +19,29 @@ import {
   grafanaGetDashboardSchema,
   grafanaListAlertRulesSchema,
   grafanaListDashboardsSchema,
+  grafanaListDatasourcesSchema,
   grafanaListFoldersSchema,
-  grafanaListInstancesSchema
+  grafanaListInstancesSchema,
+  grafanaQueryDatasourceSchema,
+  type GrafanaQueryDatasourceInput
 } from '../mcp/bridgeSchemas';
 
 /**
- * The subset of `GrafanaApiClient` every management tool call needs. Kept as
- * a `Pick<...>` (same pattern as `DashboardApiClient`/`AlertApiClient` in the
- * tree providers) so tests can pass a plain fake object instead of a real
- * HTTP-backed client.
+ * The subset of `GrafanaApiClient` every tool call needs (management +
+ * monitoring-data families). Kept as a `Pick<...>` (same pattern as
+ * `DashboardApiClient`/`AlertApiClient` in the tree providers) so tests can
+ * pass a plain fake object instead of a real HTTP-backed client.
  */
 export type GrafanaApiClientLike = Pick<
   GrafanaApiClient,
-  'search' | 'getFolders' | 'getDashboardByUid' | 'listAlertRules' | 'listAlertRuleStates' | 'getAlertRuleHistory'
+  | 'search'
+  | 'getFolders'
+  | 'getDashboardByUid'
+  | 'listAlertRules'
+  | 'listAlertRuleStates'
+  | 'getAlertRuleHistory'
+  | 'listDatasources'
+  | 'proxyDatasourceRequest'
 >;
 
 /**
@@ -56,6 +73,23 @@ export interface GrafanaAgentToolServiceDependencies {
   configManager: Pick<GrafanaInstanceConfigManager, 'listInstances' | 'getInstance' | 'getToken'>;
   certTrustStore: GrafanaCertTrustStore;
   createClient: GrafanaAgentClientFactory;
+  /**
+   * Reads the currently effective `atGrafana.queryLimits.*` VS Code settings
+   * (Task 6.1, requirements §5.2) at call time -- not once at construction
+   * -- so a user editing them mid-session takes effect on the very next
+   * `grafana_query_datasource` call. Kept as a plain function returning raw
+   * numbers (rather than a `vscode.workspace.getConfiguration` import here)
+   * so this class stays testable without a VS Code host; `src/extension.ts`
+   * supplies the actual reader. Omitted entirely (e.g. in tests that don't
+   * care about limits) falls back to QueryLimits.ts's proposed defaults.
+   */
+  getQueryLimitsConfig?: () => RawQueryLimitsConfig;
+}
+
+/** Raw, unresolved `atGrafana.queryLimits.*` values; `undefined` means "not configured," resolved via QueryLimits.ts. */
+export interface RawQueryLimitsConfig {
+  maxRangeMs?: number;
+  maxResponseBytes?: number;
 }
 
 /**
@@ -130,6 +164,12 @@ export class GrafanaAgentToolService {
         case 'grafana_get_alert_history':
           return await this.withAuthorizedClient(grafanaGetAlertHistorySchema, args, (client, parsed) =>
             client.getAlertRuleHistory(parsed.uid)
+          );
+        case 'grafana_list_datasources':
+          return await this.withAuthorizedClient(grafanaListDatasourcesSchema, args, (client) => this.listDatasources(client));
+        case 'grafana_query_datasource':
+          return await this.withAuthorizedClient(grafanaQueryDatasourceSchema, args, (client, parsed) =>
+            this.queryDatasource(client, parsed)
           );
         default:
           return { ok: false, code: 'NOT_FOUND', message: `Unknown AT Grafana tool: ${name}` };
@@ -241,6 +281,58 @@ export class GrafanaAgentToolService {
       throw new GrafanaApiError('api-error', `Alert rule not found: ${uid}`, 404);
     }
     return rule;
+  }
+
+  private async listDatasources(client: GrafanaApiClientLike): Promise<unknown> {
+    const datasources = await client.listDatasources();
+    // MON1: uid/name/type/url only, never credentials. GrafanaDatasource has
+    // no credential-shaped field today, but this enumerates fields
+    // explicitly (rather than spreading the object) so a future field added
+    // to GrafanaDatasource can't leak through this tool silently.
+    return datasources.map((datasource) => ({
+      uid: datasource.uid,
+      name: datasource.name,
+      type: datasource.type,
+      url: datasource.url
+    }));
+  }
+
+  /**
+   * MON2/D8/D9: generic pass-through to `GrafanaApiClient.proxyDatasourceRequest`,
+   * with the two Task 6.1 query-limits caps applied around it -- see
+   * src/grafana/QueryLimits.ts for the clamp heuristic and the truncation
+   * envelope shape. The method allowlist itself is enforced earlier, at
+   * schema validation (`grafanaQueryDatasourceSchema`'s `z.enum(['GET',
+   * 'POST'])`) and again inside `proxyDatasourceRequest` itself (defense in
+   * depth) -- nothing new to do here for that part.
+   */
+  private async queryDatasource(client: GrafanaApiClientLike, parsed: GrafanaQueryDatasourceInput): Promise<unknown> {
+    const limits = this.effectiveQueryLimits();
+    const { query: effectiveQuery, clamped } = clampQueryTimeRange(parsed.query, limits.maxRangeMs);
+    try {
+      const result = await client.proxyDatasourceRequest(
+        parsed.datasourceUid,
+        parsed.method,
+        parsed.path,
+        effectiveQuery,
+        parsed.body,
+        limits.maxResponseBytes
+      );
+      return clamped ? buildTimeRangeTruncationEnvelope(limits.maxRangeMs, result) : result;
+    } catch (error) {
+      if (error instanceof GrafanaApiError && error.kind === 'response-too-large') {
+        return buildResponseSizeTruncationEnvelope(limits.maxResponseBytes);
+      }
+      throw error;
+    }
+  }
+
+  private effectiveQueryLimits(): { maxRangeMs: number; maxResponseBytes: number } {
+    const raw = this.deps.getQueryLimitsConfig?.() ?? {};
+    return {
+      maxRangeMs: resolveMaxRangeMs(raw.maxRangeMs),
+      maxResponseBytes: resolveMaxResponseBytes(raw.maxResponseBytes)
+    };
   }
 
   private toFailure(error: unknown): ToolInvokeFailure {

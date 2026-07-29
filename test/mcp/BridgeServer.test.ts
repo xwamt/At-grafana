@@ -84,6 +84,23 @@ describe('BridgeServer request handler', () => {
     expect((response.body as { error: { code: string } }).error.code).toBe('VALIDATION_ERROR');
   });
 
+  it('rejects grafana_query_datasource with an invalid method value as a validation-class error, with zero upstream calls made', async () => {
+    const invoke = vi.fn(async (): Promise<ToolInvokeResult> => ({ ok: true, result: {} }));
+    const response = await handler({ toolService: fakeToolService(invoke) })({
+      method: 'POST',
+      path: '/invoke',
+      headers: { [AT_SERIES_TOKEN_HEADER]: TOKEN },
+      body: JSON.stringify({
+        name: 'grafana_query_datasource',
+        arguments: { instanceId: 'i1', datasourceUid: 'ds1', method: 'DELETE', path: 'api/v1/query' }
+      })
+    });
+
+    expect(response.status).toBe(422);
+    expect((response.body as { error: { code: string } }).error.code).toBe('VALIDATION_ERROR');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it('returns 503 UNAVAILABLE for a known tool when no toolService is wired', async () => {
     const response = await handler()({
       method: 'POST',

@@ -10,8 +10,23 @@ import { isTlsConnectionError } from './testGrafanaConnection';
  * guard (ADR-004 MON4), which is a client-side request-shape rejection that
  * happens *before* any network call, not a response-classification concern
  * like the other four kinds. See GrafanaDatasourcesApi.ts.
+ *
+ * `response-too-large` is Task 6.1's addition for the `maxResponseBytes`
+ * early-abort (see `GrafanaRequestOptions.maxResponseBytes` below): thrown
+ * when the response stream is deliberately destroyed mid-read because it
+ * already exceeded the caller's byte cap. Callers that pass
+ * `maxResponseBytes` and want a graceful truncation result (rather than a
+ * hard failure) must catch this kind explicitly -- see
+ * src/grafana/QueryLimits.ts.
  */
-export type GrafanaApiErrorKind = 'network' | 'tls' | 'auth' | 'api-error' | 'invalid-response' | 'validation';
+export type GrafanaApiErrorKind =
+  | 'network'
+  | 'tls'
+  | 'auth'
+  | 'api-error'
+  | 'invalid-response'
+  | 'validation'
+  | 'response-too-large';
 
 export class GrafanaApiError extends Error {
   constructor(
@@ -44,6 +59,16 @@ export interface GrafanaHttpClientOptions {
 export interface GrafanaRequestOptions {
   query?: Record<string, string | undefined>;
   body?: unknown;
+  /**
+   * Task 6.1 (query-limits enforcement, requirements §5.2): when set, the
+   * response stream is aborted as soon as the buffered byte count exceeds
+   * this value, instead of buffering a potentially huge upstream response
+   * fully before discovering it's oversized (see `performRequest`). Throws
+   * a `GrafanaApiError` with `kind: 'response-too-large'`. Omitted (the
+   * default) preserves the previous unbounded-buffering behavior exactly,
+   * so every existing call site that doesn't opt in is unaffected.
+   */
+  maxResponseBytes?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -78,7 +103,7 @@ export class GrafanaHttpClient {
       throw new GrafanaApiError('invalid-response', `Invalid Grafana request path: ${path}`);
     }
     const bodyText = requestOptions.body === undefined ? undefined : JSON.stringify(requestOptions.body);
-    const { status, text } = await this.performRequest(target, method, bodyText);
+    const { status, text } = await this.performRequest(target, method, bodyText, requestOptions.maxResponseBytes);
     return parseJsonResponse<T>(status, text, target);
   }
 
@@ -94,8 +119,33 @@ export class GrafanaHttpClient {
     return target;
   }
 
-  private performRequest(target: URL, method: string, bodyText: string | undefined): Promise<{ status: number; text: string }> {
+  private performRequest(
+    target: URL,
+    method: string,
+    bodyText: string | undefined,
+    maxResponseBytes?: number
+  ): Promise<{ status: number; text: string }> {
     return new Promise((resolve, reject) => {
+      // Guards against the size-cap abort path below racing a subsequent
+      // 'error'/'end' event on the same response/request (destroying a
+      // stream doesn't guarantee no further events fire) -- settle exactly
+      // once no matter which path gets there first.
+      let settled = false;
+      const settleResolve = (value: { status: number; text: string }) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve(value);
+      };
+      const settleReject = (error: unknown) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        reject(error);
+      };
+
       const isHttps = target.protocol === 'https:';
       const client: typeof http | typeof https = isHttps ? https : http;
       const headers: Record<string, string> = {
@@ -120,13 +170,34 @@ export class GrafanaHttpClient {
         },
         (response) => {
           const chunks: Buffer[] = [];
+          let size = 0;
           response.on('data', (chunk: Buffer | string) => {
-            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+            if (settled) {
+              return;
+            }
+            const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            size += buf.length;
+            if (maxResponseBytes !== undefined && size > maxResponseBytes) {
+              // Early-abort per Task 6.1: stop reading now rather than
+              // buffering the rest of a response we already know is over
+              // the cap. `response.destroy()` with no argument tears down
+              // the stream without emitting its own 'error' event, so this
+              // is the only place that settles the promise for this path.
+              settleReject(
+                new GrafanaApiError(
+                  'response-too-large',
+                  `Grafana response for ${target.pathname} exceeded the configured maximum of ${maxResponseBytes} bytes; aborted before buffering the full body.`
+                )
+              );
+              response.destroy();
+              return;
+            }
+            chunks.push(buf);
           });
           response.on('end', () => {
-            resolve({ status: response.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') });
+            settleResolve({ status: response.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') });
           });
-          response.on('error', (error: NodeJS.ErrnoException) => reject(toNetworkOrTlsError(error)));
+          response.on('error', (error: NodeJS.ErrnoException) => settleReject(toNetworkOrTlsError(error)));
         }
       );
 
@@ -135,7 +206,7 @@ export class GrafanaHttpClient {
       });
 
       request.on('error', (error) => {
-        reject(error instanceof GrafanaApiError ? error : toNetworkOrTlsError(error as NodeJS.ErrnoException));
+        settleReject(error instanceof GrafanaApiError ? error : toNetworkOrTlsError(error as NodeJS.ErrnoException));
       });
 
       if (usesCertVerifier && certVerifier) {

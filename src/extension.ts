@@ -114,7 +114,17 @@ export function activate(context: vscode.ExtensionContext): void {
   const grafanaAgentToolService = new GrafanaAgentToolService({
     configManager,
     certTrustStore,
-    createClient: (baseUrl, token, certVerifier) => new GrafanaApiClient({ baseUrl, token, certVerifier })
+    createClient: (baseUrl, token, certVerifier) => new GrafanaApiClient({ baseUrl, token, certVerifier }),
+    // Task 6.1: read live each call (not cached) so editing
+    // atGrafana.queryLimits.* takes effect on the next grafana_query_datasource
+    // call without a reload -- see GrafanaAgentToolServiceDependencies's doc.
+    getQueryLimitsConfig: () => {
+      const config = vscode.workspace.getConfiguration('atGrafana');
+      return {
+        maxRangeMs: config.get<number>('queryLimits.maxRangeMs'),
+        maxResponseBytes: config.get<number>('queryLimits.maxResponseBytes')
+      };
+    }
   });
 
   const bridgeServer = new BridgeServer({
