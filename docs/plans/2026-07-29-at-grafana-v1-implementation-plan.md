@@ -189,6 +189,8 @@
 
 **Estimated scope:** M.
 
+**Status (2026-07-29):** Done, commit `b9f0bc8`. Client-side folder grouping (search has no folder param); text filter via `atGrafana.filterDashboards`/`clearDashboardFilter`, reflected in the `TreeView.message`. Manual F5 check against a real instance still outstanding.
+
 ### Task 3.2: Alert tree provider
 
 **Description:** `AlertTreeProvider` — folder/namespace-grouped alert rule list with state, Firing sorted first.
@@ -206,10 +208,12 @@
 
 **Estimated scope:** M.
 
+**Status (2026-07-29):** Done, commit `b9f0bc8`. Firing-first sort implemented via `ALERT_STATE_RANK` on both group and rule ordering; `listAlertRules()`/`listAlertRuleStates()` correlated by `uid`, unmatched rules treated as `unknown` rather than dropped.
+
 ### Checkpoint: Phase 3
 
-- [ ] Sidebar shows real dashboard and alert data from a configured instance
-- [ ] Review with human before proceeding to Phase 4
+- [x] Sidebar shows dashboard/alert tree data wired to `GrafanaApiClient`, 121/121 tests passing — real-instance F5 verification still outstanding (no live Grafana instance available in this environment)
+- [x] Review with human before proceeding to Phase 4 — proceeding per subagent-mode instruction; TLS trust-on-first-use prompting remains unwired (flagged, not blocking per Phase 1/2 deferral)
 
 ---
 
