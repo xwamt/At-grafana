@@ -151,7 +151,22 @@ export const window = {
       report: () => undefined
     }, {}),
   createTreeView: () => ({ dispose: () => undefined }),
-  createWebviewPanel: () => ({ dispose: () => undefined }),
+  createWebviewPanel: () => {
+    const messageListeners: Array<(message: unknown) => unknown> = [];
+    return {
+      dispose: () => undefined,
+      webview: {
+        html: '',
+        cspSource: 'vscode-webview:',
+        asWebviewUri: (uri: Uri) => uri,
+        postMessage: async () => true,
+        onDidReceiveMessage: (listener: (message: unknown) => unknown) => {
+          messageListeners.push(listener);
+          return { dispose: () => undefined };
+        }
+      }
+    };
+  },
   showTextDocument: async (document: TextDocument) => document,
   createStatusBarItem: (_alignment?: StatusBarAlignment, _priority?: number) => new StatusBarItem(),
   tabGroups: {

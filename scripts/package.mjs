@@ -17,6 +17,9 @@ await cp(join(root, 'dist'), join(stage, 'dist'), { recursive: true });
 await access(join(stage, 'dist', 'hub.js'));
 await access(join(stage, 'dist', 'hub-version.json'));
 await cp(join(root, 'media'), join(stage, 'media'), { recursive: true }).catch(() => {});
+// Webview HTML references CSS by extensionUri-relative path (see renderWebviewHtml);
+// only the .ts sources are stripped by .vscodeignore at vsce-package time below.
+await cp(join(root, 'webview'), join(stage, 'webview'), { recursive: true }).catch(() => {});
 await cp(join(root, '.vscodeignore'), join(stage, '.vscodeignore'));
 await writeFile(join(stage, 'package.json'), `${JSON.stringify(packagedManifest, null, 2)}\n`, 'utf8');
 await cp(join(root, 'README.md'), join(stage, 'README.md'));

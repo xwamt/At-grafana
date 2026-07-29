@@ -17,6 +17,14 @@
   "contributes": {
     "commands": [
       {
+        "command": "atGrafana.addInstance",
+        "title": "AT Grafana: Add Instance"
+      },
+      {
+        "command": "atGrafana.manageInstances",
+        "title": "AT Grafana: Manage Instances"
+      },
+      {
         "command": "atGrafana.installMcpConfig",
         "title": "AT Grafana: Install/Repair AT Series MCP Config"
       },
