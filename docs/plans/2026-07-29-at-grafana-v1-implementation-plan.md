@@ -1,5 +1,7 @@
 # AT-Grafana V1 Implementation Plan
 
+> **Plan status (2026-07-29): fully executed through Phase 8.** All 8 phases are implemented, unit/integration-tested (282/282 tests passing), and packaged (`at-grafana-0.1.0.vsix`). The canonical acceptance record — a full item-by-item scoring against `docs/requirements.md` §7's 10 Definition-of-Done items, with a consolidated list of residual risks — lives in [`docs/releases/0.1.0.md`](../releases/0.1.0.md). Several checkpoints below remain `[ ]` by design: they require a live Grafana instance, a real MCP client, or a second AT-series extension installed side-by-side, none of which are available in the environment this plan was executed in. See the release doc for exactly what a human needs to do to close each of those out.
+
 **Goal:** Ship a single-VSIX VS Code extension that (1) lets a user configure one or more Grafana instances and browse/view their dashboards and alert rules natively inside the IDE, and (2) exposes that same data — plus generic datasource query access — to Agents via the shared AT Series MCP Hub, gated by a per-instance background-access toggle.
 
 **Spec:** [../requirements.md](../requirements.md)
@@ -432,10 +434,18 @@ Bilingual convention actually followed (verified, not assumed): `docs/requiremen
 
 **Estimated scope:** S.
 
+**Status (2026-07-29):** Done (packaging + acceptance record), with the manual end-to-end pass explicitly deferred — no real Grafana/Prometheus/Loki instance or real MCP client is available in this environment. Checked, per this task's file list:
+
+- **`package.json`/`esbuild.config.mjs` "drop base/mcp branching"** — verified not applicable, no rewrite made. Directly inspected both files: neither has ever had a `base`/`mcp` split to remove (confirmed against the Phase 0 deviation note above and [ADR-002](../decisions/ADR-002-single-build-variant.md)); `esbuild.config.mjs` already documents single-variant packaging in its own header comment, and `package.json`'s `scripts.package` is already a single `npm run build && npm run copy:hub && node scripts/package.mjs` pipeline.
+- **`scripts/package.mjs` / `.vscodeignore`** — inspected and exercised via `npm run package`; already correct, no fixes needed. Confirmed by extracting the produced `at-grafana-0.1.0.vsix` with PowerShell `Expand-Archive`: `extension/package.json` has `"dependencies": {}`; `extension/dist/extension.js`, `extension/dist/hub.js`, `extension/dist/hub-version.json`, `extension/dist/webview/grafana-instance-form.js`, and `extension/media/icon.svg` are all present; `extension/webview/grafana-instance-form/index.css` is present while no `.ts` file ships under `extension/webview/`; no `.git`, `node_modules`, or `*.map` source maps are present anywhere in the archive.
+- **Full verification pass** — `npm run typecheck` clean; `npm test` → **282/282 tests passing** (32 test files); `npm run build` clean; `npm run package` produces `at-grafana-0.1.0.vsix` (240.39 KB, 10 files).
+- **`docs/releases/0.1.0.md`** — created. Full item-by-item scoring of `docs/requirements.md` §7's 10 Definition-of-Done items (which are backed by a passing automated test vs. which need a live Grafana instance/real MCP client, with a one-line description of the exact manual step to close each pending item), plus a consolidated residual-risks list carried forward from Phases 2, 4, and 6's own status notes (`getAlertRuleHistory` shape, embed-proxy regex rewriting fragility, unverified dashboard/alert URL scheme, uncalibrated query-limit caps, no Grafana Live/WebSocket proxying).
+- **Version** — `package.json`'s `version` confirmed already `0.1.0`; no change needed.
+
 ### Checkpoint: Phase 8 (release)
 
-- [ ] All Definition of Done items in `docs/requirements.md` §7 checked with evidence
-- [ ] `.vsix` installable and functional in a clean VS Code / Cursor profile
+- [x] All Definition of Done items in `docs/requirements.md` §7 checked with evidence — see [`docs/releases/0.1.0.md`](../releases/0.1.0.md) for the full item-by-item table. 4 of 10 items (#4, #5, #8, and the mechanism half of #6) are fully closed by automated tests with no live dependency; the remaining items have their underlying mechanisms tested but each has one specific real-world step this environment cannot perform, and is marked **Pending manual verification** in the release doc with a concrete closing action.
+- [ ] `.vsix` installable and functional in a clean VS Code / Cursor profile — **not done, needs human verification**: no clean VS Code/Cursor profile or real Grafana instance is available in this environment. The `.vsix` was built successfully and its contents were structurally verified (see above and `docs/releases/0.1.0.md`), but it has not actually been installed and clicked through in a real IDE.
 
 ---
 
