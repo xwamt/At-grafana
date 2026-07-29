@@ -11,14 +11,14 @@ import {
   ensureAtSeriesConfigForCurrentIde,
   uninstallAtSeriesConfigForCurrentIde
 } from '../../src/mcp/McpConfigInstaller';
-import { AT_TERMINAL_TOOL_CATALOG } from '../../src/mcp/toolCatalog';
+import { AT_GRAFANA_TOOL_CATALOG } from '../../src/mcp/toolCatalog';
 
 describe('McpConfigInstaller', () => {
   let home: string;
   let hubJs: string;
 
   beforeEach(async () => {
-    home = await mkdtemp(join(tmpdir(), 'at-terminal-mcp-installer-'));
+    home = await mkdtemp(join(tmpdir(), 'at-grafana-mcp-installer-'));
     hubJs = hubJsPath(home);
     await mkdir(join(home, '.at-series', 'mcp'), { recursive: true });
     await writeFile(hubJs, 'module.exports = {};\n', 'utf8');
@@ -29,7 +29,7 @@ describe('McpConfigInstaller', () => {
     await rm(home, { recursive: true, force: true });
   });
 
-  it('ensure writes AT Series, migrates AT Terminal away, keeps other-server', async () => {
+  it('ensure writes AT Series config, keeps other-server', async () => {
     const mcpPath = join(home, '.cursor', 'mcp.json');
     await mkdir(join(home, '.cursor'), { recursive: true });
     await writeFile(
@@ -37,11 +37,6 @@ describe('McpConfigInstaller', () => {
       JSON.stringify(
         {
           mcpServers: {
-            'AT Terminal': {
-              command: 'node',
-              args: ['C:/old/at-terminal/dist/mcp-server.js'],
-              autoApprove: ['run_remote_command']
-            },
             'other-server': { command: 'uvx', args: ['mcp-server-fetch'] }
           }
         },
@@ -54,7 +49,7 @@ describe('McpConfigInstaller', () => {
     const result = await ensureAtSeriesConfigForCurrentIde({
       appName: 'Cursor',
       uriScheme: 'cursor',
-      extensionPath: join(home, '.cursor', 'extensions', 'local.at-terminal-mcp-0.3.0'),
+      extensionPath: join(home, '.cursor', 'extensions', 'local.at-grafana-0.1.0'),
       home
     });
 
@@ -63,7 +58,6 @@ describe('McpConfigInstaller', () => {
     const parsed = JSON.parse(await readFile(mcpPath, 'utf8')) as {
       mcpServers: Record<string, unknown>;
     };
-    expect(parsed.mcpServers['AT Terminal']).toBeUndefined();
     expect(parsed.mcpServers['other-server']).toEqual({
       command: 'uvx',
       args: ['mcp-server-fetch']
@@ -75,13 +69,13 @@ describe('McpConfigInstaller', () => {
     });
   });
 
-  it('autoApprove excludes run_remote_command', async () => {
+  it('autoApprove always includes the built-in at_list_providers tool', async () => {
     const mcpPath = join(home, '.cursor', 'mcp.json');
 
     await ensureAtSeriesConfigForCurrentIde({
       appName: 'Cursor',
       uriScheme: 'cursor',
-      extensionPath: join(home, '.cursor', 'extensions', 'local.at-terminal-mcp-0.3.0'),
+      extensionPath: join(home, '.cursor', 'extensions', 'local.at-grafana-0.1.0'),
       home
     });
 
@@ -90,9 +84,8 @@ describe('McpConfigInstaller', () => {
     };
     const autoApprove = parsed.mcpServers[MCP_SERVER_DISPLAY_NAME]?.autoApprove ?? [];
     expect(autoApprove).toContain('at_list_providers');
-    expect(autoApprove).toContain('list_ssh_servers');
-    expect(autoApprove).not.toContain('run_remote_command');
-    expect(AT_TERMINAL_TOOL_CATALOG.find((t) => t.name === 'run_remote_command')?.risk).toBe('exec');
+    // Placeholder until Phase 5/6 populate AT_GRAFANA_TOOL_CATALOG (see toolCatalog.ts).
+    expect(AT_GRAFANA_TOOL_CATALOG).toHaveLength(0);
   });
 
   it('uninstall removes AT Series only', async () => {
@@ -121,7 +114,7 @@ describe('McpConfigInstaller', () => {
     const result = await uninstallAtSeriesConfigForCurrentIde({
       appName: 'Cursor',
       uriScheme: 'cursor',
-      extensionPath: join(home, '.cursor', 'extensions', 'local.at-terminal-mcp-0.3.0'),
+      extensionPath: join(home, '.cursor', 'extensions', 'local.at-grafana-0.1.0'),
       home
     });
 

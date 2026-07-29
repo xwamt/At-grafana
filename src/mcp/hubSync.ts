@@ -36,7 +36,7 @@ export async function syncPackagedHubAt(
   return syncHubBundle({
     version: versions.hubVersion,
     bundlePath,
-    pluginId: 'at.terminal',
+    pluginId: 'at.grafana',
     pluginVersion: versions.pluginVersion,
     home
   });

@@ -1,7 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
-import type { z } from 'zod';
 import {
   AT_SERIES_PROTOCOL_VERSION,
   AT_SERIES_TOKEN_HEADER,
@@ -10,36 +9,22 @@ import {
   FsBridgePublisher,
   type HostApp
 } from '@at-series/mcp-hub';
-import type { AgentToolService } from '../agent/AgentToolService';
 import { formatError } from '../utils/errors';
-import {
-  sftpCreateFileBridgeSchema,
-  sftpListDirectoryBridgeSchema,
-  sftpPathBridgeSchema,
-  sftpReadFileBridgeSchema,
-  sftpWriteFileBridgeSchema,
-  runRemoteCommandBridgeSchema
-} from './bridgeSchemas';
-import {
-  AT_TERMINAL_PLUGIN_DISPLAY_NAME,
-  BRIDGE_TOKEN_HEADER
-} from './BridgeProtocol';
-import { AT_TERMINAL_PLUGIN_ID, AT_TERMINAL_TOOL_CATALOG } from './toolCatalog';
+import { AT_GRAFANA_PLUGIN_DISPLAY_NAME } from './BridgeProtocol';
+import { AT_GRAFANA_PLUGIN_ID, AT_GRAFANA_TOOL_CATALOG } from './toolCatalog';
 
-/** Heartbeat cadence for `~/.at-series` registry freshness (protocol: ≤30s). */
+/** Heartbeat cadence for `~/.at-series` registry freshness (protocol: <=30s). */
 const BRIDGE_HEARTBEAT_INTERVAL_MS = 30_000;
 
 export interface BridgeServerOptions {
-  service: AgentToolService;
   home?: string;
   hostApp: HostApp;
   pluginVersion?: string;
 }
 
 export interface BridgeHandlerDependencies {
-  service: AgentToolService;
-  token: string;
   bridgeId: string;
+  token: string;
   hostApp: HostApp;
   pluginVersion: string;
   pluginDisplayName?: string;
@@ -59,6 +44,14 @@ export interface BridgeResponse {
 
 const DEFAULT_PLUGIN_VERSION = '0.0.0';
 
+/**
+ * Localhost Bridge implementing AT Series Hub Protocol v1
+ * (`GET /health`, `GET /tools`, `POST /invoke`).
+ *
+ * Tool dispatch is intentionally empty until Phase 5/6 wire a
+ * `GrafanaAgentToolService`-equivalent execution authority; see
+ * docs/decisions/ADR-004-mcp-tool-catalog-and-permission-model.md.
+ */
 export class BridgeServer {
   private server: Server | undefined;
   private token = '';
@@ -66,13 +59,11 @@ export class BridgeServer {
   private publisher: FsBridgePublisher | undefined;
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   private readonly bridgeId = randomUUID();
-  private readonly service: AgentToolService;
   private readonly home: string;
   private readonly hostApp: HostApp;
   private readonly pluginVersion: string;
 
   constructor(options: BridgeServerOptions) {
-    this.service = options.service;
     this.home = options.home ?? homedir();
     this.hostApp = options.hostApp;
     this.pluginVersion = options.pluginVersion ?? DEFAULT_PLUGIN_VERSION;
@@ -84,9 +75,8 @@ export class BridgeServer {
     }
     this.token = randomBytes(32).toString('hex');
     const handler = createBridgeRequestHandler({
-      service: this.service,
-      token: this.token,
       bridgeId: this.bridgeId,
+      token: this.token,
       hostApp: this.hostApp,
       pluginVersion: this.pluginVersion
     });
@@ -99,11 +89,10 @@ export class BridgeServer {
     });
     const address = this.server.address();
     if (!address || typeof address === 'string') {
-      throw new Error('Failed to start AT Terminal MCP bridge.');
+      throw new Error('Failed to start AT Grafana MCP bridge.');
     }
     this.port = address.port;
 
-    const connectedTargets = await readConnectedTargets(this.service);
     const publisher = new FsBridgePublisher({
       bridgeId: this.bridgeId,
       hostApp: this.hostApp,
@@ -113,16 +102,15 @@ export class BridgeServer {
     await publisher.publish({
       protocolVersion: AT_SERIES_PROTOCOL_VERSION,
       bridgeId: this.bridgeId,
-      pluginId: AT_TERMINAL_PLUGIN_ID,
-      pluginDisplayName: AT_TERMINAL_PLUGIN_DISPLAY_NAME,
+      pluginId: AT_GRAFANA_PLUGIN_ID,
+      pluginDisplayName: AT_GRAFANA_PLUGIN_DISPLAY_NAME,
       pluginVersion: this.pluginVersion,
       hostApp: this.hostApp,
       port: address.port,
       token: this.token,
       pid: process.pid,
       updatedAt: Date.now(),
-      tools: AT_TERMINAL_TOOL_CATALOG,
-      capabilities: { connectedTargets }
+      tools: AT_GRAFANA_TOOL_CATALOG
     });
     this.heartbeatTimer = setInterval(() => {
       void this.tickHeartbeat();
@@ -155,27 +143,15 @@ export class BridgeServer {
       return;
     }
     try {
-      const connectedTargets = await readConnectedTargets(this.service);
-      await publisher.heartbeat({ capabilities: { connectedTargets } });
+      await publisher.heartbeat();
     } catch {
       // Best-effort; next interval retries.
     }
   }
 }
 
-async function readConnectedTargets(service: AgentToolService): Promise<number> {
-  try {
-    const context = await service.getTerminalContext();
-    return Array.isArray(context?.connectedTerminals)
-      ? context.connectedTerminals.length
-      : 0;
-  } catch {
-    return 0;
-  }
-}
-
 export function createBridgeRequestHandler(dependencies: BridgeHandlerDependencies) {
-  const pluginDisplayName = dependencies.pluginDisplayName ?? AT_TERMINAL_PLUGIN_DISPLAY_NAME;
+  const pluginDisplayName = dependencies.pluginDisplayName ?? AT_GRAFANA_PLUGIN_DISPLAY_NAME;
 
   return async (request: BridgeRequest): Promise<BridgeResponse> => {
     try {
@@ -187,60 +163,47 @@ export function createBridgeRequestHandler(dependencies: BridgeHandlerDependenci
       const method = request.method.toUpperCase();
 
       if (path === '/health' && (method === 'GET' || method === 'POST')) {
-        return json(200, await buildHealthResponse(dependencies, pluginDisplayName));
+        return json(200, buildHealthResponse(dependencies, pluginDisplayName));
       }
 
       if (path === '/tools' && method === 'GET') {
         return json(200, {
           protocolVersion: AT_SERIES_PROTOCOL_VERSION,
-          tools: AT_TERMINAL_TOOL_CATALOG
+          tools: AT_GRAFANA_TOOL_CATALOG
         });
       }
 
       if (path === '/invoke' && method === 'POST') {
-        return await handleInvoke(dependencies, request.body);
+        return await handleInvoke(request.body);
       }
 
       if (method !== 'GET' && method !== 'POST') {
         return bridgeError(405, 'METHOD_NOT_ALLOWED', 'Method not allowed.');
       }
 
-      return bridgeError(404, 'NOT_FOUND', 'Unknown AT Terminal MCP bridge endpoint.');
+      return bridgeError(404, 'NOT_FOUND', 'Unknown AT Grafana MCP bridge endpoint.');
     } catch (error) {
-      return bridgeError(
-        500,
-        'INTERNAL_ERROR',
-        error instanceof Error ? error.message : String(error)
-      );
+      return bridgeError(500, 'INTERNAL_ERROR', error instanceof Error ? error.message : String(error));
     }
   };
 }
 
-async function buildHealthResponse(
-  dependencies: BridgeHandlerDependencies,
-  pluginDisplayName: string
-) {
-  const connectedTargets = await readConnectedTargets(dependencies.service);
-
+function buildHealthResponse(dependencies: BridgeHandlerDependencies, pluginDisplayName: string) {
   return {
     ok: true,
     protocolVersion: AT_SERIES_PROTOCOL_VERSION,
     bridgeId: dependencies.bridgeId,
-    pluginId: AT_TERMINAL_PLUGIN_ID,
+    pluginId: AT_GRAFANA_PLUGIN_ID,
     pluginDisplayName,
     pluginVersion: dependencies.pluginVersion,
     hostApp: dependencies.hostApp,
     pid: process.pid,
     updatedAt: Date.now(),
-    connectedTargets,
-    toolCount: AT_TERMINAL_TOOL_CATALOG.length
+    toolCount: AT_GRAFANA_TOOL_CATALOG.length
   };
 }
 
-async function handleInvoke(
-  dependencies: BridgeHandlerDependencies,
-  body: string | undefined
-): Promise<BridgeResponse> {
+async function handleInvoke(body: string | undefined): Promise<BridgeResponse> {
   let raw: unknown = {};
   if (body) {
     try {
@@ -263,126 +226,8 @@ async function handleInvoke(
   }
 
   const name = (raw as { name: string }).name;
-  const args = (raw as { arguments: Record<string, unknown> }).arguments;
-
-  try {
-    const result = await dispatchTool(dependencies.service, name, args);
-    if (!result.ok) {
-      return result.response;
-    }
-    return json(200, { ok: true, name, result: result.value });
-  } catch (error) {
-    if (error instanceof Error && error.message === 'Remote command was cancelled.') {
-      return bridgeError(499, 'USER_CANCELLED', error.message);
-    }
-    throw error;
-  }
-}
-
-async function dispatchTool(
-  service: AgentToolService,
-  name: string,
-  args: Record<string, unknown>
-): Promise<{ ok: true; value: unknown } | { ok: false; response: BridgeResponse }> {
-  switch (name) {
-    case 'list_ssh_servers':
-      return { ok: true, value: await service.listServers() };
-    case 'get_terminal_context':
-      return { ok: true, value: await service.getTerminalContext() };
-    case 'run_remote_command': {
-      const parsed = parseArgsWithSchema(args, runRemoteCommandBridgeSchema);
-      if (!parsed.ok) {
-        return { ok: false, response: bridgeError(422, 'VALIDATION_ERROR', parsed.error) };
-      }
-      const command = parsed.data.command.trim();
-      if (!command) {
-        return {
-          ok: false,
-          response: bridgeError(422, 'VALIDATION_ERROR', 'Remote command cannot be empty.')
-        };
-      }
-      return {
-        ok: true,
-        value: await service.runRemoteCommand({ ...parsed.data, command })
-      };
-    }
-    case 'sftp_list_directory': {
-      const parsed = parseArgsWithSchema(args, sftpListDirectoryBridgeSchema);
-      if (!parsed.ok) {
-        return { ok: false, response: bridgeError(422, 'VALIDATION_ERROR', parsed.error) };
-      }
-      return { ok: true, value: await service.sftpListDirectory(parsed.data) };
-    }
-    case 'sftp_stat_path': {
-      const parsed = parseArgsWithSchema(args, sftpPathBridgeSchema);
-      if (!parsed.ok) {
-        return { ok: false, response: bridgeError(422, 'VALIDATION_ERROR', parsed.error) };
-      }
-      return { ok: true, value: await service.sftpStatPath(parsed.data) };
-    }
-    case 'sftp_read_file': {
-      const parsed = parseArgsWithSchema(args, sftpReadFileBridgeSchema);
-      if (!parsed.ok) {
-        return { ok: false, response: bridgeError(422, 'VALIDATION_ERROR', parsed.error) };
-      }
-      return { ok: true, value: await service.sftpReadFile(parsed.data) };
-    }
-    case 'sftp_write_file': {
-      const parsed = parseArgsWithSchema(args, sftpWriteFileBridgeSchema);
-      if (!parsed.ok) {
-        return { ok: false, response: bridgeError(422, 'VALIDATION_ERROR', parsed.error) };
-      }
-      return { ok: true, value: await service.sftpWriteFile(parsed.data) };
-    }
-    case 'sftp_create_file': {
-      const parsed = parseArgsWithSchema(args, sftpCreateFileBridgeSchema);
-      if (!parsed.ok) {
-        return { ok: false, response: bridgeError(422, 'VALIDATION_ERROR', parsed.error) };
-      }
-      return { ok: true, value: await service.sftpCreateFile(parsed.data) };
-    }
-    case 'sftp_create_directory': {
-      const parsed = parseArgsWithSchema(args, sftpPathBridgeSchema);
-      if (!parsed.ok) {
-        return { ok: false, response: bridgeError(422, 'VALIDATION_ERROR', parsed.error) };
-      }
-      return { ok: true, value: await service.sftpCreateDirectory(parsed.data) };
-    }
-    default:
-      return {
-        ok: false,
-        response: bridgeError(404, 'NOT_FOUND', `Unknown tool: ${name}`)
-      };
-  }
-}
-
-export function parseBodyWithSchema<T>(
-  body: string | undefined,
-  schema: z.ZodType<T>
-): { ok: true; data: T } | { ok: false; error: string } {
-  let raw: unknown = {};
-  if (body) {
-    try {
-      raw = JSON.parse(body);
-    } catch {
-      return { ok: false, error: 'Invalid JSON body.' };
-    }
-  }
-  return parseArgsWithSchema(raw, schema);
-}
-
-function parseArgsWithSchema<T>(
-  raw: unknown,
-  schema: z.ZodType<T>
-): { ok: true; data: T } | { ok: false; error: string } {
-  const parsed = schema.safeParse(raw);
-  if (!parsed.success) {
-    return {
-      ok: false,
-      error: parsed.error.issues.map((issue) => `${issue.path.join('.') || 'body'}: ${issue.message}`).join('; ')
-    };
-  }
-  return { ok: true, data: parsed.data };
+  // No tools are registered until Phase 5/6; every call is currently unknown.
+  return bridgeError(404, 'NOT_FOUND', `Unknown tool: ${name}`);
 }
 
 export async function readLimitedBody(
@@ -402,22 +247,11 @@ export async function readLimitedBody(
   return { ok: true, body: Buffer.concat(chunks).toString('utf8') };
 }
 
-function isAuthorized(
-  headers: Record<string, string | string[] | undefined>,
-  token: string
-): boolean {
-  const series = headerValue(headers, AT_SERIES_TOKEN_HEADER);
-  if (series === token) {
-    return true;
-  }
-  const legacy = headerValue(headers, BRIDGE_TOKEN_HEADER);
-  return legacy === token;
+function isAuthorized(headers: Record<string, string | string[] | undefined>, token: string): boolean {
+  return headerValue(headers, AT_SERIES_TOKEN_HEADER) === token;
 }
 
-function headerValue(
-  headers: Record<string, string | string[] | undefined>,
-  name: string
-): string | undefined {
+function headerValue(headers: Record<string, string | string[] | undefined>, name: string): string | undefined {
   const value = headers[name] ?? headers[name.toLowerCase()];
   if (Array.isArray(value)) {
     return value[0];
@@ -434,12 +268,7 @@ function json(status: number, body: unknown): BridgeResponse {
   return { status, body };
 }
 
-function bridgeError(
-  status: number,
-  code: string,
-  message: string,
-  details?: unknown
-): BridgeResponse {
+function bridgeError(status: number, code: string, message: string, details?: unknown): BridgeResponse {
   return {
     status,
     body: {
@@ -458,11 +287,7 @@ async function handleNodeRequest(
     if (!limited.ok) {
       response.statusCode = limited.status;
       response.setHeader('content-type', 'application/json; charset=utf-8');
-      response.end(
-        JSON.stringify({
-          error: { code: 'PAYLOAD_TOO_LARGE', message: limited.error }
-        })
-      );
+      response.end(JSON.stringify({ error: { code: 'PAYLOAD_TOO_LARGE', message: limited.error } }));
       return;
     }
     const result = await handler({
@@ -477,10 +302,6 @@ async function handleNodeRequest(
   } catch (error) {
     response.statusCode = 500;
     response.setHeader('content-type', 'application/json; charset=utf-8');
-    response.end(
-      JSON.stringify({
-        error: { code: 'INTERNAL_ERROR', message: formatError(error) }
-      })
-    );
+    response.end(JSON.stringify({ error: { code: 'INTERNAL_ERROR', message: formatError(error) } }));
   }
 }

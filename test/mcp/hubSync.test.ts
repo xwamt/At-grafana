@@ -10,8 +10,8 @@ describe('syncPackagedHubAt', () => {
   let bundleDir: string;
 
   beforeEach(async () => {
-    home = await mkdtemp(join(tmpdir(), 'at-terminal-hubsync-home-'));
-    bundleDir = await mkdtemp(join(tmpdir(), 'at-terminal-hubsync-bundle-'));
+    home = await mkdtemp(join(tmpdir(), 'at-grafana-hubsync-home-'));
+    bundleDir = await mkdtemp(join(tmpdir(), 'at-grafana-hubsync-bundle-'));
   });
 
   afterEach(async () => {
@@ -36,7 +36,7 @@ describe('syncPackagedHubAt', () => {
     const meta = JSON.parse(await readFile(hubVersionPath(home), 'utf8'));
     expect(meta).toMatchObject({
       version: '0.1.0',
-      writtenByPluginId: 'at.terminal',
+      writtenByPluginId: 'at.grafana',
       writtenByPluginVersion: '0.3.0'
     });
   });
@@ -71,7 +71,7 @@ describe('syncPackagedHubAt', () => {
       JSON.stringify({
         version: '0.2.0',
         protocolVersion: 1,
-        writtenByPluginId: 'at.terminal',
+        writtenByPluginId: 'at.grafana',
         writtenByPluginVersion: '0.2.0',
         writtenAt: 1,
         bundleSha256: 'abc'

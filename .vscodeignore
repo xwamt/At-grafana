@@ -9,16 +9,12 @@ coverage/**
 docs/**
 !docs/
 !docs/*.md
-!docs/mcp/
-!docs/mcp/*.yaml
+
 src/**
 test/**
 test-fixtures/**
 
 webview/**/*.ts
-webview/terminal/**
-media/terminal.svg
-media/terminal-activity.svg
 
 *.vsix
 *.docx
@@ -38,16 +34,3 @@ tsconfig.json
 vitest.config.ts
 
 node_modules/**
-!node_modules/
-!node_modules/ssh2/**
-!node_modules/asn1/**
-!node_modules/bcrypt-pbkdf/**
-!node_modules/safer-buffer/**
-!node_modules/tweetnacl/**
-node_modules/**/.bin/**
-node_modules/**/*.md
-node_modules/**/test/**
-node_modules/**/tests/**
-node_modules/**/example/**
-node_modules/**/examples/**
-node_modules/**/.github/**

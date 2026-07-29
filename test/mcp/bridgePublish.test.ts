@@ -1,30 +1,17 @@
 import { access, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { BridgeServer } from '../../src/mcp/BridgeServer';
-import { AT_TERMINAL_PLUGIN_ID } from '../../src/mcp/toolCatalog';
+import { AT_GRAFANA_PLUGIN_ID } from '../../src/mcp/toolCatalog';
 
 const tempRoots: string[] = [];
 const servers: BridgeServer[] = [];
 
 async function tempHome(): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), 'at-terminal-bridge-publish-'));
+  const root = await mkdtemp(join(tmpdir(), 'at-grafana-bridge-publish-'));
   tempRoots.push(root);
   return root;
-}
-
-function createService(connectedTargets = 0) {
-  return {
-    listServers: async () => ({ servers: [] }),
-    getTerminalContext: vi.fn(async () => ({
-      connectedTerminals: Array.from({ length: connectedTargets }, (_, i) => ({
-        terminalId: `t${i}`
-      })),
-      knownTerminals: []
-    })),
-    runRemoteCommand: vi.fn()
-  };
 }
 
 afterEach(async () => {
@@ -43,12 +30,7 @@ describe('BridgeServer FsBridgePublisher', () => {
   it('publishes registry under ~/.at-series/bridges/<hostApp>/ and removes on dispose', async () => {
     const home = await tempHome();
     const hostApp = 'cursor';
-    const server = new BridgeServer({
-      service: createService(2) as never,
-      home,
-      hostApp,
-      pluginVersion: '0.3.0'
-    });
+    const server = new BridgeServer({ home, hostApp, pluginVersion: '0.1.0' });
     servers.push(server);
 
     await server.start();
@@ -68,19 +50,17 @@ describe('BridgeServer FsBridgePublisher', () => {
       pid: number;
       updatedAt: number;
       tools: unknown[];
-      capabilities?: { connectedTargets?: number };
     };
 
     expect(record.protocolVersion).toBe(1);
-    expect(record.pluginId).toBe(AT_TERMINAL_PLUGIN_ID);
+    expect(record.pluginId).toBe(AT_GRAFANA_PLUGIN_ID);
     expect(record.hostApp).toBe(hostApp);
     expect(record.bridgeId).toBe(files[0]!.replace(/\.json$/, ''));
     expect(record.port).toBeGreaterThan(0);
     expect(record.token.length).toBeGreaterThan(0);
     expect(record.pid).toBe(process.pid);
     expect(record.updatedAt).toEqual(expect.any(Number));
-    expect(record.tools.length).toBeGreaterThan(0);
-    expect(record.capabilities?.connectedTargets).toBe(2);
+    expect(record.tools).toEqual([]);
 
     await server.dispose();
     servers.pop();

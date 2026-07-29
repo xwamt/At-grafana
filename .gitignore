@@ -17,8 +17,6 @@ coverage/
 .superpowers/
 docs/brand/
 docs/superpowers/
-media/terminal.svg
-media/terminal-activity.svg
 
 # Editor and OS files
 .vscode/*

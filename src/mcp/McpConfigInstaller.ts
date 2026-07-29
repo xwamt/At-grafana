@@ -6,7 +6,7 @@ import {
   type McpInstallerTarget
 } from '@at-series/mcp-hub';
 import { detectHostApp } from './hostApp';
-import { AT_TERMINAL_TOOL_CATALOG } from './toolCatalog';
+import { AT_GRAFANA_TOOL_CATALOG } from './toolCatalog';
 
 export interface AtSeriesIdeMcpConfigOptions {
   appName?: string;
@@ -52,7 +52,7 @@ export async function ensureAtSeriesConfigForCurrentIde(
     hubJsAbsolutePath: options.hubJsAbsolutePath ?? hubJsPath(options.home),
     home: options.home,
     workspaceFolder: options.workspaceFolder,
-    registryTools: AT_TERMINAL_TOOL_CATALOG
+    registryTools: AT_GRAFANA_TOOL_CATALOG
   });
 }
 

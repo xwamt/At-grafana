@@ -27,10 +27,10 @@ vi.mock('../../src/mcp/McpConfigInstaller', () => ({
 
 import { activate, deactivate } from '../../src/extension';
 
-function extensionContext(extensionRoot = 'C:/Users/alan/.kiro/extensions/local.at-terminal-mcp-0.2.10'): vscode.ExtensionContext {
+function extensionContext(extensionRoot = 'C:/Users/alan/.kiro/extensions/local.at-grafana-0.1.0'): vscode.ExtensionContext {
   return {
     extensionUri: vscode.Uri.file(extensionRoot),
-    globalStorageUri: vscode.Uri.file('C:/tmp/at-terminal-storage'),
+    globalStorageUri: vscode.Uri.file('C:/tmp/at-grafana-storage'),
     globalState: {
       get: vi.fn((_key: string, defaultValue: unknown) => defaultValue),
       update: vi.fn(async () => undefined)
@@ -44,7 +44,7 @@ function extensionContext(extensionRoot = 'C:/Users/alan/.kiro/extensions/local.
   } as unknown as vscode.ExtensionContext;
 }
 
-describe('sshManager MCP config commands', () => {
+describe('atGrafana MCP config commands', () => {
   const registeredCommands = new Map<string, (...args: unknown[]) => unknown>();
 
   beforeEach(() => {
@@ -79,7 +79,7 @@ describe('sshManager MCP config commands', () => {
         appName: vscode.env.appName,
         appRoot: vscode.env.appRoot,
         uriScheme: vscode.env.uriScheme,
-        extensionPath: 'C:/Users/alan/.kiro/extensions/local.at-terminal-mcp-0.2.10',
+        extensionPath: 'C:/Users/alan/.kiro/extensions/local.at-grafana-0.1.0',
         workspaceFolder: undefined
       });
     });
@@ -88,27 +88,27 @@ describe('sshManager MCP config commands', () => {
   it('install command calls ensure for current IDE', async () => {
     activate(extensionContext());
 
-    await registeredCommands.get('sshManager.installMcpConfig')?.();
+    await registeredCommands.get('atGrafana.installMcpConfig')?.();
 
     expect(mocks.ensureAtSeriesConfigForCurrentIde).toHaveBeenCalledWith({
       appName: vscode.env.appName,
       appRoot: vscode.env.appRoot,
       uriScheme: vscode.env.uriScheme,
-      extensionPath: 'C:/Users/alan/.kiro/extensions/local.at-terminal-mcp-0.2.10',
+      extensionPath: 'C:/Users/alan/.kiro/extensions/local.at-grafana-0.1.0',
       workspaceFolder: undefined
     });
   });
 
   it('uninstall command removes AT Series MCP config', async () => {
-    activate(extensionContext('C:/Users/alan/.cursor/extensions/local.at-terminal-mcp-0.2.10'));
+    activate(extensionContext('C:/Users/alan/.cursor/extensions/local.at-grafana-0.1.0'));
 
-    await registeredCommands.get('sshManager.uninstallAtSeriesMcpConfig')?.();
+    await registeredCommands.get('atGrafana.uninstallAtSeriesMcpConfig')?.();
 
     expect(mocks.uninstallAtSeriesConfigForCurrentIde).toHaveBeenCalledWith({
       appName: vscode.env.appName,
       appRoot: vscode.env.appRoot,
       uriScheme: vscode.env.uriScheme,
-      extensionPath: 'C:/Users/alan/.cursor/extensions/local.at-terminal-mcp-0.2.10',
+      extensionPath: 'C:/Users/alan/.cursor/extensions/local.at-grafana-0.1.0',
       workspaceFolder: undefined
     });
   });

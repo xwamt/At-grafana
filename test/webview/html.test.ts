@@ -9,8 +9,8 @@ describe('renderWebviewHtml', () => {
         asWebviewUri: (uri: { fsPath: string }) => `webview-uri:${uri.fsPath}`
       } as never,
       {
-        script: { fsPath: 'dist/webview/terminal.js' } as never,
-        style: { fsPath: 'dist/webview/terminal.css' } as never
+        script: { fsPath: 'dist/webview/panel.js' } as never,
+        style: { fsPath: 'dist/webview/panel.css' } as never
       },
       '<main></main>'
     );

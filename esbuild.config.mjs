@@ -1,53 +1,29 @@
 import * as esbuild from 'esbuild';
 
 const watch = process.argv.includes('--watch');
-const variantArg = process.argv.find((arg) => arg.startsWith('--variant=')) ?? '--variant=mcp';
-const variant = variantArg.split('=')[1];
-if (!['base', 'mcp'].includes(variant)) {
-  throw new Error(`Unknown build variant: ${variant}`);
-}
-const mcpEnabled = variant === 'mcp';
 
 const common = {
   bundle: true,
   sourcemap: true,
-  minify: false,
-  define: {
-    __AT_TERMINAL_MCP_ENABLED__: JSON.stringify(mcpEnabled)
-  }
+  minify: false
 };
 
-const contextConfigs = [
-  esbuild.context({
-    ...common,
-    entryPoints: ['src/extension.ts'],
-    outfile: 'dist/extension.js',
-    platform: 'node',
-    format: 'cjs',
-    external: ['vscode', 'ssh2']
-  }),
-  esbuild.context({
-    ...common,
-    entryPoints: ['webview/terminal/index.ts'],
-    outfile: 'dist/webview/terminal.js',
-    platform: 'browser',
-    format: 'iife'
-  }),
-  esbuild.context({
-    ...common,
-    entryPoints: ['webview/server-form/index.ts'],
-    outfile: 'dist/webview/server-form.js',
-    platform: 'browser',
-    format: 'iife'
-  })
-];
-
-const contexts = await Promise.all(contextConfigs);
+// AT-Grafana ships a single build variant (see ADR-002); MCP is always on and
+// all runtime dependencies are pure JS, so everything except `vscode` is
+// bundled directly into dist/extension.js.
+const context = await esbuild.context({
+  ...common,
+  entryPoints: ['src/extension.ts'],
+  outfile: 'dist/extension.js',
+  platform: 'node',
+  format: 'cjs',
+  external: ['vscode']
+});
 
 if (watch) {
-  await Promise.all(contexts.map((context) => context.watch()));
-  console.log('Watching extension and webview bundles...');
+  await context.watch();
+  console.log('Watching extension bundle...');
 } else {
-  await Promise.all(contexts.map((context) => context.rebuild()));
-  await Promise.all(contexts.map((context) => context.dispose()));
+  await context.rebuild();
+  await context.dispose();
 }

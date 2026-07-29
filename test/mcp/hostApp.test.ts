@@ -5,7 +5,7 @@ describe('detectHostApp', () => {
   it('detects kiro from extension path or app name', () => {
     expect(
       detectHostApp({
-        extensionPath: 'C:/Users/alan/.kiro/extensions/local.at-terminal-mcp-0.2.10'
+        extensionPath: 'C:/Users/alan/.kiro/extensions/local.at-grafana-0.1.0'
       })
     ).toBe('kiro');
     expect(detectHostApp({ appName: 'Kiro' })).toBe('kiro');
@@ -15,7 +15,7 @@ describe('detectHostApp', () => {
     expect(detectHostApp({ appName: 'Cursor', uriScheme: 'cursor' })).toBe('cursor');
     expect(
       detectHostApp({
-        extensionPath: 'C:/Users/alan/.cursor/extensions/local.at-terminal-mcp-0.2.10'
+        extensionPath: 'C:/Users/alan/.cursor/extensions/local.at-grafana-0.1.0'
       })
     ).toBe('cursor');
   });
@@ -35,7 +35,7 @@ describe('detectHostApp', () => {
     expect(
       detectHostApp({
         appName: 'Cursor',
-        extensionPath: 'C:/Users/alan/.kiro/extensions/local.at-terminal-mcp-0.2.10'
+        extensionPath: 'C:/Users/alan/.kiro/extensions/local.at-grafana-0.1.0'
       })
     ).toBe('kiro');
   });
