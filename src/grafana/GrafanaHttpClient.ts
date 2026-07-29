@@ -140,26 +140,9 @@ export class GrafanaHttpClient {
 
       if (usesCertVerifier && certVerifier) {
         // Deferred write: nothing leaves the process until verify() settles.
-        request.on('socket', (socket) => {
-          socket.once('secureConnect', () => {
-            const fingerprint256 = (socket as TLSSocket).getPeerCertificate()?.fingerprint256;
-            verifyCertFingerprint(certVerifier, target.hostname, portOf(target), fingerprint256)
-              .then((verifyError) => {
-                if (verifyError) {
-                  request.destroy(verifyError);
-                  return;
-                }
-                writeAndEnd(request, bodyText);
-              })
-              .catch((error: unknown) => {
-                request.destroy(
-                  new GrafanaApiError(
-                    'tls',
-                    `Grafana TLS certificate verification failed: ${error instanceof Error ? error.message : String(error)}`
-                  )
-                );
-              });
-          });
+        attachCertVerification(request, target.hostname, portOf(target), certVerifier, {
+          onVerified: () => writeAndEnd(request, bodyText),
+          onRejected: (error) => request.destroy(error)
         });
         return;
       }
@@ -167,6 +150,50 @@ export class GrafanaHttpClient {
       writeAndEnd(request, bodyText);
     });
   }
+}
+
+export interface CertVerificationHooks {
+  onVerified(): void;
+  onRejected(error: GrafanaApiError): void;
+}
+
+/**
+ * Wires a one-shot `secureConnect` handshake hook that defers `onVerified`
+ * until the certVerifier's TOFU fingerprint check settles (mirroring the
+ * SSH-host-key confirmation flow). Exported standalone so this
+ * security-sensitive wiring exists in exactly one place: GrafanaHttpClient
+ * uses it for buffered JSON requests, and GrafanaEmbedProxy (Task 4.1,
+ * src/webview/GrafanaEmbedProxy.ts) reuses it verbatim for raw byte-stream
+ * proxied requests instead of duplicating the secureConnect/fingerprint glue.
+ */
+export function attachCertVerification(
+  request: http.ClientRequest,
+  host: string,
+  port: number,
+  certVerifier: GrafanaCertVerifier,
+  hooks: CertVerificationHooks
+): void {
+  request.on('socket', (socket) => {
+    socket.once('secureConnect', () => {
+      const fingerprint256 = (socket as TLSSocket).getPeerCertificate()?.fingerprint256;
+      verifyCertFingerprint(certVerifier, host, port, fingerprint256)
+        .then((verifyError) => {
+          if (verifyError) {
+            hooks.onRejected(verifyError);
+            return;
+          }
+          hooks.onVerified();
+        })
+        .catch((error: unknown) => {
+          hooks.onRejected(
+            new GrafanaApiError(
+              'tls',
+              `Grafana TLS certificate verification failed: ${error instanceof Error ? error.message : String(error)}`
+            )
+          );
+        });
+    });
+  });
 }
 
 /**
