@@ -168,10 +168,29 @@ export const window = {
     reveal: async () => undefined
   }),
   registerTreeDataProvider: (_viewId: string, _provider: unknown) => ({ dispose: () => undefined }),
-  createWebviewPanel: () => {
+  createWebviewPanel: (viewType?: string, title?: string, _showOptions?: unknown, options?: Record<string, unknown>) => {
     const messageListeners: Array<(message: unknown) => unknown> = [];
+    const disposeListeners: Array<() => void> = [];
+    let disposed = false;
     return {
-      dispose: () => undefined,
+      viewType,
+      title,
+      options,
+      visible: true,
+      reveal: () => undefined,
+      dispose: () => {
+        if (disposed) {
+          return;
+        }
+        disposed = true;
+        for (const listener of disposeListeners) {
+          listener();
+        }
+      },
+      onDidDispose: (listener: () => void) => {
+        disposeListeners.push(listener);
+        return { dispose: () => undefined };
+      },
       webview: {
         html: '',
         cspSource: 'vscode-webview:',

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { GrafanaInstanceConfigManager } from './config/GrafanaInstanceConfigManager';
 import type { GrafanaInstanceConfig } from './config/schema';
 import { GrafanaApiClient } from './grafana/GrafanaApiClient';
+import { GrafanaCertTrustStore } from './grafana/GrafanaCertTrustStore';
 import { BridgeServer } from './mcp/BridgeServer';
 import { detectHostApp } from './mcp/hostApp';
 import { syncPackagedHub } from './mcp/hubSync';
@@ -11,7 +12,17 @@ import { DashboardTreeProvider } from './tree/DashboardTreeProvider';
 import type { GrafanaTreeItem } from './tree/GrafanaTreeItems';
 import { formatError } from './utils/errors';
 import { showTimedNotification } from './utils/notifications';
+import { AlertDetailPanel } from './webview/AlertDetailPanel';
+import { DashboardPanel } from './webview/DashboardPanel';
+import { GrafanaEmbedProxy } from './webview/GrafanaEmbedProxy';
 import { GrafanaInstanceFormPanel } from './webview/GrafanaInstanceFormPanel';
+
+/** Arguments shape already wired by DashboardTreeItem/AlertRuleTreeItem's `command.arguments` (see GrafanaTreeItems.ts). */
+interface OpenGrafanaEmbedArgs {
+  instanceId?: string;
+  uid?: string;
+  title?: string;
+}
 
 let extensionCleanup: { dispose(): void } | undefined;
 
@@ -41,6 +52,11 @@ function createGrafanaClient(
  */
 export function activate(context: vscode.ExtensionContext): void {
   const configManager = new GrafanaInstanceConfigManager(context.globalState, context.secrets);
+  const certTrustStore = new GrafanaCertTrustStore(context.globalState);
+  // Task 4.1's http.Server only binds on the first Webview panel open
+  // (DashboardPanel/AlertDetailPanel call proxy.start(), itself idempotent)
+  // — not eagerly here — per ADR-003's "not always-on" framing.
+  const grafanaEmbedProxy = new GrafanaEmbedProxy({ configManager, certTrustStore });
   const dashboardTreeProvider = new DashboardTreeProvider(configManager, (instance) =>
     createGrafanaClient(configManager, instance)
   );
@@ -175,17 +191,22 @@ export function activate(context: vscode.ExtensionContext): void {
     dashboardTreeProvider.clearFilter();
   });
 
-  // TODO(phase-4): open the real dashboard Webview panel (Task 4.2) instead of this stub.
-  const openDashboardCommand = vscode.commands.registerCommand('atGrafana.openDashboard', async () => {
-    await showTimedNotification('Dashboard viewing is not implemented yet.', 'info');
-  });
-  // TODO(phase-4): open the real alert rule detail Webview panel (Task 4.3) instead of this stub.
-  const openAlertRuleCommand = vscode.commands.registerCommand('atGrafana.openAlertRule', async () => {
-    await showTimedNotification('Alert rule viewing is not implemented yet.', 'info');
-  });
+  const openDashboardCommand = vscode.commands.registerCommand(
+    'atGrafana.openDashboard',
+    async (args?: OpenGrafanaEmbedArgs) => {
+      await DashboardPanel.open(context, grafanaEmbedProxy, args?.instanceId ?? '', args?.uid ?? '', args?.title ?? 'Dashboard');
+    }
+  );
+  const openAlertRuleCommand = vscode.commands.registerCommand(
+    'atGrafana.openAlertRule',
+    async (args?: OpenGrafanaEmbedArgs) => {
+      await AlertDetailPanel.open(context, grafanaEmbedProxy, args?.instanceId ?? '', args?.uid ?? '', args?.title ?? 'Alert Rule');
+    }
+  );
 
   context.subscriptions.push(
     bridgeServer,
+    grafanaEmbedProxy,
     installMcpConfigCommand,
     uninstallMcpConfigCommand,
     addInstanceCommand,

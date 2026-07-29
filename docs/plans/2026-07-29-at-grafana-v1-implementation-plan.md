@@ -250,6 +250,8 @@
 
 **Estimated scope:** S.
 
+**Status (2026-07-29):** Done, commit TBD (`feat(phase-4b)`). `DashboardPanel.open()` deduplicates by `instanceId:uid` (a `Map<string, vscode.WebviewPanel>`, revealing an existing tab instead of opening a duplicate), starts the shared `GrafanaEmbedProxy` lazily on first open (idempotent, per Task 4.1), and renders a dedicated shell (`renderEmbedWebviewHtml` in `html.ts`, separate from `GrafanaInstanceFormPanel`'s `renderWebviewHtml`) whose CSP is `GrafanaEmbedProxy.buildRecommendedCsp(proxy.origin)` — restricted entirely to the proxy origin, never the real Grafana origin/token. `portMapping` is set on the Webview options so `127.0.0.1:<port>` resolves correctly in remote/SSH/container workspaces too (see `buildEmbedWebviewOptions`). Real F5/Extension-Host verification against a live Grafana instance is still outstanding (no instance available in this environment) — see the Phase 4 checkpoint below.
+
 ### Task 4.3: Alert detail Webview panel
 
 **Description:** `AlertDetailPanel` — same pattern as 4.2, targeting the native alert rule view URL.
@@ -264,10 +266,13 @@
 
 **Estimated scope:** S.
 
+**Status (2026-07-29):** Done, commit TBD (`feat(phase-4b)`). Same pattern/shared HTML+options helpers as `DashboardPanel`, using `proxy.buildAlertRuleUrl(instanceId, uid)`. `extension.ts`'s `atGrafana.openDashboard`/`atGrafana.openAlertRule` stub commands now construct one shared `GrafanaEmbedProxy` in `activate()` (backed by `configManager` + a freshly-constructed `GrafanaCertTrustStore`) and delegate to `DashboardPanel.open`/`AlertDetailPanel.open` with the `{ instanceId, uid, title }` argument object the tree items already pass; the proxy is added to `context.subscriptions` (its `dispose()` is a no-op if `start()` was never called). 176/176 tests passing (22 new: 8 `DashboardPanel`, 8 `AlertDetailPanel`, 6 `PanelCommands` extension-wiring tests). `npm run typecheck` / `npm test` / `npm run build` all clean.
+
 ### Checkpoint: Phase 4
 
-- [ ] Clicking a dashboard/alert node in a real dev host shows the live, interactive native Grafana page
-- [ ] Browser devtools network panel (Webview devtools) shows requests going to `127.0.0.1`, never the real Grafana origin with a visible token
+- [x] `DashboardPanel`/`AlertDetailPanel` HTML/CSP generation and iframe `src` construction verified by unit test (`test/webview/DashboardPanel.test.ts`, `test/webview/AlertDetailPanel.test.ts`) — confirmed the real Grafana origin and any token/Bearer/Authorization string never appear in generated HTML
+- [ ] Clicking a dashboard/alert node in a real dev host shows the live, interactive native Grafana page — **not verified, no live Grafana instance available in this environment; requires manual F5 Extension Host run**
+- [ ] Browser devtools network panel (Webview devtools) shows requests going to `127.0.0.1`, never the real Grafana origin with a visible token — **not verified, same reason**
 - [ ] Review with human before proceeding to Phase 5 (this is the highest-risk phase technically; do not proceed to MCP work until this checkpoint is genuinely green against a real Grafana instance)
 
 ---
