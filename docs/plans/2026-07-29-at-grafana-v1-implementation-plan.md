@@ -151,9 +151,9 @@
 - Test: `test/grafana/GrafanaApiClient.test.ts` (mock HTTP layer)
 
 **Acceptance criteria:**
-- [ ] Every method returns typed results and throws a typed error distinguishing network / TLS / auth / Grafana-API-error failure modes
-- [ ] No method logs the token
-- [ ] `proxyDatasourceRequest` rejects methods outside `{GET, POST}` before making any network call (ADR-004 MON4)
+- [x] Every method returns typed results and throws a typed error distinguishing network / TLS / auth / Grafana-API-error failure modes
+- [x] No method logs the token
+- [x] `proxyDatasourceRequest` rejects methods outside `{GET, POST}` before making any network call (ADR-004 MON4)
 
 **Verification:** `npm test -- test/grafana/GrafanaApiClient`
 
@@ -161,10 +161,12 @@
 
 **Estimated scope:** L (this is the widest-surface single file; consider splitting `alerts`/`dashboards`/`datasources` into separate modules composed by `GrafanaApiClient` if it grows past ~300 lines, per writing-plans file-size guidance).
 
+**Status (2026-07-29):** Done, commit `e5f8a21`. Split into `GrafanaHttpClient` (shared http/https + TLS-verifier plumbing), `GrafanaDashboardsApi`, `GrafanaAlertsApi`, `GrafanaDatasourcesApi`, `jsonGuards`, composed by a slim `GrafanaApiClient` facade. `listAlertRules` uses `/api/v1/provisioning/alert-rules` (high confidence); `listAlertRuleStates` uses `/api/prometheus/grafana/api/v1/rules` (high confidence, separate endpoint from rule definitions — correlate by `uid`); `getAlertRuleHistory` uses `/api/v1/rules/history?ruleUID=` (**low confidence, unverified response shape — flagged for real-instance verification in a later checkpoint**). TLS `certVerifier` wiring is unit-tested at the `verifyCertFingerprint()` level rather than via a full self-signed end-to-end handshake test. 106/106 tests passing.
+
 ### Checkpoint: Phase 2
 
-- [ ] Every requirement's underlying API call (§4.2–§4.5) has a client method with a passing unit test against a mocked HTTP layer
-- [ ] Review with human before proceeding to Phase 3
+- [x] Every requirement's underlying API call (§4.2–§4.5) has a client method with a passing unit test against a mocked HTTP layer
+- [x] Review with human before proceeding to Phase 3 — proceeding per user's explicit "开始执行" / subagent-mode instruction; `getAlertRuleHistory` shape remains an open item to re-verify once a real Grafana instance is available
 
 ---
 
