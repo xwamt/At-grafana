@@ -15,6 +15,27 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "atGrafana",
+          "title": "AT Grafana",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "atGrafana": [
+        {
+          "id": "atGrafana.dashboards",
+          "name": "Dashboards"
+        },
+        {
+          "id": "atGrafana.alerts",
+          "name": "Alerts"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "atGrafana.addInstance",
@@ -31,8 +52,60 @@
       {
         "command": "atGrafana.uninstallAtSeriesMcpConfig",
         "title": "AT Grafana: Uninstall AT Series MCP Config"
+      },
+      {
+        "command": "atGrafana.refreshDashboards",
+        "title": "AT Grafana: Refresh Dashboards",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "atGrafana.filterDashboards",
+        "title": "AT Grafana: Filter Dashboards",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "atGrafana.clearDashboardFilter",
+        "title": "AT Grafana: Clear Dashboard Filter",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "atGrafana.refreshAlerts",
+        "title": "AT Grafana: Refresh Alerts",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "atGrafana.openDashboard",
+        "title": "AT Grafana: Open Dashboard"
+      },
+      {
+        "command": "atGrafana.openAlertRule",
+        "title": "AT Grafana: Open Alert Rule"
       }
-    ]
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "atGrafana.refreshDashboards",
+          "when": "view == atGrafana.dashboards",
+          "group": "navigation@1"
+        },
+        {
+          "command": "atGrafana.filterDashboards",
+          "when": "view == atGrafana.dashboards",
+          "group": "navigation@2"
+        },
+        {
+          "command": "atGrafana.clearDashboardFilter",
+          "when": "view == atGrafana.dashboards",
+          "group": "navigation@3"
+        },
+        {
+          "command": "atGrafana.refreshAlerts",
+          "when": "view == atGrafana.alerts",
+          "group": "navigation@1"
+        }
+      ]
+    }
   },
   "scripts": {
     "build": "node esbuild.config.mjs",

@@ -67,6 +67,13 @@ export class Uri {
 }
 
 export const ThemeIcon = class {
+  constructor(
+    public readonly id: string,
+    public readonly color?: unknown
+  ) {}
+};
+
+export const ThemeColor = class {
   constructor(public readonly id: string) {}
 };
 
@@ -150,7 +157,17 @@ export const window = {
     task({
       report: () => undefined
     }, {}),
-  createTreeView: () => ({ dispose: () => undefined }),
+  createTreeView: (_viewId: string, options?: { treeDataProvider?: unknown }) => ({
+    dispose: () => undefined,
+    message: undefined as string | undefined,
+    title: undefined as string | undefined,
+    treeDataProvider: options?.treeDataProvider,
+    onDidChangeSelection: () => ({ dispose: () => undefined }),
+    onDidExpandElement: () => ({ dispose: () => undefined }),
+    onDidCollapseElement: () => ({ dispose: () => undefined }),
+    reveal: async () => undefined
+  }),
+  registerTreeDataProvider: (_viewId: string, _provider: unknown) => ({ dispose: () => undefined }),
   createWebviewPanel: () => {
     const messageListeners: Array<(message: unknown) => unknown> = [];
     return {

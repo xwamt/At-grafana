@@ -1,10 +1,14 @@
 import * as vscode from 'vscode';
 import { GrafanaInstanceConfigManager } from './config/GrafanaInstanceConfigManager';
 import type { GrafanaInstanceConfig } from './config/schema';
+import { GrafanaApiClient } from './grafana/GrafanaApiClient';
 import { BridgeServer } from './mcp/BridgeServer';
 import { detectHostApp } from './mcp/hostApp';
 import { syncPackagedHub } from './mcp/hubSync';
 import { ensureAtSeriesConfigForCurrentIde, uninstallAtSeriesConfigForCurrentIde } from './mcp/McpConfigInstaller';
+import { AlertTreeProvider } from './tree/AlertTreeProvider';
+import { DashboardTreeProvider } from './tree/DashboardTreeProvider';
+import type { GrafanaTreeItem } from './tree/GrafanaTreeItems';
 import { formatError } from './utils/errors';
 import { showTimedNotification } from './utils/notifications';
 import { GrafanaInstanceFormPanel } from './webview/GrafanaInstanceFormPanel';
@@ -12,13 +16,39 @@ import { GrafanaInstanceFormPanel } from './webview/GrafanaInstanceFormPanel';
 let extensionCleanup: { dispose(): void } | undefined;
 
 /**
+ * Fresh GrafanaApiClient per call (not cached across edits) so a token/URL
+ * rotation via the instance form is picked up on the very next tree refresh
+ * instead of silently reusing stale credentials. The tree providers own the
+ * (cheap) caching of fetched dashboard/alert data, not client instances.
+ */
+function createGrafanaClient(
+  configManager: Pick<GrafanaInstanceConfigManager, 'getToken'>,
+  instance: GrafanaInstanceConfig
+): Promise<GrafanaApiClient> {
+  return configManager.getToken(instance.id).then((token) => {
+    if (!token) {
+      throw new Error(`No Service Account Token is configured for "${instance.label}". Edit the instance to add one.`);
+    }
+    return new GrafanaApiClient({ baseUrl: instance.url, token });
+  });
+}
+
+/**
  * Phase 1: adds Grafana instance configuration (SecretStorage-backed token,
- * add/edit/delete via command palette). Tree views and dashboard/alert
- * webviews are added in later phases (see
+ * add/edit/delete via command palette). Phase 3 adds the dashboard/alert
+ * tree views below. Dashboard/alert webviews land in Phase 4 (see
  * docs/plans/2026-07-29-at-grafana-v1-implementation-plan.md).
  */
 export function activate(context: vscode.ExtensionContext): void {
   const configManager = new GrafanaInstanceConfigManager(context.globalState, context.secrets);
+  const dashboardTreeProvider = new DashboardTreeProvider(configManager, (instance) =>
+    createGrafanaClient(configManager, instance)
+  );
+  const alertTreeProvider = new AlertTreeProvider(configManager, (instance) => createGrafanaClient(configManager, instance));
+  const refreshTreeViews = (): void => {
+    dashboardTreeProvider.refresh();
+    alertTreeProvider.refresh();
+  };
   let disposed = false;
   const cleanup = {
     dispose(): void {
@@ -112,11 +142,46 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   const addInstanceCommand = vscode.commands.registerCommand('atGrafana.addInstance', () =>
-    GrafanaInstanceFormPanel.open(context, configManager, () => undefined)
+    GrafanaInstanceFormPanel.open(context, configManager, refreshTreeViews)
   );
 
   const manageInstancesCommand = vscode.commands.registerCommand('atGrafana.manageInstances', async () => {
-    await manageInstances(context, configManager);
+    await manageInstances(context, configManager, refreshTreeViews);
+  });
+
+  const dashboardTreeView = vscode.window.createTreeView<GrafanaTreeItem>('atGrafana.dashboards', {
+    treeDataProvider: dashboardTreeProvider
+  });
+  dashboardTreeProvider.attachTreeView(dashboardTreeView);
+  const alertTreeView = vscode.window.registerTreeDataProvider<GrafanaTreeItem>('atGrafana.alerts', alertTreeProvider);
+
+  const refreshDashboardsCommand = vscode.commands.registerCommand('atGrafana.refreshDashboards', () => {
+    dashboardTreeProvider.refresh();
+  });
+  const refreshAlertsCommand = vscode.commands.registerCommand('atGrafana.refreshAlerts', () => {
+    alertTreeProvider.refresh();
+  });
+  const filterDashboardsCommand = vscode.commands.registerCommand('atGrafana.filterDashboards', async () => {
+    const value = await vscode.window.showInputBox({
+      prompt: 'Filter dashboards by title',
+      placeHolder: 'e.g. api-latency',
+      value: dashboardTreeProvider.getFilter() ?? ''
+    });
+    if (value !== undefined) {
+      dashboardTreeProvider.setFilter(value);
+    }
+  });
+  const clearDashboardFilterCommand = vscode.commands.registerCommand('atGrafana.clearDashboardFilter', () => {
+    dashboardTreeProvider.clearFilter();
+  });
+
+  // TODO(phase-4): open the real dashboard Webview panel (Task 4.2) instead of this stub.
+  const openDashboardCommand = vscode.commands.registerCommand('atGrafana.openDashboard', async () => {
+    await showTimedNotification('Dashboard viewing is not implemented yet.', 'info');
+  });
+  // TODO(phase-4): open the real alert rule detail Webview panel (Task 4.3) instead of this stub.
+  const openAlertRuleCommand = vscode.commands.registerCommand('atGrafana.openAlertRule', async () => {
+    await showTimedNotification('Alert rule viewing is not implemented yet.', 'info');
   });
 
   context.subscriptions.push(
@@ -125,13 +190,22 @@ export function activate(context: vscode.ExtensionContext): void {
     uninstallMcpConfigCommand,
     addInstanceCommand,
     manageInstancesCommand,
+    dashboardTreeView,
+    alertTreeView,
+    refreshDashboardsCommand,
+    refreshAlertsCommand,
+    filterDashboardsCommand,
+    clearDashboardFilterCommand,
+    openDashboardCommand,
+    openAlertRuleCommand,
     cleanup
   );
 }
 
 async function manageInstances(
   context: vscode.ExtensionContext,
-  configManager: GrafanaInstanceConfigManager
+  configManager: GrafanaInstanceConfigManager,
+  onChanged: () => void
 ): Promise<void> {
   const instances = await configManager.listInstances();
   if (instances.length === 0) {
@@ -140,7 +214,7 @@ async function manageInstances(
       'Add Instance'
     );
     if (answer === 'Add Instance') {
-      await GrafanaInstanceFormPanel.open(context, configManager, () => undefined);
+      await GrafanaInstanceFormPanel.open(context, configManager, onChanged);
     }
     return;
   }
@@ -161,17 +235,18 @@ async function manageInstances(
     placeHolder: `${picked.instance.label}`
   });
   if (action === 'Edit') {
-    await GrafanaInstanceFormPanel.open(context, configManager, () => undefined, picked.instance);
+    await GrafanaInstanceFormPanel.open(context, configManager, onChanged, picked.instance);
     return;
   }
   if (action === 'Delete') {
-    await deleteInstanceWithConfirmation(configManager, picked.instance);
+    await deleteInstanceWithConfirmation(configManager, picked.instance, onChanged);
   }
 }
 
 async function deleteInstanceWithConfirmation(
   configManager: GrafanaInstanceConfigManager,
-  instance: GrafanaInstanceConfig
+  instance: GrafanaInstanceConfig,
+  onChanged: () => void
 ): Promise<void> {
   const answer = await vscode.window.showWarningMessage(
     `Delete Grafana instance "${instance.label}"?`,
@@ -180,6 +255,7 @@ async function deleteInstanceWithConfirmation(
   );
   if (answer === 'Delete') {
     await configManager.deleteInstance(instance.id);
+    onChanged();
   }
 }
 
