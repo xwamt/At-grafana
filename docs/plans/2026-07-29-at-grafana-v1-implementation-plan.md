@@ -235,6 +235,8 @@
 
 **Estimated scope:** L (URL/redirect rewriting is the highest-risk sub-task here; budget extra time, consider a spike/prototype against a real Grafana instance before finalizing the rewrite rules).
 
+**Status (2026-07-29):** Done, commit `3bbfdc2`.
+
 ### Task 4.2: Dashboard Webview panel
 
 **Description:** `DashboardPanel` — opens on tree click, loads `<iframe src="http://127.0.0.1:<port>/instances/<id>/d/<uid>">` with CSP restricted to the proxy origin.
@@ -250,7 +252,7 @@
 
 **Estimated scope:** S.
 
-**Status (2026-07-29):** Done, commit TBD (`feat(phase-4b)`). `DashboardPanel.open()` deduplicates by `instanceId:uid` (a `Map<string, vscode.WebviewPanel>`, revealing an existing tab instead of opening a duplicate), starts the shared `GrafanaEmbedProxy` lazily on first open (idempotent, per Task 4.1), and renders a dedicated shell (`renderEmbedWebviewHtml` in `html.ts`, separate from `GrafanaInstanceFormPanel`'s `renderWebviewHtml`) whose CSP is `GrafanaEmbedProxy.buildRecommendedCsp(proxy.origin)` — restricted entirely to the proxy origin, never the real Grafana origin/token. `portMapping` is set on the Webview options so `127.0.0.1:<port>` resolves correctly in remote/SSH/container workspaces too (see `buildEmbedWebviewOptions`). Real F5/Extension-Host verification against a live Grafana instance is still outstanding (no instance available in this environment) — see the Phase 4 checkpoint below.
+**Status (2026-07-29):** Done, commit `23a1967`. `DashboardPanel.open()` deduplicates by `instanceId:uid` (a `Map<string, vscode.WebviewPanel>`, revealing an existing tab instead of opening a duplicate), starts the shared `GrafanaEmbedProxy` lazily on first open (idempotent, per Task 4.1), and renders a dedicated shell (`renderEmbedWebviewHtml` in `html.ts`, separate from `GrafanaInstanceFormPanel`'s `renderWebviewHtml`) whose CSP is `GrafanaEmbedProxy.buildRecommendedCsp(proxy.origin)` — restricted entirely to the proxy origin, never the real Grafana origin/token. `portMapping` is set on the Webview options so `127.0.0.1:<port>` resolves correctly in remote/SSH/container workspaces too (see `buildEmbedWebviewOptions`). Real F5/Extension-Host verification against a live Grafana instance is still outstanding (no instance available in this environment) — see the Phase 4 checkpoint below.
 
 ### Task 4.3: Alert detail Webview panel
 
@@ -266,7 +268,7 @@
 
 **Estimated scope:** S.
 
-**Status (2026-07-29):** Done, commit TBD (`feat(phase-4b)`). Same pattern/shared HTML+options helpers as `DashboardPanel`, using `proxy.buildAlertRuleUrl(instanceId, uid)`. `extension.ts`'s `atGrafana.openDashboard`/`atGrafana.openAlertRule` stub commands now construct one shared `GrafanaEmbedProxy` in `activate()` (backed by `configManager` + a freshly-constructed `GrafanaCertTrustStore`) and delegate to `DashboardPanel.open`/`AlertDetailPanel.open` with the `{ instanceId, uid, title }` argument object the tree items already pass; the proxy is added to `context.subscriptions` (its `dispose()` is a no-op if `start()` was never called). 176/176 tests passing (22 new: 8 `DashboardPanel`, 8 `AlertDetailPanel`, 6 `PanelCommands` extension-wiring tests). `npm run typecheck` / `npm test` / `npm run build` all clean.
+**Status (2026-07-29):** Done, commit `23a1967`. Same pattern/shared HTML+options helpers as `DashboardPanel`, using `proxy.buildAlertRuleUrl(instanceId, uid)`. `extension.ts`'s `atGrafana.openDashboard`/`atGrafana.openAlertRule` stub commands now construct one shared `GrafanaEmbedProxy` in `activate()` (backed by `configManager` + a freshly-constructed `GrafanaCertTrustStore`) and delegate to `DashboardPanel.open`/`AlertDetailPanel.open` with the `{ instanceId, uid, title }` argument object the tree items already pass; the proxy is added to `context.subscriptions` (its `dispose()` is a no-op if `start()` was never called). 176/176 tests passing (22 new: 8 `DashboardPanel`, 8 `AlertDetailPanel`, 6 `PanelCommands` extension-wiring tests). `npm run typecheck` / `npm test` / `npm run build` all clean.
 
 ### Checkpoint: Phase 4
 
