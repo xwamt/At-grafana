@@ -83,9 +83,9 @@
 - Test: `test/config/GrafanaInstanceConfigManager.test.ts`
 
 **Acceptance criteria:**
-- [ ] Can add/edit/delete an instance; token never appears in `globalState`, only in `SecretStorage`
-- [ ] `allowBackgroundAccess` defaults to `false` on creation
-- [ ] Deleting an instance also deletes its SecretStorage token entry
+- [x] Can add/edit/delete an instance; token never appears in `globalState`, only in `SecretStorage`
+- [x] `allowBackgroundAccess` defaults to `false` on creation
+- [x] Deleting an instance also deletes its SecretStorage token entry
 
 **Verification:** `npm test -- test/config`
 
@@ -102,8 +102,9 @@
 - Test: `test/webview/GrafanaInstanceFormPanel.test.ts` (logic only, not full Webview rendering)
 
 **Acceptance criteria:**
-- [ ] Form validates URL format before save
-- [ ] "Test connection" surfaces distinct messages for network error / TLS untrusted / 401-403 auth error / success (per requirements §5.4)
+- [x] Form validates URL format before save
+- [x] "Test connection" surfaces distinct messages for network error / TLS untrusted / 401-403 auth error / success (per requirements §5.4) — implemented as a standalone `testGrafanaConnection()` probe against `/api/health`; the real API client (Task 2.1) will supersede it once TLS trust-store prompting is wired in
+- Note: command-palette driven (`atGrafana.addInstance` / `atGrafana.manageInstances`) rather than tree-view driven for now — the tree view arrives in Phase 3
 
 **Verification:** `npm test -- test/webview`, manual `F5` check.
 
@@ -121,9 +122,9 @@
 - Test: `test/grafana/GrafanaCertTrustStore.test.ts`
 
 **Acceptance criteria:**
-- [ ] First connection to a new host prompts fingerprint confirmation (modal, matches SSH host key UX)
-- [ ] Fingerprint change blocks connection with an error notification (no silent fallback)
-- [ ] Trusted fingerprints persist across reloads (`globalState`)
+- [x] Trusted fingerprints persist across reloads (`globalState`) — storage layer complete (`GrafanaCertTrustStore`)
+- [ ] First connection to a new host prompts fingerprint confirmation (modal, matches SSH host key UX) — deferred to Task 2.1, which wires the store into the real HTTPS client's certificate callback
+- [ ] Fingerprint change blocks connection with an error notification (no silent fallback) — same, deferred to Task 2.1
 
 **Verification:** `npm test -- test/grafana/GrafanaCertTrustStore`
 
@@ -133,7 +134,8 @@
 
 ### Checkpoint: Phase 1
 
-- [ ] Can fully configure a real Grafana instance end-to-end (add, test connection, trust cert) with no dashboard/alert features yet
+- [x] Can add a real Grafana instance (label/URL/token) and run "Test connection" end-to-end via the command palette, with no dashboard/alert features yet
+- [ ] "Trust cert" prompting is not yet live — `GrafanaCertTrustStore` exists but is only wired into the real HTTPS client in Task 2.1 (`testGrafanaConnection` in Task 1.2 uses Node's default TLS validation and just reports "untrusted" rather than prompting)
 - [ ] Review with human before proceeding to Phase 2
 
 ---
