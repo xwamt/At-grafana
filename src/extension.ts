@@ -4,6 +4,8 @@ import { GrafanaInstanceConfigManager } from './config/GrafanaInstanceConfigMana
 import type { GrafanaInstanceConfig } from './config/schema';
 import { GrafanaApiClient } from './grafana/GrafanaApiClient';
 import { GrafanaCertTrustStore } from './grafana/GrafanaCertTrustStore';
+import { createInteractiveCertVerifier } from './grafana/createInteractiveCertVerifier';
+import { ensureGrafanaTlsTrust } from './grafana/ensureGrafanaTlsTrust';
 import { BridgeServer } from './mcp/BridgeServer';
 import { detectHostApp } from './mcp/hostApp';
 import { syncPackagedHub } from './mcp/hubSync';
@@ -23,6 +25,8 @@ interface OpenGrafanaEmbedArgs {
   instanceId?: string;
   uid?: string;
   title?: string;
+  slug?: string;
+  search?: string;
 }
 
 let extensionCleanup: { dispose(): void } | undefined;
@@ -35,13 +39,18 @@ let extensionCleanup: { dispose(): void } | undefined;
  */
 function createGrafanaClient(
   configManager: Pick<GrafanaInstanceConfigManager, 'getToken'>,
-  instance: GrafanaInstanceConfig
+  instance: GrafanaInstanceConfig,
+  certTrustStore: GrafanaCertTrustStore
 ): Promise<GrafanaApiClient> {
   return configManager.getToken(instance.id).then((token) => {
     if (!token) {
       throw new Error(`No Service Account Token is configured for "${instance.label}". Edit the instance to add one.`);
     }
-    return new GrafanaApiClient({ baseUrl: instance.url, token });
+    return new GrafanaApiClient({
+      baseUrl: instance.url,
+      token,
+      certVerifier: createInteractiveCertVerifier(certTrustStore)
+    });
   });
 }
 
@@ -59,9 +68,11 @@ export function activate(context: vscode.ExtensionContext): void {
   // — not eagerly here — per ADR-003's "not always-on" framing.
   const grafanaEmbedProxy = new GrafanaEmbedProxy({ configManager, certTrustStore });
   const dashboardTreeProvider = new DashboardTreeProvider(configManager, (instance) =>
-    createGrafanaClient(configManager, instance)
+    createGrafanaClient(configManager, instance, certTrustStore)
   );
-  const alertTreeProvider = new AlertTreeProvider(configManager, (instance) => createGrafanaClient(configManager, instance));
+  const alertTreeProvider = new AlertTreeProvider(configManager, (instance) =>
+    createGrafanaClient(configManager, instance, certTrustStore)
+  );
   const refreshTreeViews = (): void => {
     dashboardTreeProvider.refresh();
     alertTreeProvider.refresh();
@@ -216,13 +227,30 @@ export function activate(context: vscode.ExtensionContext): void {
   const openDashboardCommand = vscode.commands.registerCommand(
     'atGrafana.openDashboard',
     async (args?: OpenGrafanaEmbedArgs) => {
-      await DashboardPanel.open(context, grafanaEmbedProxy, args?.instanceId ?? '', args?.uid ?? '', args?.title ?? 'Dashboard');
+      await openGrafanaEmbedPanel(
+        configManager,
+        certTrustStore,
+        args?.instanceId ?? '',
+        args?.uid ?? '',
+        args?.title ?? 'Dashboard',
+        (instanceId, uid, title, slug, search) =>
+          DashboardPanel.open(context, grafanaEmbedProxy, instanceId, uid, title, slug, search),
+        args?.slug,
+        args?.search
+      );
     }
   );
   const openAlertRuleCommand = vscode.commands.registerCommand(
     'atGrafana.openAlertRule',
     async (args?: OpenGrafanaEmbedArgs) => {
-      await AlertDetailPanel.open(context, grafanaEmbedProxy, args?.instanceId ?? '', args?.uid ?? '', args?.title ?? 'Alert Rule');
+      await openGrafanaEmbedPanel(
+        configManager,
+        certTrustStore,
+        args?.instanceId ?? '',
+        args?.uid ?? '',
+        args?.title ?? 'Alert Rule',
+        (instanceId, uid, title) => AlertDetailPanel.open(context, grafanaEmbedProxy, instanceId, uid, title)
+      );
     }
   );
 
@@ -243,6 +271,44 @@ export function activate(context: vscode.ExtensionContext): void {
     openAlertRuleCommand,
     cleanup
   );
+}
+
+async function openGrafanaEmbedPanel(
+  configManager: Pick<GrafanaInstanceConfigManager, 'getInstance' | 'getToken'>,
+  certTrustStore: GrafanaCertTrustStore,
+  instanceId: string,
+  uid: string,
+  title: string,
+  openPanel: (instanceId: string, uid: string, title: string, slug?: string, search?: string) => Promise<void>,
+  slug?: string,
+  search?: string
+): Promise<void> {
+  if (!instanceId || !uid) {
+    await openPanel(instanceId, uid, title, slug, search);
+    return;
+  }
+
+  const instance = await configManager.getInstance(instanceId);
+  if (!instance) {
+    await vscode.window.showErrorMessage(`Cannot open "${title}": unknown Grafana instance.`);
+    return;
+  }
+
+  const token = await configManager.getToken(instanceId);
+  if (!token) {
+    await vscode.window.showErrorMessage(
+      `Cannot open "${title}": no Service Account Token is configured for "${instance.label}".`
+    );
+    return;
+  }
+
+  const trust = await ensureGrafanaTlsTrust(instance.url, token, certTrustStore);
+  if (!trust.ok) {
+    await vscode.window.showErrorMessage(`Cannot open "${title}": ${trust.message}`);
+    return;
+  }
+
+  await openPanel(instanceId, uid, title, slug, search);
 }
 
 async function manageInstances(

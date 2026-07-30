@@ -25,7 +25,9 @@ export class DashboardPanel {
     proxy: DashboardEmbedProxy,
     instanceId: string,
     uid: string,
-    title: string
+    title: string,
+    slug?: string,
+    search?: string
   ): Promise<void> {
     if (!instanceId || !uid) {
       await vscode.window.showErrorMessage('Cannot open this dashboard: the instance or dashboard id is missing.');
@@ -66,7 +68,7 @@ export class DashboardPanel {
     panel.webview.html = renderEmbedWebviewHtml({
       title,
       proxyOrigin: origin,
-      iframeSrc: proxy.buildDashboardUrl(instanceId, uid)
+      iframeSrc: proxy.buildDashboardUrl(instanceId, uid, slug, search)
     });
   }
 }

@@ -9,7 +9,8 @@ const mocks = vi.hoisted(() => ({
   syncPackagedHub: vi.fn(async () => ({ updated: false, activeVersion: '0.1.0' })),
   dashboardOpen: vi.fn(async (..._args: unknown[]) => undefined),
   alertOpen: vi.fn(async (..._args: unknown[]) => undefined),
-  proxyDispose: vi.fn(async () => undefined)
+  proxyDispose: vi.fn(async () => undefined),
+  ensureGrafanaTlsTrust: vi.fn(async () => ({ ok: true as const }))
 }));
 
 vi.mock('../../src/mcp/BridgeServer', () => ({
@@ -42,11 +43,36 @@ vi.mock('../../src/webview/GrafanaEmbedProxy', () => ({
   }
 }));
 
+vi.mock('../../src/grafana/ensureGrafanaTlsTrust', () => ({
+  ensureGrafanaTlsTrust: mocks.ensureGrafanaTlsTrust
+}));
+
 import { activate, deactivate } from '../../src/extension';
 
 function extensionContext(): vscode.ExtensionContext {
   const globalStorage = new Map<string, unknown>();
   const secretStorage = new Map<string, string>();
+  const instances = [
+    {
+      id: 'inst-1',
+      label: 'Grafana One',
+      url: 'http://127.0.0.1:3000',
+      allowBackgroundAccess: false,
+      createdAt: 1,
+      updatedAt: 1
+    },
+    {
+      id: 'inst-2',
+      label: 'Grafana Two',
+      url: 'http://127.0.0.1:3001',
+      allowBackgroundAccess: false,
+      createdAt: 1,
+      updatedAt: 1
+    }
+  ];
+  globalStorage.set('atGrafana.instances', instances);
+  secretStorage.set('atGrafana.token.inst-1', 'token-1');
+  secretStorage.set('atGrafana.token.inst-2', 'token-2');
   return {
     extensionUri: vscode.Uri.file('C:/Users/alan/.kiro/extensions/local.at-grafana-0.1.0'),
     globalStorageUri: vscode.Uri.file('C:/tmp/at-grafana-storage'),
@@ -102,7 +128,15 @@ describe('atGrafana panel commands', () => {
       title: 'My Dashboard'
     });
 
-    expect(mocks.dashboardOpen).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'inst-1', 'uid-1', 'My Dashboard');
+    expect(mocks.dashboardOpen).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      'inst-1',
+      'uid-1',
+      'My Dashboard',
+      undefined,
+      undefined
+    );
   });
 
   it('opens the alert detail panel with the arguments passed by the tree item', async () => {
@@ -122,14 +156,22 @@ describe('atGrafana panel commands', () => {
 
     await registeredCommands.get('atGrafana.openDashboard')?.();
 
-    expect(mocks.dashboardOpen).toHaveBeenCalledWith(expect.anything(), expect.anything(), '', '', 'Dashboard');
+    expect(mocks.dashboardOpen).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      '',
+      '',
+      'Dashboard',
+      undefined,
+      undefined
+    );
   });
 
   it('passes the same shared GrafanaEmbedProxy instance to both panel types', async () => {
     activate(extensionContext());
 
-    await registeredCommands.get('atGrafana.openDashboard')?.({ instanceId: 'a', uid: 'b', title: 'c' });
-    await registeredCommands.get('atGrafana.openAlertRule')?.({ instanceId: 'a', uid: 'b', title: 'c' });
+    await registeredCommands.get('atGrafana.openDashboard')?.({ instanceId: 'inst-1', uid: 'b', title: 'c' });
+    await registeredCommands.get('atGrafana.openAlertRule')?.({ instanceId: 'inst-1', uid: 'b', title: 'c' });
 
     const dashboardProxyArg = mocks.dashboardOpen.mock.calls[0]?.[1];
     const alertProxyArg = mocks.alertOpen.mock.calls[0]?.[1];

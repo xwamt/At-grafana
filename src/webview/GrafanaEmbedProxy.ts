@@ -86,6 +86,16 @@ const HOP_BY_HOP_HEADERS = new Set([
   'upgrade'
 ]);
 
+/** Upstream headers that block iframe embedding or break a cross-origin proxy shell. */
+const EMBED_BLOCKING_RESPONSE_HEADERS = new Set([
+  'x-frame-options',
+  'content-security-policy',
+  'content-security-policy-report-only',
+  'cross-origin-opener-policy',
+  'cross-origin-embedder-policy',
+  'cross-origin-resource-policy'
+]);
+
 /** Rewritable content types get buffered whole-body for the origin-string replace (see rewriteAbsoluteReferences). Cap protects memory if Grafana ever serves something unexpectedly huge under one of these content types. */
 const MAX_REWRITE_BUFFER_BYTES = 25 * 1024 * 1024;
 
@@ -158,10 +168,17 @@ export class GrafanaEmbedProxy {
   }
 
   /** Mirrors Grafana's own `/d/:uid/:slug` dashboard URL scheme (slug optional, cosmetic only — Grafana resolves by uid). */
-  buildDashboardUrl(instanceId: string, dashboardUid: string, dashboardSlugOrPath?: string): string {
+  buildDashboardUrl(
+    instanceId: string,
+    dashboardUid: string,
+    dashboardSlugOrPath?: string,
+    search?: string
+  ): string {
     const base = this.requireOrigin();
     const slugSegment = dashboardSlugOrPath ? `/${encodeURIComponent(dashboardSlugOrPath)}` : '';
-    return `${base}/instances/${encodeURIComponent(instanceId)}/d/${encodeURIComponent(dashboardUid)}${slugSegment}`;
+    const query =
+      search && search.length > 0 ? (search.startsWith('?') ? search : `?${search}`) : '';
+    return `${base}/instances/${encodeURIComponent(instanceId)}/d/${encodeURIComponent(dashboardUid)}${slugSegment}${query}`;
   }
 
   /** Mirrors Grafana's native Unified Alerting rule view page (`/alerting/grafana/:uid/view`) — see class doc for the source verifying this. */
@@ -184,7 +201,7 @@ export class GrafanaEmbedProxy {
         return;
       }
 
-      const parsedPath = parseInstancePath(request.url ?? '/');
+      const parsedPath = parseProxyRoute(request.url ?? '/', parseInstanceCookie(request.headers.cookie));
       if (!parsedPath) {
         respondError(response, 404, 'Unknown AT Grafana proxy route.');
         return;
@@ -234,7 +251,7 @@ export class GrafanaEmbedProxy {
         return;
       }
 
-      this.forward(request, response, targetUrl, realOrigin, instance.id, token);
+      this.forward(request, response, targetUrl, realOrigin, instance.id, token, parsedPath.viaCookie);
     } catch (error) {
       if (!response.headersSent) {
         respondError(response, 502, `AT Grafana proxy error: ${formatError(error)}`);
@@ -274,7 +291,8 @@ export class GrafanaEmbedProxy {
     targetUrl: URL,
     realOrigin: URL,
     instanceId: string,
-    token: string
+    token: string,
+    viaCookie = false
   ): void {
     const isHttps = targetUrl.protocol === 'https:';
     const client: typeof http | typeof https = isHttps ? https : http;
@@ -306,7 +324,7 @@ export class GrafanaEmbedProxy {
         rejectUnauthorized: isHttps ? false : undefined
       },
       (proxyResponse) => {
-        this.relayResponse(proxyResponse, clientResponse, realOrigin, instanceId);
+        this.relayResponse(proxyResponse, clientResponse, realOrigin, instanceId, viaCookie);
       }
     );
 
@@ -351,9 +369,11 @@ export class GrafanaEmbedProxy {
     proxyResponse: http.IncomingMessage,
     clientResponse: http.ServerResponse,
     realOrigin: URL,
-    instanceId: string
+    instanceId: string,
+    viaCookie: boolean
   ): void {
     const proxyBase = `${this.origin ?? ''}/instances/${encodeURIComponent(instanceId)}`;
+    const instancePathPrefix = `/instances/${encodeURIComponent(instanceId)}`;
 
     const headersOut: http.OutgoingHttpHeaders = {};
     for (const [key, value] of Object.entries(proxyResponse.headers)) {
@@ -365,7 +385,7 @@ export class GrafanaEmbedProxy {
       // cookie based — a real Grafana session cookie scoped to the real
       // origin is meaningless (and potentially confusing/leaky) once it
       // crosses into the 127.0.0.1 proxy origin, so it is dropped entirely.
-      if (lowerKey === 'set-cookie') {
+      if (lowerKey === 'set-cookie' || EMBED_BLOCKING_RESPONSE_HEADERS.has(lowerKey)) {
         continue;
       }
       headersOut[key] = value;
@@ -377,8 +397,19 @@ export class GrafanaEmbedProxy {
     }
 
     const contentType = firstHeaderValue(proxyResponse.headers['content-type']);
+    if (!viaCookie) {
+      headersOut['set-cookie'] = buildInstanceEmbedCookie(instanceId);
+    }
     if (REWRITABLE_CONTENT_TYPE_PATTERN.test(contentType ?? '')) {
-      this.relayRewritableBody(proxyResponse, clientResponse, headersOut, realOrigin, proxyBase);
+      this.relayRewritableBody(
+        proxyResponse,
+        clientResponse,
+        headersOut,
+        realOrigin,
+        proxyBase,
+        instancePathPrefix,
+        contentType ?? ''
+      );
       return;
     }
 
@@ -400,7 +431,9 @@ export class GrafanaEmbedProxy {
     clientResponse: http.ServerResponse,
     headersOut: http.OutgoingHttpHeaders,
     realOrigin: URL,
-    proxyBase: string
+    proxyBase: string,
+    instancePathPrefix: string,
+    contentType: string
   ): void {
     delete headersOut['content-length'];
     delete headersOut['transfer-encoding'];
@@ -432,8 +465,11 @@ export class GrafanaEmbedProxy {
       if (aborted) {
         return;
       }
-      const body = Buffer.concat(chunks).toString('utf8');
-      const rewritten = Buffer.from(rewriteAbsoluteReferences(body, realOrigin, proxyBase), 'utf8');
+      let body = rewriteAbsoluteReferences(Buffer.concat(chunks).toString('utf8'), realOrigin, proxyBase);
+      if (/^text\/html\b/i.test(contentType)) {
+        body = injectGrafanaEmbedShim(body, proxyBase, instancePathPrefix);
+      }
+      const rewritten = Buffer.from(body, 'utf8');
       headersOut['content-length'] = rewritten.length.toString();
       clientResponse.writeHead(proxyResponse.statusCode ?? 502, headersOut);
       clientResponse.end(rewritten);
@@ -473,7 +509,25 @@ export interface ParsedInstancePath {
   instanceId: string;
   remainingPath: string;
   search: string;
+  /** True when the route was resolved from the embed cookie rather than `/instances/:id/...`. */
+  viaCookie?: boolean;
 }
+
+const GRAFANA_NATIVE_PATH_PREFIXES = [
+  '/d/',
+  '/api/',
+  '/public/',
+  '/avatar/',
+  '/alerting/',
+  '/login',
+  '/logout',
+  '/explore',
+  '/dashboards',
+  '/plugins/',
+  '/favicon.ico'
+];
+
+const EMBED_INSTANCE_COOKIE = 'atGrafanaEmbedInstance';
 
 /**
  * Parses `/instances/:instanceId/...` safely: the instanceId segment can
@@ -510,6 +564,68 @@ export function parseInstancePath(rawUrl: string): ParsedInstancePath | undefine
 }
 
 /**
+ * Resolves either an explicit `/instances/:instanceId/...` route or a native
+ * Grafana path (`/d/...`, `/api/...`, etc.) paired with the embed cookie set
+ * on the first instance-scoped HTML response.
+ */
+export function parseProxyRoute(rawUrl: string, instanceCookie?: string): ParsedInstancePath | undefined {
+  const explicit = parseInstancePath(rawUrl);
+  if (explicit) {
+    return explicit;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl, 'http://proxy-internal.invalid');
+  } catch {
+    return undefined;
+  }
+
+  if (!instanceCookie || !SAFE_INSTANCE_ID_PATTERN.test(instanceCookie) || !isGrafanaNativePath(parsed.pathname)) {
+    return undefined;
+  }
+
+  return {
+    instanceId: instanceCookie,
+    remainingPath: parsed.pathname,
+    search: parsed.search,
+    viaCookie: true
+  };
+}
+
+export function isGrafanaNativePath(pathname: string): boolean {
+  if (pathname === '/' || pathname === '') {
+    return true;
+  }
+  return GRAFANA_NATIVE_PATH_PREFIXES.some((prefix) => {
+    if (prefix.endsWith('/')) {
+      return pathname.startsWith(prefix);
+    }
+    return pathname === prefix || pathname.startsWith(`${prefix}/`);
+  });
+}
+
+export function parseInstanceCookie(cookieHeader: string | undefined): string | undefined {
+  if (!cookieHeader) {
+    return undefined;
+  }
+  const match = /(?:^|;\s*)atGrafanaEmbedInstance=([^;]+)/.exec(cookieHeader);
+  if (!match?.[1]) {
+    return undefined;
+  }
+  try {
+    const instanceId = decodeURIComponent(match[1]);
+    return SAFE_INSTANCE_ID_PATTERN.test(instanceId) ? instanceId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildInstanceEmbedCookie(instanceId: string): string {
+  return `${EMBED_INSTANCE_COOKIE}=${encodeURIComponent(instanceId)}; Path=/; HttpOnly; SameSite=Lax`;
+}
+
+/**
  * Host allowlist: builds the outgoing request URL by grafting the sanitized
  * remaining path onto the instance's own configured origin, never by
  * re-parsing a path string as a fresh (potentially protocol-relative) URL.
@@ -532,15 +648,53 @@ export function buildTargetUrl(origin: URL, remainingPath: string, search: strin
 }
 
 /**
- * Deliberately a plain string replace on the real origin's `scheme://host`
- * and `//host` (protocol-relative) forms, not an HTML/JS/CSS parser. This is
- * a documented scope limit (see the plan's Risks table): it correctly
- * handles the common case of Grafana emitting absolute URLs/redirects
- * pointing back at its own origin, but it cannot distinguish "real URL
- * reference" from "origin string that happens to appear in a text/JS string
- * literal, comment, or JSON blob for unrelated reasons" — see the final task
- * report for the residual risk this carries across Grafana versions.
+ * Makes Grafana's frontend treat the proxy's `/instances/:id` prefix as its
+ * real `appSubUrl` (the same mechanism Grafana uses when served under a
+ * reverse-proxy subpath). That way SPA routes (`/d/...`) AND plugin module
+ * loads (`/public/plugins/loki/module.js`) both stay under the instance
+ * prefix — stripping the prefix via `history.replaceState` breaks plugin
+ * loading (SystemJS resolves modules against the rewritten URL / empty
+ * appSubUrl and ends up requesting `/public/plugins/...` off the proxy root,
+ * or relative to `/d/:uid/...`, which yields "Could not load plugin").
  */
+export function injectGrafanaEmbedShim(html: string, proxyBase: string, instancePathPrefix: string): string {
+  const withAppSubUrl = rewriteGrafanaAppSubUrl(html, instancePathPrefix);
+  const baseTag = `<base href="${escapeHtml(proxyBase)}/">`;
+  // Defensive runtime patch: Grafana writes grafanaBootData in an inline
+  // script later in the document; overwrite appSubUrl again right before the
+  // main bundles execute if the static rewrite missed a variant of the key.
+  const prefixJson = JSON.stringify(instancePathPrefix);
+  const bootPatch =
+    `<script>(function(){var p=${prefixJson};` +
+    `function apply(){var d=window.grafanaBootData;if(d&&d.settings){d.settings.appSubUrl=p;` +
+    `if(typeof d.settings.appUrl==="string"){try{var u=new URL(d.settings.appUrl);` +
+    `d.settings.appUrl=u.origin+p+(p.endsWith("/")?"":"/");}catch(e){}}}}` +
+    `apply();document.addEventListener("DOMContentLoaded",apply);})();</script>`;
+  const headInjection = `${baseTag}${bootPatch}`;
+  const withoutExistingBase = withAppSubUrl.replace(/<base\b[^>]*>/gi, '');
+  if (/<head[\s>]/i.test(withoutExistingBase)) {
+    return withoutExistingBase.replace(/<head(\s[^>]*)?>/i, `$&${headInjection}`);
+  }
+  if (/<html[\s>]/i.test(withoutExistingBase)) {
+    return withoutExistingBase.replace(/<html(\s[^>]*)?>/i, `$&<head>${headInjection}</head>`);
+  }
+  return `${headInjection}${withoutExistingBase}`;
+}
+
+/** Rewrites `"appSubUrl":"..."` inside Grafana's inline boot JSON to the proxy instance prefix. */
+export function rewriteGrafanaAppSubUrl(html: string, instancePathPrefix: string): string {
+  return html.replace(
+    /("appSubUrl"\s*:\s*)("(?:\\.|[^"\\])*")/g,
+    `$1${JSON.stringify(instancePathPrefix)}`
+  );
+}
+
+/** @deprecated Use injectGrafanaEmbedShim — kept as an alias for tests. */
+export function injectProxyBaseTag(html: string, proxyBase: string): string {
+  const instancePathPrefix = new URL(`${proxyBase}/`).pathname.replace(/\/$/, '');
+  return injectGrafanaEmbedShim(html, proxyBase, instancePathPrefix);
+}
+
 export function rewriteAbsoluteReferences(text: string, realOrigin: URL, proxyBase: string): string {
   const hostPort = realOrigin.host;
   const httpsForm = `https://${hostPort}`;

@@ -23,17 +23,13 @@ const REJECT_ACTION = 'Reject';
  * GrafanaCertTrustStore/GrafanaHttpClient files) since prompting is
  * inherently a UI concern.
  *
- * Not yet wired into any construction site: Phase 3's tree providers still
- * construct `GrafanaApiClient` without a `certVerifier` (a known, tracked
- * follow-up — see docs/plans Phase 3 status notes — not retrofitted here
- * since it's out of scope for Task 4.1). `GrafanaEmbedProxy` also does not
- * use this directly: prompting mid-request for every proxied dashboard
- * subresource would be unusable, so the proxy instead refuses outright when
- * an instance isn't already recorded as trusted (see GrafanaEmbedProxy.ts's
- * class doc). This verifier is meant for one-shot, user-initiated connection
- * setup flows (e.g. a future retrofit of the instance form's "Test
- * connection" button or `GrafanaApiClient` construction ahead of opening a
- * tree/Webview).
+ * Wired into user-initiated flows that establish trust once up front:
+ * `GrafanaApiClient` construction for tree/API calls, and
+ * `ensureGrafanaTlsTrust()` ahead of opening dashboard/alert embed panels.
+ * `GrafanaEmbedProxy` does not use this directly — prompting mid-request for
+ * every proxied dashboard subresource would be unusable — so the proxy
+ * instead refuses outright when an instance isn't already recorded as
+ * trusted (see GrafanaEmbedProxy.ts's class doc).
  */
 export function createInteractiveCertVerifier(trustStore: GrafanaCertTrustStore): GrafanaCertVerifier {
   return {

@@ -19,6 +19,21 @@ function alertStateIcon(state: NormalizedAlertState): vscode.ThemeIcon {
   }
 }
 
+export function dashboardRouteFromUrl(url?: string): { slug?: string; search?: string } {
+  if (!url) {
+    return {};
+  }
+  try {
+    const parsed = url.startsWith('/') ? new URL(url, 'http://grafana.invalid') : new URL(url);
+    const slugMatch = /^\/d\/[^/]+\/([^/?#]+)/.exec(parsed.pathname);
+    const slug = slugMatch?.[1] ? decodeURIComponent(slugMatch[1]) : undefined;
+    const search = parsed.search || undefined;
+    return { slug, search };
+  } catch {
+    return {};
+  }
+}
+
 export class InstanceTreeItem extends vscode.TreeItem {
   constructor(public readonly instance: GrafanaInstanceConfig) {
     super(instance.label, vscode.TreeItemCollapsibleState.Collapsed);
@@ -53,7 +68,7 @@ export class DashboardTreeItem extends vscode.TreeItem {
     this.command = {
       command: 'atGrafana.openDashboard',
       title: 'Open Dashboard',
-      arguments: [{ instanceId: instance.id, uid, title }]
+      arguments: [{ instanceId: instance.id, uid, title, ...dashboardRouteFromUrl(url) }]
     };
   }
 }

@@ -9,8 +9,14 @@ import {
   buildRecommendedCsp,
   buildTargetUrl,
   GrafanaEmbedProxy,
+  injectGrafanaEmbedShim,
+  injectProxyBaseTag,
+  isGrafanaNativePath,
+  parseInstanceCookie,
   parseInstancePath,
+  parseProxyRoute,
   rewriteAbsoluteReferences,
+  rewriteGrafanaAppSubUrl,
   type GrafanaEmbedProxyDependencies
 } from '../../src/webview/GrafanaEmbedProxy';
 import { listen, type TestHttpServer } from '../grafana/testHttpServer';
@@ -286,7 +292,52 @@ describe('GrafanaEmbedProxy body rewriting', () => {
 
     const result = await requestProxy(proxyPort(embedProxy), `/instances/${instance.id}/d/uid/slug`);
 
-    expect(result.headers['set-cookie']).toBeUndefined();
+    expect(result.headers['set-cookie']).toEqual([
+      'atGrafanaEmbedInstance=inst-cookie; Path=/; HttpOnly; SameSite=Lax'
+    ]);
+  });
+
+  it('strips X-Frame-Options and Content-Security-Policy so Grafana can render inside the Webview iframe', async () => {
+    upstream = await listen((_req, res) => {
+      res
+        .writeHead(200, {
+          'content-type': 'text/html; charset=utf-8',
+          'x-frame-options': 'SAMEORIGIN',
+          'content-security-policy': "frame-ancestors 'self'"
+        })
+        .end('<html><head></head><body>ok</body></html>');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-frame', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    const result = await requestProxy(proxyPort(embedProxy), `/instances/${instance.id}/d/uid/slug`);
+
+    expect(result.status).toBe(200);
+    expect(result.headers['x-frame-options']).toBeUndefined();
+    expect(result.headers['content-security-policy']).toBeUndefined();
+    expect(result.body).toContain('<base href=');
+    expect(result.body).toContain('d.settings.appSubUrl=p');
+  });
+
+  it('injects a base tag so root-relative Grafana assets resolve under the instance proxy prefix', async () => {
+    upstream = await listen((_req, res) => {
+      res
+        .writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+        .end('<html><head><script src="/public/build/app.js"></script></head><body></body></html>');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-base', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    const result = await requestProxy(proxyPort(embedProxy), `/instances/${instance.id}/d/uid/slug`);
+    const proxyBase = `${embedProxy.origin}/instances/${instance.id}`;
+
+    expect(result.body).toContain(`<base href="${proxyBase}/">`);
   });
 });
 
@@ -342,6 +393,64 @@ describe('rewriteAbsoluteReferences', () => {
     expect(result).toBe(
       'a=http://127.0.0.1:9999/instances/abc/x b=http://127.0.0.1:9999/instances/abc/y c=http://127.0.0.1:9999/instances/abc/z'
     );
+  });
+});
+
+describe('injectProxyBaseTag', () => {
+  it('inserts a base tag immediately after head and replaces any existing base tag', () => {
+    const html = '<html><head><base href="/"><title>x</title></head><body></body></html>';
+    const result = injectProxyBaseTag(html, 'http://127.0.0.1:4321/instances/abc');
+
+    expect(result).toContain('<base href="http://127.0.0.1:4321/instances/abc/">');
+    expect(result.match(/<base\b/gi)?.length).toBe(1);
+  });
+});
+
+describe('injectGrafanaEmbedShim', () => {
+  it('rewrites appSubUrl and does not strip the instance prefix via history.replaceState', () => {
+    const html =
+      '<html><head></head><body><script>window.grafanaBootData={"settings":{"appSubUrl":"","appUrl":"https://g.example/"}};</script></body></html>';
+    const result = injectGrafanaEmbedShim(html, 'http://127.0.0.1:4321/instances/abc', '/instances/abc');
+
+    expect(result).toContain('"appSubUrl":"/instances/abc"');
+    expect(result).not.toContain('history.replaceState');
+    expect(result).toContain('d.settings.appSubUrl=p');
+  });
+});
+
+describe('rewriteGrafanaAppSubUrl', () => {
+  it('replaces empty and non-empty appSubUrl values in boot JSON', () => {
+    expect(rewriteGrafanaAppSubUrl('{"appSubUrl":""}', '/instances/x')).toBe('{"appSubUrl":"/instances/x"}');
+    expect(rewriteGrafanaAppSubUrl('{"appSubUrl":"/grafana"}', '/instances/x')).toBe(
+      '{"appSubUrl":"/instances/x"}'
+    );
+  });
+});
+
+describe('parseProxyRoute', () => {
+  it('routes native Grafana paths through the embed instance cookie', () => {
+    const route = parseProxyRoute('/d/uid/slug?orgId=1', 'inst-abc');
+
+    expect(route).toEqual({
+      instanceId: 'inst-abc',
+      remainingPath: '/d/uid/slug',
+      search: '?orgId=1',
+      viaCookie: true
+    });
+  });
+
+  it('rejects native paths without a valid instance cookie', () => {
+    expect(parseProxyRoute('/d/uid/slug', undefined)).toBeUndefined();
+    expect(parseProxyRoute('/d/uid/slug', '../bad')).toBeUndefined();
+  });
+});
+
+describe('isGrafanaNativePath', () => {
+  it('recognizes dashboard, API, and static asset prefixes', () => {
+    expect(isGrafanaNativePath('/d/abc/slug')).toBe(true);
+    expect(isGrafanaNativePath('/api/search')).toBe(true);
+    expect(isGrafanaNativePath('/public/build/app.js')).toBe(true);
+    expect(isGrafanaNativePath('/unknown/path')).toBe(false);
   });
 });
 
