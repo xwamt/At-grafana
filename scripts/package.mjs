@@ -23,6 +23,7 @@ await cp(join(root, 'webview'), join(stage, 'webview'), { recursive: true }).cat
 await cp(join(root, '.vscodeignore'), join(stage, '.vscodeignore'));
 await writeFile(join(stage, 'package.json'), `${JSON.stringify(packagedManifest, null, 2)}\n`, 'utf8');
 await cp(join(root, 'README.md'), join(stage, 'README.md'));
+await cp(join(root, 'LICENSE'), join(stage, 'LICENSE')).catch(() => {});
 
 const result = spawnSync(
   process.platform === 'win32' ? 'cmd' : 'npx',
