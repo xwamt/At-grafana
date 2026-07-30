@@ -12,11 +12,21 @@ coverage/
 *.vsix
 .package-work/
 
-# Local workspace state
+# Local workspace / agent state
 .worktrees/
 .superpowers/
+.agents/
+.kiro/
+.kilo/
+.tmp/
+.tmp-*/
+.cache/
+
+# Local docs and ops notes (not for public repo)
 docs/brand/
 docs/superpowers/
+docs/reviews/
+ops/
 
 # Editor and OS files
 .vscode/*
@@ -41,13 +51,11 @@ pnpm-debug.log*
 !.env.example
 !.env.sample
 *.local
-.kiro/
+*.pem
+*.key
+*.p12
+*.pfx
 ATmcp.json
 
 # Binary planning/export artifacts
 *.docx
-
-# Local IDE scratch and site-specific ops notes (not for public repo)
-.kilo/
-ops/
-docs/reviews/

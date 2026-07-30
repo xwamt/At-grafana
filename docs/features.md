@@ -44,3 +44,4 @@ Nine tools, all `risk: read` and auto-approved once the AT Series MCP config is 
 - Legacy Alerting (Unified Alerting only)
 - Any write operation against Grafana or a datasource
 - Multi-organization support
+- Grafana Live / WebSocket push through the embed proxy (dashboards load and can be refreshed manually)

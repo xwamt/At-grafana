@@ -44,3 +44,4 @@ AT Grafana 把 Grafana 的 dashboard 与告警规则原生集成到 IDE 内，�
 - Legacy Alerting（仅支持 Unified Alerting）
 - 任何针对 Grafana 或数据源的写操作
 - 多 Org（组织）支持
+- 经嵌入代理的 Grafana Live / WebSocket 推送（页面可加载，需手动刷新）

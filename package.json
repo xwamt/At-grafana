@@ -4,11 +4,26 @@
   "description": "Grafana dashboards, alerts, and datasource access inside VS Code, with Agent (MCP) integration via AT Series.",
   "version": "0.1.0",
   "publisher": "local",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xwamt/At-grafana.git"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
     "Other"
+  ],
+  "keywords": [
+    "grafana",
+    "prometheus",
+    "loki",
+    "alerting",
+    "dashboard",
+    "mcp",
+    "at-series",
+    "observability"
   ],
   "activationEvents": [
     "onStartupFinished"
