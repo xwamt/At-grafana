@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "publisher": "local",
   "license": "MIT",
+  "icon": "media/at-grafana-icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/xwamt/At-grafana.git"
@@ -35,7 +36,7 @@
         {
           "id": "atGrafana",
           "title": "AT Grafana",
-          "icon": "media/icon.svg"
+          "icon": "media/at-grafana-activity.svg"
         }
       ]
     },
@@ -173,7 +174,7 @@
     "package": "npm run build && npm run copy:hub && node scripts/package.mjs"
   },
   "dependencies": {
-    "@at-series/mcp-hub": "^0.1.1",
+    "@at-series/mcp-hub": "file:../at-series-mcp-hub/packages/mcp-hub",
     "zod": "^3.25.76"
   },
   "devDependencies": {

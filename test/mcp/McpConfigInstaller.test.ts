@@ -3,15 +3,15 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  AT_SERIES_HOST_APP_ENV,
+  HUB_BUILTIN_TOOL_NAMES,
   MCP_SERVER_DISPLAY_NAME,
+  buildInstallerAtSeriesEnv,
   hubJsPath
 } from '@at-series/mcp-hub';
 import {
   ensureAtSeriesConfigForCurrentIde,
   uninstallAtSeriesConfigForCurrentIde
 } from '../../src/mcp/McpConfigInstaller';
-import { AT_GRAFANA_TOOL_CATALOG } from '../../src/mcp/toolCatalog';
 
 describe('McpConfigInstaller', () => {
   let home: string;
@@ -29,7 +29,7 @@ describe('McpConfigInstaller', () => {
     await rm(home, { recursive: true, force: true });
   });
 
-  it('ensure writes AT Series config, keeps other-server', async () => {
+  it('ensure writes canonical AT Series via Hub (no plugin catalog autoApprove)', async () => {
     const mcpPath = join(home, '.cursor', 'mcp.json');
     await mkdir(join(home, '.cursor'), { recursive: true });
     await writeFile(
@@ -62,14 +62,15 @@ describe('McpConfigInstaller', () => {
       command: 'uvx',
       args: ['mcp-server-fetch']
     });
-    expect(parsed.mcpServers[MCP_SERVER_DISPLAY_NAME]).toMatchObject({
+    expect(parsed.mcpServers[MCP_SERVER_DISPLAY_NAME]).toEqual({
       command: 'node',
       args: [hubJs.replaceAll('\\', '/')],
-      env: { [AT_SERIES_HOST_APP_ENV]: 'cursor' }
+      env: buildInstallerAtSeriesEnv('cursor'),
+      autoApprove: [...HUB_BUILTIN_TOOL_NAMES]
     });
   });
 
-  it('autoApprove always includes the built-in at_list_providers tool', async () => {
+  it('autoApprove is Hub meta only', async () => {
     const mcpPath = join(home, '.cursor', 'mcp.json');
 
     await ensureAtSeriesConfigForCurrentIde({
@@ -83,13 +84,8 @@ describe('McpConfigInstaller', () => {
       mcpServers: Record<string, { autoApprove?: string[] }>;
     };
     const autoApprove = parsed.mcpServers[MCP_SERVER_DISPLAY_NAME]?.autoApprove ?? [];
-    expect(autoApprove).toContain('at_list_providers');
-    // Every Task 5.1 + Task 6.1 tool is risk: read, so all 9 qualify for the Hub
-    // installer's default autoApprove set (ADR-004's Consequences section / Protocol v1 §6/§9.2).
-    expect(AT_GRAFANA_TOOL_CATALOG.length).toBe(9);
-    for (const tool of AT_GRAFANA_TOOL_CATALOG) {
-      expect(autoApprove).toContain(tool.name);
-    }
+    expect(autoApprove).toEqual([...HUB_BUILTIN_TOOL_NAMES]);
+    expect(autoApprove).not.toContain('grafana_list_dashboards');
   });
 
   it('uninstall removes AT Series only', async () => {
@@ -103,8 +99,8 @@ describe('McpConfigInstaller', () => {
             [MCP_SERVER_DISPLAY_NAME]: {
               command: 'node',
               args: [hubJs.replaceAll('\\', '/')],
-              env: { [AT_SERIES_HOST_APP_ENV]: 'cursor' },
-              autoApprove: ['at_list_providers']
+              env: buildInstallerAtSeriesEnv('cursor'),
+              autoApprove: [...HUB_BUILTIN_TOOL_NAMES]
             },
             'other-server': { command: 'uvx', args: ['mcp-server-fetch'] }
           }
