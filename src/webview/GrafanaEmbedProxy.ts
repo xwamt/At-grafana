@@ -1,6 +1,7 @@
 import * as http from 'node:http';
 import * as https from 'node:https';
 import type { Socket } from 'node:net';
+import { createBridgeToken, timingSafeEqualToken } from '@at-series/mcp-hub';
 import type { GrafanaInstanceConfigManager } from '../config/GrafanaInstanceConfigManager';
 import type { GrafanaCertTrustStore } from '../grafana/GrafanaCertTrustStore';
 import { attachCertVerification, type GrafanaCertVerifier } from '../grafana/GrafanaHttpClient';
@@ -27,9 +28,29 @@ import { redactSensitiveText } from '../utils/redaction';
  * shared abstraction (see BridgeServer.ts's `start`/`dispose` for the
  * equivalent bind/listen/close pattern this class mirrors).
  *
+ * ## Authorization: the `/e/:embedToken` prefix
+ *
+ * Every request this proxy accepts gets the instance's Service Account Token
+ * injected (see `forward`), so reaching it at all means holding an
+ * authenticated read/write channel to Grafana. The instanceId cannot be that
+ * credential: it lives in plaintext in VS Code's `globalState`
+ * (`state.vscdb`), readable by any process running as the same user, so a
+ * malicious npm postinstall script or a second extension could read it, scan
+ * 127.0.0.1 for the port, and drive Grafana through this proxy for as long as
+ * the extension stays active.
+ *
+ * So `start()` mints a per-run token (32 CSPRNG bytes via the shared
+ * `createBridgeToken`) that every URL below is prefixed with, and
+ * `handleRequest` rejects anything that does not present it. Alongside it:
+ * the `Host` header must be the literal loopback authority (closing DNS
+ * rebinding, where a hostname the attacker controls resolves to 127.0.0.1),
+ * and any `Origin` header must be this proxy's own. Rejections are a bare
+ * 404, not a 401 — a challenge would tell a port scanner it found the AT
+ * Grafana proxy and that guessing is worth continuing.
+ *
  * ## URL scheme (depended on by Task 4.2/4.3 — treat as a stable contract)
  *
- * - Dashboards: `/instances/:instanceId/d/:uid/:slug?`, mirroring Grafana's
+ * - Dashboards: `/e/:embedToken/instances/:instanceId/d/:uid/:slug?`, mirroring Grafana's
  *   own dashboard URL (`/d/:uid/:slug`, slug optional/best-effort — Grafana
  *   resolves the dashboard by uid regardless of what the slug segment says).
  * - Alert rules: `/instances/:instanceId/alerting/grafana/:uid/view`,
@@ -40,7 +61,7 @@ import { redactSensitiveText } from '../utils/redaction';
  *   `source: 'grafana'` for Grafana-managed rules) as of 2026-07-29 —
  *   **high confidence**, but not exercised against a live Grafana instance
  *   in this environment; re-confirm at the Phase 4 checkpoint per the plan's
- *   own risk note.
+ *   own risk note. Prefixed with `/e/:embedToken` like every other route.
  * - Any other path under `/instances/:instanceId/...` is forwarded verbatim
  *   to the same path on the real Grafana origin, which is what lets
  *   Grafana's own JS fetch its sub-resources (JS/CSS bundles, `/api/...`
@@ -103,12 +124,18 @@ const REWRITABLE_CONTENT_TYPE_PATTERN = /^(text\/html|application\/javascript|te
 
 const INSTANCE_PATH_PATTERN = /^\/instances\/([^/]+)(\/.*)?$/;
 
+/** Kept short so it costs little in every rewritten Grafana asset URL. */
+const EMBED_TOKEN_PATH_SEGMENT = 'e';
+
+const EMBED_TOKEN_PATH_PATTERN = /^\/e\/([^/]+)(\/.*)?$/;
+
 /** Instance ids are `randomUUID()` outputs; anything else is rejected outright rather than risk-assessed, which also forecloses `..`/`@`/`%`-based smuggling through the instanceId segment. */
 const SAFE_INSTANCE_ID_PATTERN = /^[a-zA-Z0-9-]+$/;
 
 export class GrafanaEmbedProxy {
   private server: http.Server | undefined;
   private port: number | undefined;
+  private embedToken: string | undefined;
   private readonly sockets = new Set<Socket>();
 
   constructor(private readonly deps: GrafanaEmbedProxyDependencies) {}
@@ -121,6 +148,7 @@ export class GrafanaEmbedProxy {
     if (this.server) {
       return;
     }
+    this.embedToken = createBridgeToken();
     const server = http.createServer((request, response) => {
       void this.handleRequest(request, response);
     });
@@ -157,6 +185,7 @@ export class GrafanaEmbedProxy {
     const server = this.server;
     this.server = undefined;
     this.port = undefined;
+    this.embedToken = undefined;
     if (!server) {
       return;
     }
@@ -174,7 +203,7 @@ export class GrafanaEmbedProxy {
     dashboardSlugOrPath?: string,
     search?: string
   ): string {
-    const base = this.requireOrigin();
+    const base = this.requireEmbedBase();
     const slugSegment = dashboardSlugOrPath ? `/${encodeURIComponent(dashboardSlugOrPath)}` : '';
     const query =
       search && search.length > 0 ? (search.startsWith('?') ? search : `?${search}`) : '';
@@ -183,15 +212,23 @@ export class GrafanaEmbedProxy {
 
   /** Mirrors Grafana's native Unified Alerting rule view page (`/alerting/grafana/:uid/view`) — see class doc for the source verifying this. */
   buildAlertRuleUrl(instanceId: string, ruleUid: string): string {
-    const base = this.requireOrigin();
+    const base = this.requireEmbedBase();
     return `${base}/instances/${encodeURIComponent(instanceId)}/alerting/grafana/${encodeURIComponent(ruleUid)}/view`;
   }
 
-  private requireOrigin(): string {
-    if (!this.origin) {
+  /**
+   * The single place every externally-visible embed URL is built from, so a
+   * new route cannot accidentally be minted without the token prefix.
+   */
+  private requireEmbedBase(): string {
+    if (!this.origin || this.embedToken === undefined) {
       throw new Error('GrafanaEmbedProxy is not started.');
     }
-    return this.origin;
+    return `${this.origin}${this.embedPathPrefix()}`;
+  }
+
+  private embedPathPrefix(): string {
+    return `/${EMBED_TOKEN_PATH_SEGMENT}/${this.embedToken ?? ''}`;
   }
 
   private async handleRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
@@ -201,7 +238,20 @@ export class GrafanaEmbedProxy {
         return;
       }
 
-      const parsedPath = parseProxyRoute(request.url ?? '/', parseInstanceCookie(request.headers.cookie));
+      const rawUrl = request.url ?? '/';
+      const tokenRoute = splitEmbedTokenPath(rawUrl);
+      // Cookie fallback exists for the same reason the instance cookie does:
+      // some Grafana sub-resource requests escape the appSubUrl/base rewrite
+      // and arrive at the proxy root. The cookie is only ever handed out on a
+      // response to an already-authorized request, so it grants nothing to a
+      // caller that never had the token.
+      const presentedToken = tokenRoute?.token ?? parseEmbedTokenCookie(request.headers.cookie);
+      if (!this.isAuthorized(request, presentedToken)) {
+        respondNotFound(response);
+        return;
+      }
+
+      const parsedPath = parseProxyRoute(tokenRoute?.target ?? rawUrl, parseInstanceCookie(request.headers.cookie));
       if (!parsedPath) {
         respondError(response, 404, 'Unknown AT Grafana proxy route.');
         return;
@@ -259,6 +309,29 @@ export class GrafanaEmbedProxy {
         response.destroy();
       }
     }
+  }
+
+  /**
+   * The whole admission gate, evaluated before anything else looks at the
+   * request. See the class doc's "Authorization" section for the threat this
+   * closes; the short version is that reaching this proxy is equivalent to
+   * holding the instance's Service Account Token, so knowing the instanceId
+   * (which any local process can read out of `state.vscdb`) must not be
+   * sufficient.
+   */
+  private isAuthorized(request: http.IncomingMessage, presentedToken: string | undefined): boolean {
+    const expected = this.embedToken;
+    if (expected === undefined || presentedToken === undefined || !timingSafeEqualToken(presentedToken, expected)) {
+      return false;
+    }
+    // Compared against the literal loopback authority rather than "some
+    // hostname that resolves to 127.0.0.1", which is exactly the difference
+    // that makes DNS rebinding fail here.
+    if (request.headers.host !== `127.0.0.1:${this.port ?? ''}`) {
+      return false;
+    }
+    const origin = request.headers.origin;
+    return origin === undefined || origin === this.origin;
   }
 
   /**
@@ -372,8 +445,10 @@ export class GrafanaEmbedProxy {
     instanceId: string,
     viaCookie: boolean
   ): void {
-    const proxyBase = `${this.origin ?? ''}/instances/${encodeURIComponent(instanceId)}`;
-    const instancePathPrefix = `/instances/${encodeURIComponent(instanceId)}`;
+    // Both carry the token prefix so Grafana's own `<base>`/appSubUrl-relative
+    // requests stay on an authorized route instead of 404ing at the gate.
+    const instancePathPrefix = `${this.embedPathPrefix()}/instances/${encodeURIComponent(instanceId)}`;
+    const proxyBase = `${this.origin ?? ''}${instancePathPrefix}`;
 
     const headersOut: http.OutgoingHttpHeaders = {};
     for (const [key, value] of Object.entries(proxyResponse.headers)) {
@@ -398,7 +473,7 @@ export class GrafanaEmbedProxy {
 
     const contentType = firstHeaderValue(proxyResponse.headers['content-type']);
     if (!viaCookie) {
-      headersOut['set-cookie'] = buildInstanceEmbedCookie(instanceId);
+      headersOut['set-cookie'] = [buildInstanceEmbedCookie(instanceId), buildEmbedTokenCookie(this.embedToken ?? '')];
     }
     if (REWRITABLE_CONTENT_TYPE_PATTERN.test(contentType ?? '')) {
       this.relayRewritableBody(
@@ -528,6 +603,37 @@ const GRAFANA_NATIVE_PATH_PREFIXES = [
 ];
 
 const EMBED_INSTANCE_COOKIE = 'atGrafanaEmbedInstance';
+const EMBED_TOKEN_COOKIE = 'atGrafanaEmbedToken';
+
+/**
+ * Splits `/e/:embedToken/...` into the presented token and the request target
+ * the rest of the routing sees. Returns undefined for any URL without a token
+ * segment (including an unparseable one) — the caller treats "no token here"
+ * and "malformed" identically, since both end at the same bare 404.
+ */
+export function splitEmbedTokenPath(rawUrl: string): { token: string; target: string } | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl, 'http://proxy-internal.invalid');
+  } catch {
+    return undefined;
+  }
+
+  const match = EMBED_TOKEN_PATH_PATTERN.exec(parsed.pathname);
+  if (!match) {
+    return undefined;
+  }
+
+  let token: string;
+  try {
+    token = decodeURIComponent(match[1] ?? '');
+  } catch {
+    return undefined;
+  }
+
+  const rest = match[2] && match[2].length > 0 ? match[2] : '/';
+  return { token, target: `${rest}${parsed.search}` };
+}
 
 /**
  * Parses `/instances/:instanceId/...` safely: the instanceId segment can
@@ -606,16 +712,25 @@ export function isGrafanaNativePath(pathname: string): boolean {
 }
 
 export function parseInstanceCookie(cookieHeader: string | undefined): string | undefined {
+  const instanceId = readCookie(cookieHeader, EMBED_INSTANCE_COOKIE);
+  return instanceId !== undefined && SAFE_INSTANCE_ID_PATTERN.test(instanceId) ? instanceId : undefined;
+}
+
+/** Unvalidated on purpose: the only meaningful check on a token is the constant-time comparison in `isAuthorized`. */
+export function parseEmbedTokenCookie(cookieHeader: string | undefined): string | undefined {
+  return readCookie(cookieHeader, EMBED_TOKEN_COOKIE);
+}
+
+function readCookie(cookieHeader: string | undefined, name: string): string | undefined {
   if (!cookieHeader) {
     return undefined;
   }
-  const match = /(?:^|;\s*)atGrafanaEmbedInstance=([^;]+)/.exec(cookieHeader);
+  const match = new RegExp(`(?:^|;\\s*)${name}=([^;]+)`).exec(cookieHeader);
   if (!match?.[1]) {
     return undefined;
   }
   try {
-    const instanceId = decodeURIComponent(match[1]);
-    return SAFE_INSTANCE_ID_PATTERN.test(instanceId) ? instanceId : undefined;
+    return decodeURIComponent(match[1]);
   } catch {
     return undefined;
   }
@@ -623,6 +738,11 @@ export function parseInstanceCookie(cookieHeader: string | undefined): string | 
 
 function buildInstanceEmbedCookie(instanceId: string): string {
   return `${EMBED_INSTANCE_COOKIE}=${encodeURIComponent(instanceId)}; Path=/; HttpOnly; SameSite=Lax`;
+}
+
+/** Same attributes as the instance cookie: HttpOnly keeps it out of reach of any script the proxied page runs. */
+function buildEmbedTokenCookie(token: string): string {
+  return `${EMBED_TOKEN_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax`;
 }
 
 /**
@@ -722,6 +842,26 @@ function portOf(url: URL): number {
     return Number(url.port);
   }
   return url.protocol === 'https:' ? 443 : 80;
+}
+
+/**
+ * The response for every failed admission check. Deliberately says nothing:
+ * no product name, no "proxy", nothing that would tell someone sweeping
+ * loopback ports that they found the AT Grafana embed proxy and that
+ * continuing to guess is worthwhile. `respondError` below is for callers that
+ * already got past the gate.
+ */
+function respondNotFound(response: http.ServerResponse): void {
+  if (response.headersSent) {
+    response.destroy();
+    return;
+  }
+  const body = Buffer.from('Not Found', 'utf8');
+  response.writeHead(404, {
+    'content-type': 'text/plain; charset=utf-8',
+    'content-length': body.length.toString()
+  });
+  response.end(body);
 }
 
 function respondError(response: http.ServerResponse, status: number, message: string): void {

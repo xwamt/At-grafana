@@ -19,6 +19,7 @@ import {
   rewriteGrafanaAppSubUrl,
   type GrafanaEmbedProxyDependencies
 } from '../../src/webview/GrafanaEmbedProxy';
+import { renderEmbedWebviewHtml } from '../../src/webview/html';
 import { listen, type TestHttpServer } from '../grafana/testHttpServer';
 
 const TOKEN = 'glsa_super_secret_proxy_token_do_not_leak';
@@ -113,6 +114,25 @@ function proxyPort(target: GrafanaEmbedProxy): number {
   return Number(new URL(origin).port);
 }
 
+/**
+ * Reads the per-start embed token back out of a real URL builder rather than
+ * a test-only accessor, so these tests exercise the same path the Webview
+ * does: `/e/<token>/instances/<id>/...`.
+ */
+function embedToken(target: GrafanaEmbedProxy): string {
+  const segments = new URL(target.buildDashboardUrl('probe-instance', 'probe-uid')).pathname.split('/');
+  const token = segments[2];
+  if (!token || segments[1] !== 'e') {
+    throw new Error(`proxy URL builder did not produce an /e/<token>/ prefix: ${segments.join('/')}`);
+  }
+  return token;
+}
+
+/** Prefixes an instance-scoped path with the proxy's embed token. */
+function embedPath(target: GrafanaEmbedProxy, path: string): string {
+  return `/e/${embedToken(target)}${path}`;
+}
+
 afterEach(async () => {
   if (proxy) {
     await proxy.dispose();
@@ -128,6 +148,221 @@ afterEach(async () => {
   }
 });
 
+/**
+ * The proxy injects the instance's Service Account Token into every forwarded
+ * request, so anything that can reach it holds an authenticated read/write
+ * channel to Grafana. Reachability used to require only the instanceId, which
+ * lives in plaintext in VS Code's globalState (`state.vscdb`) and is readable
+ * by any process running as the same user -- a malicious npm postinstall or a
+ * second extension could scan 127.0.0.1 and drive Grafana through it.
+ */
+describe('GrafanaEmbedProxy request authorization', () => {
+  it('404s a request with no embed token and never contacts the upstream', async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' }).end('reached-upstream');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-noauth', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    // Deliberately the pre-token URL shape: everything an attacker who read
+    // the instanceId out of state.vscdb and scanned loopback would have.
+    const result = await requestProxy(proxyPort(embedProxy), `/instances/${instance.id}/api/health`);
+
+    expect(result.status).toBe(404);
+    expect(upstream.requestCount).toBe(0);
+  });
+
+  it('404s a request carrying a wrong embed token of the same length', async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' }).end('reached-upstream');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-wrongtoken', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+    const wrongToken = 'x'.repeat(embedToken(embedProxy).length);
+
+    const result = await requestProxy(proxyPort(embedProxy), `/e/${wrongToken}/instances/${instance.id}/api/health`);
+
+    expect(result.status).toBe(404);
+    expect(upstream.requestCount).toBe(0);
+  });
+
+  it('serves a request carrying the embed token minted by start()', async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' }).end('ok');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-auth', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/api/health`));
+
+    expect(result.status).toBe(200);
+    expect(result.body).toBe('ok');
+  });
+
+  it('does not name itself in the unauthorized response, so a port scan learns nothing', async () => {
+    const configManager = new FakeConfigManager();
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    const result = await requestProxy(proxyPort(embedProxy), '/instances/anything/api/health');
+
+    expect(result.status).toBe(404);
+    expect(result.body.toLowerCase()).not.toContain('grafana');
+  });
+
+  it('mints an unguessable token that differs between proxy instances', async () => {
+    const configManager = new FakeConfigManager();
+    const first = createProxy({ configManager });
+    await first.start();
+    const firstToken = embedToken(first);
+    await first.dispose();
+    proxy = undefined;
+
+    const second = createProxy({ configManager });
+    await second.start();
+    const secondToken = embedToken(second);
+
+    // 32 CSPRNG bytes, base64url-encoded (43 chars, no padding).
+    expect(firstToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(secondToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(secondToken).not.toBe(firstToken);
+  });
+
+  it('404s a request whose Host header is not the loopback origin, closing DNS rebinding', async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' }).end('reached-upstream');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-rebind', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/api/health`), {
+      headers: { host: 'attacker.example.com' }
+    });
+
+    expect(result.status).toBe(404);
+    expect(upstream.requestCount).toBe(0);
+  });
+
+  it('404s a token-bearing request that carries a foreign Origin', async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' }).end('reached-upstream');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-origin', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/api/health`), {
+      headers: { origin: 'https://attacker.example.com' }
+    });
+
+    expect(result.status).toBe(404);
+    expect(upstream.requestCount).toBe(0);
+  });
+
+  it("accepts a request whose Origin is the proxy's own origin", async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' }).end('ok');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-same-origin', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/api/health`), {
+      headers: { origin: embedProxy.origin ?? '' }
+    });
+
+    expect(result.status).toBe(200);
+  });
+
+  it('carries the token in both URL builders, so the Webview iframe never hits an unauthorized route', async () => {
+    const configManager = new FakeConfigManager();
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+    const token = embedToken(embedProxy);
+
+    expect(embedProxy.buildDashboardUrl('inst-1', 'dash-uid', 'my-dashboard')).toBe(
+      `${embedProxy.origin}/e/${token}/instances/inst-1/d/dash-uid/my-dashboard`
+    );
+    expect(embedProxy.buildAlertRuleUrl('inst-1', 'rule-uid')).toBe(
+      `${embedProxy.origin}/e/${token}/instances/inst-1/alerting/grafana/rule-uid/view`
+    );
+  });
+
+  /**
+   * DashboardPanel/AlertDetailPanel are unit-tested against a fake proxy, so
+   * nothing there would notice the URL scheme changing underneath them. This
+   * closes that gap end to end: real proxy -> real URL builder -> real Webview
+   * shell -> parse the `src` back out of the rendered HTML -> fetch it. A
+   * builder that forgot the token prefix shows up here as the 404 the panel
+   * would render as a blank iframe.
+   */
+  it('serves the exact iframe src that the Webview shell renders', async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end('<html><head></head><body>dash</body></html>');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-e2e', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+    const origin = embedProxy.origin ?? '';
+
+    const html = renderEmbedWebviewHtml({
+      title: 'My Dashboard',
+      proxyOrigin: origin,
+      iframeSrc: embedProxy.buildDashboardUrl(instance.id, 'dash-uid', 'my-dashboard')
+    });
+    const iframeSrc = /<iframe src="([^"]+)"/.exec(html)?.[1]?.replaceAll('&amp;', '&');
+    if (!iframeSrc) {
+      throw new Error(`no iframe src in rendered shell: ${html}`);
+    }
+
+    const target = new URL(iframeSrc);
+    const result = await requestProxy(Number(target.port), `${target.pathname}${target.search}`);
+
+    expect(target.origin).toBe(origin);
+    expect(result.status).toBe(200);
+    expect(result.body).toContain('dash');
+    // The shell's own CSP has to keep permitting the (now longer) iframe URL.
+    expect(html).toContain(`frame-src ${origin}`);
+  });
+
+  it('rewrites proxied HTML against the token-scoped base so Grafana sub-resources stay authorized', async () => {
+    upstream = await listen((_req, res) => {
+      res
+        .writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+        .end('<html><head></head><body></body></html>');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-shim', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+    const token = embedToken(embedProxy);
+
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`));
+
+    expect(result.body).toContain(`<base href="${embedProxy.origin}/e/${token}/instances/${instance.id}/">`);
+    expect(result.body).toContain(`"/e/${token}/instances/${instance.id}"`);
+  });
+});
+
 describe('GrafanaEmbedProxy header injection', () => {
   it('injects the instance Bearer token and strips any client-supplied Authorization header', async () => {
     upstream = await listen((req, res) => {
@@ -140,7 +375,7 @@ describe('GrafanaEmbedProxy header injection', () => {
     const embedProxy = createProxy({ configManager });
     await embedProxy.start();
 
-    const result = await requestProxy(proxyPort(embedProxy), `/instances/${instance.id}/api/health`, {
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/api/health`), {
       headers: { authorization: 'Bearer bogus-client-supplied-token' }
     });
 
@@ -159,7 +394,7 @@ describe('GrafanaEmbedProxy unknown instance', () => {
     const embedProxy = createProxy({ configManager });
     await embedProxy.start();
 
-    const result = await requestProxy(proxyPort(embedProxy), '/instances/does-not-exist/d/abc/dash');
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, '/instances/does-not-exist/d/abc/dash'));
 
     expect(result.status).toBe(404);
     expect(upstream.requestCount).toBe(0);
@@ -174,7 +409,7 @@ describe('GrafanaEmbedProxy missing token', () => {
     const embedProxy = createProxy({ configManager });
     await embedProxy.start();
 
-    const result = await requestProxy(proxyPort(embedProxy), `/instances/${instance.id}/d/x/y`);
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/x/y`));
 
     expect(result.status).toBe(502);
     expect(result.body).toContain('Service Account Token');
@@ -198,7 +433,7 @@ describe('GrafanaEmbedProxy TLS trust gate', () => {
     const embedProxy = createProxy({ configManager, certVerifier: rejectingVerifier });
     await embedProxy.start();
 
-    const result = await requestProxy(proxyPort(embedProxy), `/instances/${instance.id}/d/abc/dash`);
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/abc/dash`));
 
     expect(result.status).toBe(502);
     expect(result.body.toLowerCase()).toContain('certificate');
@@ -227,7 +462,7 @@ describe('GrafanaEmbedProxy TLS trust gate', () => {
     const embedProxy = createProxy({ configManager, certVerifier: acceptingVerifier });
     await embedProxy.start();
 
-    const result = await requestProxy(proxyPort(embedProxy), `/instances/${instance.id}/api/health`);
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/api/health`));
 
     expect(result.status).toBe(502);
     expect(connectionAttempts).toBeGreaterThan(0);
@@ -251,12 +486,12 @@ describe('GrafanaEmbedProxy body rewriting', () => {
     const embedProxy = createProxy({ configManager });
     await embedProxy.start();
 
-    const result = await requestProxy(proxyPort(embedProxy), `/instances/${instance.id}/d/uid/slug`);
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`));
 
     expect(result.status).toBe(200);
     expect(result.body).not.toContain(upstream.url);
-    expect(result.body).toContain(`${embedProxy.origin}/instances/${instance.id}/public/build/app.js`);
-    expect(result.body).toContain(`${embedProxy.origin}/instances/${instance.id}/d/other-dash`);
+    expect(result.body).toContain(`${embedProxy.origin}${embedPath(embedProxy, `/instances/${instance.id}`)}/public/build/app.js`);
+    expect(result.body).toContain(`${embedProxy.origin}${embedPath(embedProxy, `/instances/${instance.id}`)}/d/other-dash`);
   });
 
   it('rewrites an absolute Location redirect header pointing at the real origin', async () => {
@@ -269,10 +504,10 @@ describe('GrafanaEmbedProxy body rewriting', () => {
     const embedProxy = createProxy({ configManager });
     await embedProxy.start();
 
-    const result = await requestProxy(proxyPort(embedProxy), `/instances/${instance.id}/d/uid/slug`);
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`));
 
     expect(result.status).toBe(302);
-    expect(result.headers.location).toBe(`${embedProxy.origin}/instances/${instance.id}/d/moved-dash`);
+    expect(result.headers.location).toBe(`${embedProxy.origin}${embedPath(embedProxy, `/instances/${instance.id}`)}/d/moved-dash`);
   });
 
   it('strips Set-Cookie headers from the proxied response', async () => {
@@ -290,10 +525,11 @@ describe('GrafanaEmbedProxy body rewriting', () => {
     const embedProxy = createProxy({ configManager });
     await embedProxy.start();
 
-    const result = await requestProxy(proxyPort(embedProxy), `/instances/${instance.id}/d/uid/slug`);
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`));
 
     expect(result.headers['set-cookie']).toEqual([
-      'atGrafanaEmbedInstance=inst-cookie; Path=/; HttpOnly; SameSite=Lax'
+      'atGrafanaEmbedInstance=inst-cookie; Path=/; HttpOnly; SameSite=Lax',
+      `atGrafanaEmbedToken=${embedToken(embedProxy)}; Path=/; HttpOnly; SameSite=Lax`
     ]);
   });
 
@@ -313,7 +549,7 @@ describe('GrafanaEmbedProxy body rewriting', () => {
     const embedProxy = createProxy({ configManager });
     await embedProxy.start();
 
-    const result = await requestProxy(proxyPort(embedProxy), `/instances/${instance.id}/d/uid/slug`);
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`));
 
     expect(result.status).toBe(200);
     expect(result.headers['x-frame-options']).toBeUndefined();
@@ -334,8 +570,8 @@ describe('GrafanaEmbedProxy body rewriting', () => {
     const embedProxy = createProxy({ configManager });
     await embedProxy.start();
 
-    const result = await requestProxy(proxyPort(embedProxy), `/instances/${instance.id}/d/uid/slug`);
-    const proxyBase = `${embedProxy.origin}/instances/${instance.id}`;
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`));
+    const proxyBase = `${embedProxy.origin}${embedPath(embedProxy, `/instances/${instance.id}`)}`;
 
     expect(result.body).toContain(`<base href="${proxyBase}/">`);
   });
@@ -571,24 +807,25 @@ describe('GrafanaEmbedProxy start/dispose lifecycle', () => {
 });
 
 describe('GrafanaEmbedProxy URL builders', () => {
-  it('buildDashboardUrl follows the documented /instances/:instanceId/d/:uid/:slug scheme', async () => {
+  it('buildDashboardUrl follows the documented /e/:embedToken/instances/:instanceId/d/:uid/:slug scheme', async () => {
     const configManager = new FakeConfigManager();
     const embedProxy = createProxy({ configManager });
     await embedProxy.start();
 
+    const base = `${embedProxy.origin}/e/${embedToken(embedProxy)}`;
     expect(embedProxy.buildDashboardUrl('inst-1', 'dash-uid', 'my-dashboard')).toBe(
-      `${embedProxy.origin}/instances/inst-1/d/dash-uid/my-dashboard`
+      `${base}/instances/inst-1/d/dash-uid/my-dashboard`
     );
-    expect(embedProxy.buildDashboardUrl('inst-1', 'dash-uid')).toBe(`${embedProxy.origin}/instances/inst-1/d/dash-uid`);
+    expect(embedProxy.buildDashboardUrl('inst-1', 'dash-uid')).toBe(`${base}/instances/inst-1/d/dash-uid`);
   });
 
-  it('buildAlertRuleUrl follows the documented /instances/:instanceId/alerting/grafana/:uid/view scheme', async () => {
+  it('buildAlertRuleUrl follows the documented /e/:embedToken/instances/:instanceId/alerting/grafana/:uid/view scheme', async () => {
     const configManager = new FakeConfigManager();
     const embedProxy = createProxy({ configManager });
     await embedProxy.start();
 
     expect(embedProxy.buildAlertRuleUrl('inst-1', 'rule-uid')).toBe(
-      `${embedProxy.origin}/instances/inst-1/alerting/grafana/rule-uid/view`
+      `${embedProxy.origin}/e/${embedToken(embedProxy)}/instances/inst-1/alerting/grafana/rule-uid/view`
     );
   });
 
