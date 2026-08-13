@@ -20,6 +20,9 @@ skills/**
 
 webview/**/*.ts
 
+# Keep AT Grafana entry logos; do not add broad media/** excludes.
+# Required: media/at-grafana-icon.png, media/at-grafana-icon.svg, media/at-grafana-activity.svg
+
 *.vsix
 *.docx
 *.log

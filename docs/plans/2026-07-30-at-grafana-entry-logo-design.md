@@ -72,21 +72,21 @@ Marketplace icons for Terminal/JumpServer share: rounded square `#172033`, cyan 
 - ViewBox `0 0 128 128`
 - Background: `rect` x=10 y=10 w=108 h=108 rx=26 fill `#172033`
 - Chevron: `M38 42 L62 64 L38 86` stroke `#00C2D1` width 12
-- G arc: open C-shaped arc centered in the right half; approximate path  
-  `M99 51c-5-10-15-17-28-17-22 0-38 16.5-38 38s16 38 38 38c12.5 0 23-6.5 28-17`  
+- G arc: open C-shaped arc in the **right half only**, clear gap from chevron (same column as Terminal’s T); path  
+  `M101 50C95 40 90 38 83 38C75 38 70 49 70 66C70 83 75 94 83 94C90 94 95 92 101 82`  
   stroke `#FFFFFF` width 11
-- Crossbar: `M71 72 H102` stroke `#35D07F` width 11
+- Crossbar: `M84 66 H104` stroke `#35D07F` width 11 (spur into the opening only; does not reach the chevron)
 
 **Activity (`at-grafana-activity.svg`):**
 - ViewBox `0 0 24 24`, no background fill
 - Chevron: same as Terminal activity  
   `M4.75 6.75 9.9 12 4.75 17.25` stroke `currentColor` width 2.35
-- G arc:  
-  `M19.55 8.7C18.45 7.15 16.65 6.25 14.55 6.25c-3.35 0-5.95 2.55-5.95 5.75s2.6 5.75 5.95 5.75c1.5 0 2.85-.55 3.85-1.5`  
+- G arc (right half):  
+  `M19.7 8.4C18.5 7.0 17.4 6.5 15.9 6.5c-1.8 0-2.85 2.0-2.85 5.5s1.05 5.5 2.85 5.5c1.15 0 2.1-.55 2.9-1.5`  
   stroke `currentColor` width 2.2
-- Crossbar: `M13.85 12 H19.65` stroke `currentColor` width 2.2
+- Crossbar: `M15.9 12 H20.1` stroke `currentColor` width 2.2
 
-Paths may be tuned ±1–2 units during implementation for optical balance, as long as the balanced-open proportion and color roles are preserved.
+Paths may be tuned ±1–2 units for optical balance, as long as the balanced-open proportion, right-half placement (no overlap with `>`), and color roles are preserved.
 
 ## Acceptance criteria
 

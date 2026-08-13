@@ -16,7 +16,22 @@ await mkdir(stage, { recursive: true });
 await cp(join(root, 'dist'), join(stage, 'dist'), { recursive: true });
 await access(join(stage, 'dist', 'hub.js'));
 await access(join(stage, 'dist', 'hub-version.json'));
-await cp(join(root, 'media'), join(stage, 'media'), { recursive: true }).catch(() => {});
+
+// Entry logos must ship in the VSIX: marketplace PNG + activity-bar SVG.
+await cp(join(root, 'media'), join(stage, 'media'), { recursive: true });
+for (const asset of ['at-grafana-icon.png', 'at-grafana-icon.svg', 'at-grafana-activity.svg']) {
+  await access(join(stage, 'media', asset));
+}
+if (packagedManifest.icon !== 'media/at-grafana-icon.png') {
+  throw new Error(`package.json icon must be media/at-grafana-icon.png (got ${packagedManifest.icon})`);
+}
+const activityIcon = packagedManifest.contributes?.viewsContainers?.activitybar?.[0]?.icon;
+if (activityIcon !== 'media/at-grafana-activity.svg') {
+  throw new Error(
+    `activitybar icon must be media/at-grafana-activity.svg (got ${activityIcon ?? 'missing'})`
+  );
+}
+
 // Webview HTML references CSS by extensionUri-relative path (see renderWebviewHtml);
 // only the .ts sources are stripped by .vscodeignore at vsce-package time below.
 await cp(join(root, 'webview'), join(stage, 'webview'), { recursive: true }).catch(() => {});
