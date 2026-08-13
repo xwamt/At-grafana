@@ -12,7 +12,13 @@ import {
   type GrafanaTreeItem
 } from './GrafanaTreeItems';
 
-export type DashboardApiClient = Pick<GrafanaApiClient, 'search' | 'getFolders'>;
+/**
+ * The tree renders everything the instance has, so it takes the paginated
+ * listings rather than `search`/`getFolders` -- those return one `/api/search`
+ * page and are the Agent-facing pair, deliberately kept bounded. See
+ * GrafanaDashboardsApi.searchAll.
+ */
+export type DashboardApiClient = Pick<GrafanaApiClient, 'searchAll' | 'getAllFolders'>;
 export type DashboardClientFactory = (instance: GrafanaInstanceConfig) => Promise<DashboardApiClient>;
 
 const GENERAL_FOLDER_TITLE = 'General';
@@ -23,7 +29,7 @@ interface InstanceDashboardData {
 }
 
 /**
- * `GrafanaDashboardsApi.search()` has no server-side folder filter (see
+ * `GrafanaDashboardsApi.searchAll()` has no server-side folder filter (see
  * GrafanaDashboardsApi.ts's `GrafanaDashboardSearchQuery`), so every
  * instance's dashboards are fetched once (`fetchInstanceData`) and grouped
  * by `folderUid` client-side; folder-level `getChildren` calls re-slice the
@@ -165,7 +171,7 @@ export class DashboardTreeProvider implements vscode.TreeDataProvider<GrafanaTre
 
   private async fetchInstanceData(instance: GrafanaInstanceConfig): Promise<InstanceDashboardData> {
     const client = await this.createClient(instance);
-    const [folders, dashboards] = await Promise.all([client.getFolders(), client.search({ type: 'dash-db' })]);
+    const [folders, dashboards] = await Promise.all([client.getAllFolders(), client.searchAll({ type: 'dash-db' })]);
     return { folders, dashboards };
   }
 

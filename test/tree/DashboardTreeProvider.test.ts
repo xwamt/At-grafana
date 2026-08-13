@@ -49,7 +49,7 @@ describe('DashboardTreeProvider', () => {
     const instances = [instance({ id: 'a', label: 'A' }), instance({ id: 'b', label: 'B' })];
     const provider = new DashboardTreeProvider(
       { listInstances: async () => instances },
-      async (): Promise<DashboardApiClient> => ({ getFolders: async () => [], search: async () => [] })
+      async (): Promise<DashboardApiClient> => ({ getAllFolders: async () => [], searchAll: async () => [] })
     );
 
     const children = await provider.getChildren();
@@ -63,8 +63,8 @@ describe('DashboardTreeProvider', () => {
   it('groups dashboards by folder, including a synthetic General bucket for folderless dashboards', async () => {
     const inst = instance();
     const client: DashboardApiClient = {
-      getFolders: async () => [{ uid: 'f1', title: 'Infra' }],
-      search: async () => [
+      getAllFolders: async () => [{ uid: 'f1', title: 'Infra' }],
+      searchAll: async () => [
         dashboard({ uid: 'd1', title: 'CPU', folderUid: 'f1' }),
         dashboard({ uid: 'd2', title: 'Loose Dashboard' })
       ]
@@ -92,8 +92,11 @@ describe('DashboardTreeProvider', () => {
   it('filters dashboard leaves case-insensitively by title, and clearing the filter restores full results', async () => {
     const inst = instance();
     const client: DashboardApiClient = {
-      getFolders: async () => [],
-      search: async () => [dashboard({ uid: 'd1', title: 'API Latency' }), dashboard({ uid: 'd2', title: 'Disk Usage' })]
+      getAllFolders: async () => [],
+      searchAll: async () => [
+        dashboard({ uid: 'd1', title: 'API Latency' }),
+        dashboard({ uid: 'd2', title: 'Disk Usage' })
+      ]
     };
     const provider = new DashboardTreeProvider({ listInstances: async () => [inst] }, async () => client);
     const [instanceItem] = await provider.getChildren();
@@ -112,8 +115,8 @@ describe('DashboardTreeProvider', () => {
   it('does not filter folder nodes themselves, only dashboard leaves', async () => {
     const inst = instance();
     const client: DashboardApiClient = {
-      getFolders: async () => [{ uid: 'f1', title: 'Infra' }],
-      search: async () => [dashboard({ uid: 'd1', title: 'CPU', folderUid: 'f1' })]
+      getAllFolders: async () => [{ uid: 'f1', title: 'Infra' }],
+      searchAll: async () => [dashboard({ uid: 'd1', title: 'CPU', folderUid: 'f1' })]
     };
     const provider = new DashboardTreeProvider({ listInstances: async () => [inst] }, async () => client);
     provider.setFilter('does-not-match-anything');
@@ -131,7 +134,7 @@ describe('DashboardTreeProvider', () => {
           throw new Error('storage unavailable');
         }
       },
-      async (): Promise<DashboardApiClient> => ({ getFolders: async () => [], search: async () => [] })
+      async (): Promise<DashboardApiClient> => ({ getAllFolders: async () => [], searchAll: async () => [] })
     );
 
     const children = await provider.getChildren();
@@ -154,6 +157,29 @@ describe('DashboardTreeProvider', () => {
     expect((children[0] as ErrorTreeItem).description).toContain('network unreachable');
   });
 
+  it('builds the tree from the complete paginated listings, not from a single truncated page', async () => {
+    const inst = instance();
+    const client: DashboardApiClient = {
+      getAllFolders: async () => [{ uid: 'f1', title: 'Infra' }],
+      searchAll: async () => [dashboard({ uid: 'd1', title: 'CPU', folderUid: 'f1' })]
+    };
+    const provider = new DashboardTreeProvider({ listInstances: async () => [inst] }, async () => client);
+
+    const [instanceItem] = await provider.getChildren();
+    const folders = await provider.getChildren(instanceItem);
+
+    expect(folders.some((f) => f instanceof ErrorTreeItem)).toBe(false);
+    const infraFolder = folders.find(
+      (f) => f instanceof FolderTreeItem && f.folderUid === 'f1'
+    ) as FolderTreeItem | undefined;
+    expect(infraFolder).toBeDefined();
+
+    const dashboards = await provider.getChildren(infraFolder);
+    expect(dashboards).toHaveLength(1);
+    expect(dashboards[0]).toBeInstanceOf(DashboardTreeItem);
+    expect((dashboards[0] as DashboardTreeItem).uid).toBe('d1');
+  });
+
   it('refresh() clears the cached data so the next expand re-fetches from the client', async () => {
     const inst = instance();
     let callCount = 0;
@@ -161,7 +187,7 @@ describe('DashboardTreeProvider', () => {
       { listInstances: async () => [inst] },
       async (): Promise<DashboardApiClient> => {
         callCount += 1;
-        return { getFolders: async () => [], search: async () => [] };
+        return { getAllFolders: async () => [], searchAll: async () => [] };
       }
     );
 

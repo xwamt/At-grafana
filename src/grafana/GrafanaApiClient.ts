@@ -52,7 +52,7 @@ export class GrafanaApiClient {
 
   constructor(options: GrafanaApiClientOptions) {
     this.http = new GrafanaHttpClient(options);
-    this.dashboardsApi = new GrafanaDashboardsApi(this.http);
+    this.dashboardsApi = new GrafanaDashboardsApi(this.http, options.log);
     this.alertsApi = new GrafanaAlertsApi(this.http);
     this.datasourcesApi = new GrafanaDatasourcesApi(this.http);
   }
@@ -73,8 +73,18 @@ export class GrafanaApiClient {
     return this.dashboardsApi.search(...args);
   }
 
+  searchAll(...args: Parameters<GrafanaDashboardsApi['searchAll']>): ReturnType<GrafanaDashboardsApi['searchAll']> {
+    return this.dashboardsApi.searchAll(...args);
+  }
+
   getFolders(): ReturnType<GrafanaDashboardsApi['getFolders']> {
     return this.dashboardsApi.getFolders();
+  }
+
+  getAllFolders(
+    ...args: Parameters<GrafanaDashboardsApi['getAllFolders']>
+  ): ReturnType<GrafanaDashboardsApi['getAllFolders']> {
+    return this.dashboardsApi.getAllFolders(...args);
   }
 
   getDashboardByUid(...args: Parameters<GrafanaDashboardsApi['getDashboardByUid']>): ReturnType<GrafanaDashboardsApi['getDashboardByUid']> {
