@@ -3,7 +3,7 @@ import * as net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { AT_SERIES_TOKEN_HEADER, BRIDGE_HOST, BRIDGE_MAX_BODY_BYTES } from '@at-series/mcp-hub';
+import { AT_SERIES_TOKEN_HEADER, BRIDGE_HOST, BRIDGE_MAX_BODY_BYTES, createBridgeToken } from '@at-series/mcp-hub';
 import { BridgeServer, type BridgeServerOptions } from '../../src/mcp/BridgeServer';
 
 /**
@@ -205,6 +205,16 @@ describe('BridgeServer over a real socket: credentials are checked before the bo
     );
 
     expect(statusLine(received)).toContain('401');
+  });
+
+  it('publishes a token minted by the Hub helper rather than a hand-rolled one', async () => {
+    const { token } = await startBridge();
+
+    // Length is taken from the helper instead of written down, so this pins
+    // the Bridge to whatever `createBridgeToken` defines rather than to
+    // today's encoding.
+    expect(token).toHaveLength(createBridgeToken().length);
+    expect(token).toMatch(/^[A-Za-z0-9_-]+$/);
   });
 });
 

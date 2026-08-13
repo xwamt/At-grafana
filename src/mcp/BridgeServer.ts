@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
 import {
@@ -6,7 +6,9 @@ import {
   AT_SERIES_TOKEN_HEADER,
   BRIDGE_HOST,
   BRIDGE_MAX_BODY_BYTES,
+  createBridgeToken,
   FsBridgePublisher,
+  timingSafeEqualToken,
   type HostApp
 } from '@at-series/mcp-hub';
 import type { GrafanaAgentToolService } from '../agent/GrafanaAgentToolService';
@@ -109,7 +111,9 @@ export class BridgeServer {
     if (this.server) {
       return;
     }
-    this.token = randomBytes(32).toString('hex');
+    // Same 32 bytes of CSPRNG entropy the hand-rolled `randomBytes(32).toString('hex')`
+    // gave, but minted by the same helper that defines what a Bridge token is.
+    this.token = createBridgeToken();
     const token = this.token;
     const handler = createBridgeRequestHandler({
       bridgeId: this.bridgeId,
@@ -342,8 +346,20 @@ export async function readLimitedBody(
   return { ok: true, body: Buffer.concat(chunks).toString('utf8') };
 }
 
+/**
+ * Protocol v1 §7.2 makes a constant-time comparison a MUST;
+ * `timingSafeEqualToken` is the Hub's single implementation of it, adopted
+ * here in place of a `===`. It also refuses to match two empty strings, so a
+ * Bridge that somehow started without minting a token fails closed instead of
+ * accepting every caller that omits the header.
+ *
+ * The `?? ''` is load-bearing rather than a formality: the helper is typed for
+ * strings and encodes both sides with `Buffer.from`, so a missing header has
+ * to arrive as a non-matching empty string. `headerValue` is what guarantees
+ * that is the only non-string it can ever see.
+ */
 function isAuthorized(headers: Record<string, string | string[] | undefined>, token: string): boolean {
-  return headerValue(headers, AT_SERIES_TOKEN_HEADER) === token;
+  return timingSafeEqualToken(headerValue(headers, AT_SERIES_TOKEN_HEADER) ?? '', token);
 }
 
 function unauthorizedResponse(): BridgeResponse {
@@ -352,10 +368,13 @@ function unauthorizedResponse(): BridgeResponse {
 
 function headerValue(headers: Record<string, string | string[] | undefined>, name: string): string | undefined {
   const value = headers[name] ?? headers[name.toLowerCase()];
-  if (Array.isArray(value)) {
-    return value[0];
-  }
-  return value;
+  const first = Array.isArray(value) ? value[0] : value;
+  // Node's own header values are always strings, but this signature is also
+  // satisfied by hand-built request objects, and an empty repeated header
+  // yields `undefined` from an index the type says is a string. Narrowing to
+  // what the return type promises keeps anything else out of the token
+  // comparison, where it would surface as a 500 rather than the 401 it is.
+  return typeof first === 'string' ? first : undefined;
 }
 
 function normalizePath(path: string): string {

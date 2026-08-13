@@ -156,3 +156,55 @@ describe('BridgeServer request handler', () => {
     expect(response.status).toBe(404);
   });
 });
+
+/**
+ * Protocol v1 §7.2 makes a constant-time comparison a MUST, and the Hub
+ * exports `timingSafeEqualToken` so the three Bridges share one correct
+ * implementation. The observable consequences of adopting it -- rather than
+ * the timing property itself, which a test cannot honestly assert -- are
+ * below.
+ */
+describe('BridgeServer token comparison', () => {
+  async function health(dependencyToken: string, presented: string | string[] | undefined) {
+    return handler({ token: dependencyToken })({
+      method: 'GET',
+      path: '/health',
+      headers: presented === undefined ? {} : { [AT_SERIES_TOKEN_HEADER]: presented }
+    });
+  }
+
+  it('never accepts an empty token, so a Bridge that failed to mint one is closed rather than open', async () => {
+    expect((await health('', '')).status).toBe(401);
+  });
+
+  it('rejects a caller presenting nothing against an empty configured token', async () => {
+    expect((await health('', undefined)).status).toBe(401);
+  });
+
+  it('rejects a wrong token of exactly the right length', async () => {
+    expect((await health(TOKEN, 'tokentest-'.slice(0, TOKEN.length))).status).toBe(401);
+    expect(TOKEN).toHaveLength('tokentest-'.slice(0, TOKEN.length).length);
+  });
+
+  it('rejects a correct prefix and a correct token with anything appended', async () => {
+    expect((await health(TOKEN, TOKEN.slice(0, -1))).status).toBe(401);
+    expect((await health(TOKEN, `${TOKEN}x`)).status).toBe(401);
+  });
+
+  it('still accepts the exact token, including as the first of a repeated header', async () => {
+    expect((await health(TOKEN, TOKEN)).status).toBe(200);
+    expect((await health(TOKEN, [TOKEN, 'ignored'])).status).toBe(200);
+  });
+
+  it('rejects a non-string header value instead of failing the comparison outright', async () => {
+    // Node only ever produces string header values, but the handler accepts
+    // hand-built requests too, and a value the comparison cannot encode must
+    // come back as the 401 it is rather than as a 500.
+    const response = await handler({ token: TOKEN })({
+      method: 'GET',
+      path: '/health',
+      headers: { [AT_SERIES_TOKEN_HEADER]: 42 as unknown as string }
+    });
+    expect(response.status).toBe(401);
+  });
+});
