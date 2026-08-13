@@ -24,7 +24,31 @@ export interface BridgeServerOptions {
   pluginVersion?: string;
   /** Omitted only in tests exercising pre-Task-5.1 behavior; see createBridgeRequestHandler's doc. */
   toolService?: GrafanaAgentToolService;
+  /** Shrunk by tests so socket-level deadlines are observable; ships as DEFAULT_BRIDGE_SERVER_LIMITS. */
+  limits?: Partial<BridgeServerLimits>;
 }
+
+/**
+ * Socket-level ceilings. Like `GrafanaEmbedProxy`'s, these exist because the
+ * server runs inside the VS Code extension host: a client that opens a socket
+ * and then goes quiet costs the editor its memory and file descriptors. The
+ * Bridge's only legitimate client is the local Hub, which is neither slow nor
+ * numerous, so these are runaway guards rather than tuning knobs.
+ */
+export interface BridgeServerLimits {
+  /** Ceiling on how long a client may take to deliver a complete request. */
+  requestTimeoutMs: number;
+  /** Ceiling on how long a client may take to deliver its headers (slowloris). */
+  headersTimeoutMs: number;
+  /** Hard cap on simultaneously open client sockets. */
+  maxConnections: number;
+}
+
+export const DEFAULT_BRIDGE_SERVER_LIMITS: BridgeServerLimits = {
+  requestTimeoutMs: 30_000,
+  headersTimeoutMs: 10_000,
+  maxConnections: 64
+};
 
 export interface BridgeHandlerDependencies {
   bridgeId: string;
@@ -71,12 +95,14 @@ export class BridgeServer {
   private readonly hostApp: HostApp;
   private readonly pluginVersion: string;
   private readonly toolService: GrafanaAgentToolService | undefined;
+  private readonly limits: BridgeServerLimits;
 
   constructor(options: BridgeServerOptions) {
     this.home = options.home ?? homedir();
     this.hostApp = options.hostApp;
     this.pluginVersion = options.pluginVersion ?? DEFAULT_PLUGIN_VERSION;
     this.toolService = options.toolService;
+    this.limits = { ...DEFAULT_BRIDGE_SERVER_LIMITS, ...options.limits };
   }
 
   async start(): Promise<void> {
@@ -84,16 +110,30 @@ export class BridgeServer {
       return;
     }
     this.token = randomBytes(32).toString('hex');
+    const token = this.token;
     const handler = createBridgeRequestHandler({
       bridgeId: this.bridgeId,
-      token: this.token,
+      token,
       hostApp: this.hostApp,
       pluginVersion: this.pluginVersion,
       toolService: this.toolService
     });
-    this.server = createServer((request, response) => {
-      void handleNodeRequest(handler, request, response);
-    });
+    this.server = createServer(
+      {
+        // Node enforces the two timeouts below from a periodic sweep, not a
+        // per-socket timer, and that sweep defaults to every 30s -- which
+        // would round a 10s headers deadline up to as much as 40s. Tying the
+        // interval to the deadline keeps enforcement close to the configured
+        // value. The sweep timer is unref'd by Node, so it costs nothing.
+        connectionsCheckingInterval: Math.min(30_000, Math.max(500, this.limits.headersTimeoutMs)),
+        requestTimeout: this.limits.requestTimeoutMs,
+        headersTimeout: this.limits.headersTimeoutMs
+      },
+      (request, response) => {
+        void handleNodeRequest(handler, token, request, response);
+      }
+    );
+    this.server.maxConnections = this.limits.maxConnections;
     await new Promise<void>((resolve, reject) => {
       this.server!.once('error', reject);
       this.server!.listen(0, BRIDGE_HOST, () => resolve());
@@ -166,8 +206,11 @@ export function createBridgeRequestHandler(dependencies: BridgeHandlerDependenci
 
   return async (request: BridgeRequest): Promise<BridgeResponse> => {
     try {
+      // Re-checked here even though `handleNodeRequest` already gated on it:
+      // this handler is a standalone unit that can be driven without that
+      // transport, so it may not assume anything upstream of it ran.
       if (!isAuthorized(request.headers, dependencies.token)) {
-        return bridgeError(401, 'UNAUTHORIZED', 'Unauthorized MCP bridge request.');
+        return unauthorizedResponse();
       }
 
       const path = normalizePath(request.path);
@@ -303,6 +346,10 @@ function isAuthorized(headers: Record<string, string | string[] | undefined>, to
   return headerValue(headers, AT_SERIES_TOKEN_HEADER) === token;
 }
 
+function unauthorizedResponse(): BridgeResponse {
+  return bridgeError(401, 'UNAUTHORIZED', 'Unauthorized MCP bridge request.');
+}
+
 function headerValue(headers: Record<string, string | string[] | undefined>, name: string): string | undefined {
   const value = headers[name] ?? headers[name.toLowerCase()];
   if (Array.isArray(value)) {
@@ -331,29 +378,43 @@ function bridgeError(status: number, code: string, message: string, details?: un
 
 async function handleNodeRequest(
   handler: ReturnType<typeof createBridgeRequestHandler>,
+  token: string,
   request: IncomingMessage,
   response: ServerResponse
 ): Promise<void> {
   try {
-    const limited = await readLimitedBody(request, BRIDGE_MAX_BODY_BYTES);
-    if (!limited.ok) {
-      response.statusCode = limited.status;
-      response.setHeader('content-type', 'application/json; charset=utf-8');
-      response.end(JSON.stringify({ error: { code: 'PAYLOAD_TOO_LARGE', message: limited.error } }));
+    // Credentials are settled from the headers alone, before `readLimitedBody`
+    // is allowed to accumulate anything. Reading first would let any local
+    // process -- no credential required -- make the extension host hold
+    // BRIDGE_MAX_BODY_BYTES per socket, over as many sockets as it cares to
+    // open. Answering here instead leaves Node to discard the unread remainder
+    // as it arrives, which costs one stream buffer per connection rather than
+    // two megabytes.
+    if (!isAuthorized(request.headers, token)) {
+      respond(response, unauthorizedResponse());
       return;
     }
-    const result = await handler({
-      method: request.method ?? 'GET',
-      path: request.url ?? '/',
-      headers: request.headers,
-      body: limited.body
-    });
-    response.statusCode = result.status;
-    response.setHeader('content-type', 'application/json; charset=utf-8');
-    response.end(JSON.stringify(result.body));
+    const limited = await readLimitedBody(request, BRIDGE_MAX_BODY_BYTES);
+    if (!limited.ok) {
+      respond(response, bridgeError(limited.status, 'PAYLOAD_TOO_LARGE', limited.error));
+      return;
+    }
+    respond(
+      response,
+      await handler({
+        method: request.method ?? 'GET',
+        path: request.url ?? '/',
+        headers: request.headers,
+        body: limited.body
+      })
+    );
   } catch (error) {
-    response.statusCode = 500;
-    response.setHeader('content-type', 'application/json; charset=utf-8');
-    response.end(JSON.stringify({ error: { code: 'INTERNAL_ERROR', message: formatError(error) } }));
+    respond(response, bridgeError(500, 'INTERNAL_ERROR', formatError(error)));
   }
+}
+
+function respond(response: ServerResponse, result: BridgeResponse): void {
+  response.statusCode = result.status;
+  response.setHeader('content-type', 'application/json; charset=utf-8');
+  response.end(JSON.stringify(result.body));
 }
