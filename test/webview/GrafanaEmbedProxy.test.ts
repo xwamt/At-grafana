@@ -1017,6 +1017,189 @@ describe('GrafanaEmbedProxy WebSocket upgrade handling', () => {
   });
 });
 
+/**
+ * The proxy buffers up to `maxRewriteBufferBytes` per rewritable response and
+ * runs inside the extension host process, so an upstream that accepts a
+ * connection and then goes quiet -- or simply a lot of them at once -- is a
+ * memory and socket problem for VS Code itself, not just a slow panel.
+ * `GrafanaHttpClient` has had a 15s timeout since Task 2.1; this path never
+ * got one.
+ *
+ * Timeouts here are shrunk via injected limits so the tests stay fast; the
+ * shipped defaults are in DEFAULT_EMBED_PROXY_LIMITS.
+ */
+describe('GrafanaEmbedProxy upstream timeouts and concurrency', () => {
+  /** Turns a hang into a readable assertion failure instead of a vitest-level timeout. */
+  async function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error(`${what} did not settle within ${ms}ms`)), ms);
+        })
+      ]);
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  it('gives up on an upstream that never responds instead of hanging forever', async () => {
+    upstream = await listen(() => {
+      // Accept the request and never answer, like a wedged Grafana.
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-slow', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager, limits: { upstreamTimeoutMs: 300 } });
+    await embedProxy.start();
+
+    const result = await within(
+      requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/api/health`)),
+      3000,
+      'proxy response for a wedged upstream'
+    );
+
+    expect(result.status).toBe(504);
+  });
+
+  it('tears down the upstream socket on timeout rather than leaking it', async () => {
+    let upstreamSocketClosed = false;
+    upstream = await listen((req) => {
+      req.on('close', () => {
+        upstreamSocketClosed = true;
+      });
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-leak', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager, limits: { upstreamTimeoutMs: 300 } });
+    await embedProxy.start();
+
+    await within(
+      requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/api/health`)),
+      3000,
+      'proxy response for a wedged upstream'
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(upstreamSocketClosed).toBe(true);
+  });
+
+  it('sheds load past the concurrency cap instead of queueing unbounded work', async () => {
+    const release: Array<() => void> = [];
+    upstream = await listen((_req, res) => {
+      release.push(() => res.writeHead(200, { 'content-type': 'text/plain' }).end('ok'));
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-flood', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({
+      configManager,
+      limits: { maxConcurrentRequests: 2, upstreamTimeoutMs: 5000 }
+    });
+    await embedProxy.start();
+    const port = proxyPort(embedProxy);
+    const path = embedPath(embedProxy, `/instances/${instance.id}/api/health`);
+
+    const first = requestProxy(port, path);
+    const second = requestProxy(port, path);
+    // Let both occupy an upstream slot before the third arrives.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const third = await within(requestProxy(port, path), 3000, 'third concurrent request');
+
+    expect(third.status).toBe(503);
+    expect(third.headers['retry-after']).toBeDefined();
+
+    for (const finish of release) {
+      finish();
+    }
+    await within(Promise.all([first, second]), 3000, 'in-flight requests');
+  });
+
+  it('frees a concurrency slot once a request finishes, so the cap is not a one-way ratchet', async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' }).end('ok');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-serial', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager, limits: { maxConcurrentRequests: 1 } });
+    await embedProxy.start();
+    const port = proxyPort(embedProxy);
+    const path = embedPath(embedProxy, `/instances/${instance.id}/api/health`);
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const result = await within(requestProxy(port, path), 3000, `sequential request ${attempt}`);
+      expect(result.status).toBe(200);
+    }
+  });
+
+  it('closes a client that dribbles its headers instead of holding the socket open', async () => {
+    const configManager = new FakeConfigManager();
+    const embedProxy = createProxy({ configManager, limits: { headersTimeoutMs: 300, requestTimeoutMs: 600 } });
+    await embedProxy.start();
+    const port = proxyPort(embedProxy);
+
+    const received = await within(
+      new Promise<string>((resolve) => {
+        const chunks: Buffer[] = [];
+        const socket = net.connect(port, '127.0.0.1', () => {
+          socket.write('GET /e/tok/instances/x/api/health HTTP/1.1\r\n');
+          socket.write('Host: 127.0.0.1\r\n');
+          // Never send the terminating blank line.
+        });
+        // Reading is required, not incidental: a paused socket never processes
+        // the server's FIN, so without this the close is never observed.
+        socket.on('data', (chunk: Buffer) => chunks.push(chunk));
+        socket.on('close', () => resolve(Buffer.concat(chunks).toString('utf8')));
+        socket.on('error', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      }),
+      3000,
+      'slowloris socket'
+    );
+
+    expect(received).toContain('408');
+  });
+
+  it('caps total buffered rewrite bytes across concurrent responses', async () => {
+    const big = 'x'.repeat(64 * 1024);
+    upstream = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.write('<html><head></head><body>');
+      let written = 0;
+      const pump = setInterval(() => {
+        written += big.length;
+        if (written > 2 * 1024 * 1024 || !res.writable) {
+          clearInterval(pump);
+          res.end();
+          return;
+        }
+        res.write(big);
+      }, 1);
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-budget', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({
+      configManager,
+      limits: { maxTotalRewriteBufferBytes: 128 * 1024, upstreamTimeoutMs: 5000 }
+    });
+    await embedProxy.start();
+
+    const result = await within(
+      requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`)),
+      5000,
+      'oversized rewrite response'
+    );
+
+    expect(result.status).toBe(502);
+    expect(result.body).toContain('too large');
+  });
+});
+
 describe('GrafanaEmbedProxy start/dispose lifecycle', () => {
   it('dispose() stops the server so subsequent requests fail', async () => {
     const configManager = new FakeConfigManager();

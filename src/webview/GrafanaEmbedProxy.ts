@@ -94,7 +94,58 @@ export interface GrafanaEmbedProxyDependencies {
    * traffic to hosts already recorded as trusted in `certTrustStore`.
    */
   certVerifier?: GrafanaCertVerifier;
+  /** Overrides for DEFAULT_EMBED_PROXY_LIMITS; tests shrink the timeouts so they stay fast. */
+  limits?: Partial<GrafanaEmbedProxyLimits>;
 }
+
+/**
+ * Resource ceilings for the proxy. These are not tuning knobs for throughput
+ * -- they exist because this server runs inside the VS Code extension host,
+ * so an upstream that accepts a connection and then goes quiet costs the
+ * editor its memory and file descriptors, not just a blank panel.
+ */
+export interface GrafanaEmbedProxyLimits {
+  /** Socket inactivity timeout for the request to the real Grafana. */
+  upstreamTimeoutMs: number;
+  /** Ceiling on how long a client may take to deliver a complete request. */
+  requestTimeoutMs: number;
+  /** Ceiling on how long a client may take to deliver its headers (slowloris). */
+  headersTimeoutMs: number;
+  /** Hard cap on simultaneously open client sockets. */
+  maxConnections: number;
+  /** Cap on requests being forwarded upstream at once; excess is shed with a 503. */
+  maxConcurrentRequests: number;
+  /** Cap on the buffered body of a single rewritable response. */
+  maxRewriteBufferBytes: number;
+  /** Cap on buffered rewrite bodies across all in-flight responses combined. */
+  maxTotalRewriteBufferBytes: number;
+}
+
+/**
+ * `upstreamTimeoutMs` matches `GrafanaHttpClient`'s long-standing 15s so both
+ * paths to the same Grafana give up at the same point.
+ *
+ * The two buffer caps are deliberately a pair. Per-response alone bounds
+ * nothing useful: the interesting failure is many concurrent rewritable
+ * responses, where `maxConcurrentRequests * maxRewriteBufferBytes` is what
+ * actually reaches the heap. `maxTotalRewriteBufferBytes` is the number that
+ * bounds the extension host, and it is well under the per-response cap times
+ * the concurrency cap on purpose -- a single pathological response may use the
+ * full 25 MiB, but a fleet of them cannot.
+ *
+ * `maxConnections` is set far above the ~6 sockets a browser opens per origin
+ * so a normally-loading dashboard never touches it; it is a runaway guard, not
+ * a scheduling policy.
+ */
+export const DEFAULT_EMBED_PROXY_LIMITS: GrafanaEmbedProxyLimits = {
+  upstreamTimeoutMs: 15_000,
+  requestTimeoutMs: 30_000,
+  headersTimeoutMs: 10_000,
+  maxConnections: 64,
+  maxConcurrentRequests: 32,
+  maxRewriteBufferBytes: 25 * 1024 * 1024,
+  maxTotalRewriteBufferBytes: 64 * 1024 * 1024
+};
 
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
@@ -117,9 +168,6 @@ const EMBED_BLOCKING_RESPONSE_HEADERS = new Set([
   'cross-origin-resource-policy'
 ]);
 
-/** Rewritable content types get buffered whole-body for the origin-string replace (see rewriteAbsoluteReferences). Cap protects memory if Grafana ever serves something unexpectedly huge under one of these content types. */
-const MAX_REWRITE_BUFFER_BYTES = 25 * 1024 * 1024;
-
 const REWRITABLE_CONTENT_TYPE_PATTERN = /^(text\/html|application\/javascript|text\/javascript|application\/x-javascript|text\/css)\b/i;
 
 const INSTANCE_PATH_PATTERN = /^\/instances\/([^/]+)(\/.*)?$/;
@@ -137,8 +185,13 @@ export class GrafanaEmbedProxy {
   private port: number | undefined;
   private embedToken: string | undefined;
   private readonly sockets = new Set<Socket>();
+  private readonly limits: GrafanaEmbedProxyLimits;
+  private inFlightRequests = 0;
+  private rewriteBufferBytesInFlight = 0;
 
-  constructor(private readonly deps: GrafanaEmbedProxyDependencies) {}
+  constructor(private readonly deps: GrafanaEmbedProxyDependencies) {
+    this.limits = { ...DEFAULT_EMBED_PROXY_LIMITS, ...deps.limits };
+  }
 
   get origin(): string | undefined {
     return this.port === undefined ? undefined : `http://127.0.0.1:${this.port}`;
@@ -149,9 +202,26 @@ export class GrafanaEmbedProxy {
       return;
     }
     this.embedToken = createBridgeToken();
-    const server = http.createServer((request, response) => {
-      void this.handleRequest(request, response);
-    });
+    const server = http.createServer(
+      {
+        // Node enforces the two timeouts below from a periodic sweep, not a
+        // per-socket timer, and that sweep defaults to every 30s -- which
+        // would round a 10s headers deadline up to as much as 40s. Tying the
+        // interval to the deadline keeps enforcement close to the configured
+        // value. The sweep timer is unref'd by Node, so it costs nothing.
+        connectionsCheckingInterval: Math.min(30_000, Math.max(500, this.limits.headersTimeoutMs)),
+        // Node's own defaults (5min / 60s) assume a public server that wants
+        // to tolerate slow clients. This one only ever serves a local Webview,
+        // so a client that cannot finish its headers promptly is holding a
+        // socket for no legitimate reason.
+        requestTimeout: this.limits.requestTimeoutMs,
+        headersTimeout: this.limits.headersTimeoutMs
+      },
+      (request, response) => {
+        void this.handleRequest(request, response);
+      }
+    );
+    server.maxConnections = this.limits.maxConnections;
     server.on('connection', (socket) => {
       this.sockets.add(socket);
       socket.on('close', () => this.sockets.delete(socket));
@@ -186,6 +256,8 @@ export class GrafanaEmbedProxy {
     this.server = undefined;
     this.port = undefined;
     this.embedToken = undefined;
+    this.inFlightRequests = 0;
+    this.rewriteBufferBytesInFlight = 0;
     if (!server) {
       return;
     }
@@ -301,6 +373,13 @@ export class GrafanaEmbedProxy {
         return;
       }
 
+      // Claimed only now, once the request is known to be headed upstream, so
+      // that rejected and unroutable requests cannot exhaust the budget.
+      if (!this.acquireRequestSlot(response)) {
+        respondServiceUnavailable(response);
+        return;
+      }
+
       this.forward(request, response, targetUrl, realOrigin, instance.id, token);
     } catch (error) {
       if (!response.headersSent) {
@@ -309,6 +388,31 @@ export class GrafanaEmbedProxy {
         response.destroy();
       }
     }
+  }
+
+  /**
+   * Takes a concurrency slot for a request about to be forwarded, releasing it
+   * when the client response closes.
+   *
+   * `close` on the response is the one event guaranteed to fire exactly once
+   * on every outcome -- success, upstream error, upstream timeout, or the
+   * Webview navigating away mid-request -- which is what keeps the counter
+   * from drifting upward until the proxy wedges itself shut.
+   */
+  private acquireRequestSlot(response: http.ServerResponse): boolean {
+    if (this.inFlightRequests >= this.limits.maxConcurrentRequests) {
+      return false;
+    }
+    this.inFlightRequests++;
+    let released = false;
+    response.on('close', () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      this.inFlightRequests--;
+    });
+    return true;
   }
 
   /**
@@ -392,6 +496,7 @@ export class GrafanaEmbedProxy {
       {
         method: clientRequest.method,
         headers: outgoingHeaders,
+        timeout: this.limits.upstreamTimeoutMs,
         // Manual TOFU below (attachCertVerification), matching GrafanaHttpClient.
         rejectUnauthorized: isHttps ? false : undefined
       },
@@ -399,6 +504,22 @@ export class GrafanaEmbedProxy {
         this.relayResponse(proxyResponse, clientResponse, realOrigin, instanceId);
       }
     );
+
+    proxyRequest.on('timeout', () => {
+      if (clientErrorHandled) {
+        return;
+      }
+      clientErrorHandled = true;
+      // Node reports the idle socket but does not close it, so without this
+      // the connection to Grafana survives for as long as Grafana keeps it --
+      // exactly the leak that lets a wedged upstream accumulate sockets.
+      proxyRequest.destroy();
+      if (!clientResponse.headersSent) {
+        respondError(clientResponse, 504, 'The Grafana instance did not respond in time.');
+      } else {
+        clientResponse.destroy();
+      }
+    });
 
     proxyRequest.on('error', (error) => {
       if (clientErrorHandled) {
@@ -416,6 +537,10 @@ export class GrafanaEmbedProxy {
       if (!clientResponse.writableEnded) {
         proxyRequest.destroy();
       }
+      // Past this point the client response can no longer be written to, so a
+      // late timeout or error on a socket returning to the agent pool must not
+      // try to answer it.
+      clientErrorHandled = true;
     });
 
     if (isHttps) {
@@ -523,14 +648,26 @@ export class GrafanaEmbedProxy {
     let size = 0;
     let aborted = false;
 
+    // What this response has added to the process-wide budget, refunded on
+    // 'close' (which fires on every outcome, including a client that walked
+    // away mid-body) so the shared counter cannot drift upward.
+    let charged = 0;
+    proxyResponse.on('close', () => {
+      this.rewriteBufferBytesInFlight -= charged;
+      charged = 0;
+    });
+
     proxyResponse.on('data', (chunk: Buffer | string) => {
       if (aborted) {
         return;
       }
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       size += buf.length;
-      if (size > MAX_REWRITE_BUFFER_BYTES) {
+      charged += buf.length;
+      this.rewriteBufferBytesInFlight += buf.length;
+      if (size > this.limits.maxRewriteBufferBytes || this.rewriteBufferBytesInFlight > this.limits.maxTotalRewriteBufferBytes) {
         aborted = true;
+        chunks.length = 0;
         proxyResponse.destroy();
         if (!clientResponse.headersSent) {
           respondError(clientResponse, 502, 'Grafana response was too large to rewrite.');
@@ -929,6 +1066,26 @@ function respondNotFound(response: http.ServerResponse): void {
   response.writeHead(404, {
     'content-type': 'text/plain; charset=utf-8',
     'content-length': body.length.toString()
+  });
+  response.end(body);
+}
+
+/**
+ * Load shedding, not an error: the caller already passed the admission gate,
+ * so this says "come back in a moment" with a `Retry-After` the Webview and
+ * Grafana's own fetch retries can act on, rather than surfacing as a failure
+ * the user has to reason about.
+ */
+function respondServiceUnavailable(response: http.ServerResponse): void {
+  if (response.headersSent) {
+    response.destroy();
+    return;
+  }
+  const body = Buffer.from('AT Grafana proxy is busy; retry shortly.', 'utf8');
+  response.writeHead(503, {
+    'content-type': 'text/plain; charset=utf-8',
+    'content-length': body.length.toString(),
+    'retry-after': '1'
   });
   response.end(body);
 }
