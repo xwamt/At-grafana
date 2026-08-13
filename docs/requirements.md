@@ -105,7 +105,7 @@ AT-Grafana 是 **AT 系列**的新成员（同系列已有 `at-terminal-series` 
 |----|------|--------|
 | MGT1 | `grafana_list_instances` — 列出已开启后台访问的实例（不含凭据） | P0 |
 | MGT2 | `grafana_list_dashboards` — 按文件夹列出 dashboard（uid/标题/标签/所属文件夹） | P0 |
-| MGT3 | `grafana_get_dashboard` — 按 uid 获取完整 dashboard JSON model | P0 |
+| MGT3 | `grafana_get_dashboard` — 按 uid 获取 dashboard；可选 `fields=full\|summary\|targets`（缺省 `full` 兼容）及 `panelIds`/`titleContains` 服务端过滤；排障推荐 `targets` | P0 |
 | MGT4 | `grafana_list_folders` — 列出文件夹结构 | P0 |
 | MGT5 | `grafana_list_alert_rules` — 列出所有告警规则及当前状态 | P0 |
 | MGT6 | `grafana_get_alert_rule` — 获取单条规则完整定义（condition/for/labels/annotations/通知策略） | P0 |
@@ -182,7 +182,7 @@ AT-Grafana 是 **AT 系列**的新成员（同系列已有 `at-terminal-series` 
 3. 点击任意告警规则节点，Webview 内可见原生告警详情页
 4. 未开启「允许 Agent 后台访问」的实例，`grafana_list_instances` 不返回该实例，其余工具对该 `instanceId` 调用返回明确的授权错误
 5. 开启后台访问后，无需打开任何面板，Agent 可直接调用全部 7 个管理类工具 + 2 个监控数据类工具
-6. `grafana_get_dashboard` 返回的 JSON model 中能看到每个 panel 的查询语句与数据源引用
+6. `grafana_get_dashboard` 在 `fields=full`（缺省）下返回完整 model；`fields=targets`（推荐排障）下可见每个 panel 的查询语句与数据源引用，且体积明显小于 full
 7. `grafana_query_datasource` 对超出上限的时间范围/返回体积做截断，响应中包含截断提示
 8. `grafana_query_datasource` 对 `PUT`/`DELETE`/`PATCH` 请求返回 `VALIDATION_ERROR`
 9. 通过 `AT Series: Install/Repair MCP Config` 后，IDE MCP 配置中只有一条 `AT Series` 入口，本插件工具全部出现在 `tools/list` 且默认 autoApprove

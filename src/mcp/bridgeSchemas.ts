@@ -15,8 +15,21 @@ export const grafanaListInstancesSchema = z.object({}).strict();
 
 export const grafanaListDashboardsSchema = z.object({ instanceId: z.string().min(1) }).strict();
 
+/**
+ * Optional projection for `grafana_get_dashboard` (OPTIMIZE-P1):
+ * - `full` (default): unchanged dashboard model
+ * - `summary`: uid/title/time + panel id/title/type/datasource
+ * - `targets`: panel expr/datasource only (strip fieldConfig/options/gridPos); recurse rows
+ * Optional `panelIds` / `titleContains` filter panels server-side before projection.
+ */
 export const grafanaGetDashboardSchema = z
-  .object({ instanceId: z.string().min(1), uid: z.string().min(1) })
+  .object({
+    instanceId: z.string().min(1),
+    uid: z.string().min(1),
+    fields: z.enum(['full', 'summary', 'targets']).optional(),
+    panelIds: z.array(z.number()).optional(),
+    titleContains: z.string().optional()
+  })
   .strict();
 
 export const grafanaListFoldersSchema = z.object({ instanceId: z.string().min(1) }).strict();
@@ -148,7 +161,18 @@ export const GRAFANA_LIST_INSTANCES_INPUT_SCHEMA: JsonSchemaObject = {
   additionalProperties: false
 };
 export const GRAFANA_LIST_DASHBOARDS_INPUT_SCHEMA: JsonSchemaObject = instanceIdOnlyInputSchema();
-export const GRAFANA_GET_DASHBOARD_INPUT_SCHEMA: JsonSchemaObject = instanceIdAndUidInputSchema();
+export const GRAFANA_GET_DASHBOARD_INPUT_SCHEMA: JsonSchemaObject = {
+  type: 'object',
+  properties: {
+    instanceId: { type: 'string', minLength: 1 },
+    uid: { type: 'string', minLength: 1 },
+    fields: { type: 'string', enum: ['full', 'summary', 'targets'] },
+    panelIds: { type: 'array', items: { type: 'number' } },
+    titleContains: { type: 'string' }
+  },
+  required: ['instanceId', 'uid'],
+  additionalProperties: false
+};
 export const GRAFANA_LIST_FOLDERS_INPUT_SCHEMA: JsonSchemaObject = instanceIdOnlyInputSchema();
 export const GRAFANA_LIST_ALERT_RULES_INPUT_SCHEMA: JsonSchemaObject = instanceIdOnlyInputSchema();
 export const GRAFANA_GET_ALERT_RULE_INPUT_SCHEMA: JsonSchemaObject = instanceIdAndUidInputSchema();

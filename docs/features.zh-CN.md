@@ -27,7 +27,7 @@ AT Grafana 把 Grafana 的 dashboard 与告警规则原生集成到 IDE 内，�
 
 共 9 个工具，全部 `risk: read`，安装 AT Series MCP 配置后自动进入 autoApprove —— 无需逐个工具手动批准。分两组：
 
-- **管理类工具** —— `grafana_list_dashboards`、`grafana_get_dashboard`、`grafana_list_folders`、`grafana_list_alert_rules`、`grafana_get_alert_rule`、`grafana_get_alert_history`。服务于想知道「**配置了什么**」的 Agent：有哪些 dashboard/文件夹、某个面板实际查询的是什么、某条告警规则如何定义以及历史上是如何触发的。
+- **管理类工具** —— `grafana_list_dashboards`、`grafana_get_dashboard`、`grafana_list_folders`、`grafana_list_alert_rules`、`grafana_get_alert_rule`、`grafana_get_alert_history`。服务于想知道「**配置了什么**」的 Agent：有哪些 dashboard/文件夹、某个面板实际查询的是什么（排障推荐 `grafana_get_dashboard` 的 `fields: "targets"`）、某条告警规则如何定义以及历史上是如何触发的。
 - **监控数据类工具** —— `grafana_list_datasources`、`grafana_query_datasource`。服务于想知道「**实际发生了什么**」的 Agent：通过 Grafana 自身的代理 API，查询某个数据源背后真实的 Prometheus/Loki 等数据。
 - `grafana_list_instances`（发现类）只会返回已开启后台访问的实例，且从不包含 token。
 

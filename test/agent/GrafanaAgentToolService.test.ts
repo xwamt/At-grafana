@@ -180,6 +180,59 @@ describe('GrafanaAgentToolService', () => {
       expect(result).toEqual({ ok: true, result: dashboard });
     });
 
+    it('grafana_get_dashboard projects fields=targets before returning', async () => {
+      const dashboard = {
+        uid: 'd1',
+        title: 'CPU',
+        model: {
+          uid: 'd1',
+          title: 'CPU',
+          time: { from: 'now-1h', to: 'now' },
+          panels: [
+            {
+              id: 1,
+              title: 'Up',
+              type: 'timeseries',
+              datasource: { uid: 'prom' },
+              targets: [{ refId: 'A', expr: 'up', datasource: { uid: 'prom' } }],
+              fieldConfig: { defaults: {} },
+              gridPos: { h: 8, w: 12, x: 0, y: 0 }
+            }
+          ]
+        }
+      };
+      const client = fakeClient({ getDashboardByUid: async () => dashboard as never });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_get_dashboard', {
+        instanceId: 'instance-1',
+        uid: 'd1',
+        fields: 'targets'
+      });
+
+      expect(result).toEqual({
+        ok: true,
+        result: {
+          uid: 'd1',
+          title: 'CPU',
+          model: {
+            uid: 'd1',
+            title: 'CPU',
+            time: { from: 'now-1h', to: 'now' },
+            panels: [
+              {
+                id: 1,
+                title: 'Up',
+                type: 'timeseries',
+                datasource: { uid: 'prom' },
+                targets: [{ refId: 'A', expr: 'up', datasource: { uid: 'prom' } }]
+              }
+            ]
+          }
+        }
+      });
+    });
+
     it('grafana_list_folders passes through the client folder list', async () => {
       const folders = [{ uid: 'f1', title: 'Infra' }];
       const client = fakeClient({ getFolders: async () => folders });

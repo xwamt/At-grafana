@@ -25,6 +25,7 @@ import {
   grafanaQueryDatasourceSchema,
   type GrafanaQueryDatasourceInput
 } from '../mcp/bridgeSchemas';
+import { projectDashboard } from './projectDashboard';
 
 /**
  * The subset of `GrafanaApiClient` every tool call needs (management +
@@ -150,9 +151,14 @@ export class GrafanaAgentToolService {
         case 'grafana_list_dashboards':
           return await this.withAuthorizedClient(grafanaListDashboardsSchema, args, (client) => this.listDashboards(client));
         case 'grafana_get_dashboard':
-          return await this.withAuthorizedClient(grafanaGetDashboardSchema, args, (client, parsed) =>
-            client.getDashboardByUid(parsed.uid)
-          );
+          return await this.withAuthorizedClient(grafanaGetDashboardSchema, args, async (client, parsed) => {
+            const dashboard = await client.getDashboardByUid(parsed.uid);
+            return projectDashboard(dashboard, {
+              fields: parsed.fields,
+              panelIds: parsed.panelIds,
+              titleContains: parsed.titleContains
+            });
+          });
         case 'grafana_list_folders':
           return await this.withAuthorizedClient(grafanaListFoldersSchema, args, (client) => client.getFolders());
         case 'grafana_list_alert_rules':

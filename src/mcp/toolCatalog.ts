@@ -71,8 +71,9 @@ export const AT_GRAFANA_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'grafana_get_dashboard',
     title: 'Get Grafana dashboard',
     description:
-      `Get the full dashboard JSON model for one dashboard by uid, including every panel's query and datasource ` +
-      `reference.${MANAGEMENT_FAMILY_SUFFIX}`,
+      `Get a dashboard by uid. Prefer fields: "targets" for troubleshooting (panel expr + datasource only); ` +
+      `"summary" for panel inventory; "full" (default) for the complete JSON model. Optional panelIds / ` +
+      `titleContains filter panels server-side.${MANAGEMENT_FAMILY_SUFFIX}`,
     risk: 'read',
     inputSchema: GRAFANA_GET_DASHBOARD_INPUT_SCHEMA
   },

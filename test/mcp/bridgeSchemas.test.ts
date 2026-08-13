@@ -56,7 +56,6 @@ describe('instanceId-only schemas', () => {
 
 describe('instanceId + uid schemas', () => {
   const schemas = {
-    grafanaGetDashboardSchema,
     grafanaGetAlertRuleSchema,
     grafanaGetAlertHistorySchema
   };
@@ -80,6 +79,36 @@ describe('instanceId + uid schemas', () => {
       });
     });
   }
+});
+
+describe('grafanaGetDashboardSchema', () => {
+  it('accepts instanceId and uid alone (fields defaults to full at projection time)', () => {
+    expect(grafanaGetDashboardSchema.safeParse({ instanceId: 'abc', uid: 'dash-1' }).success).toBe(true);
+  });
+
+  it('accepts fields/panelIds/titleContains', () => {
+    expect(
+      grafanaGetDashboardSchema.safeParse({
+        instanceId: 'abc',
+        uid: 'dash-1',
+        fields: 'targets',
+        panelIds: [1, 2],
+        titleContains: 'cpu'
+      }).success
+    ).toBe(true);
+  });
+
+  it('rejects an unknown fields value', () => {
+    expect(
+      grafanaGetDashboardSchema.safeParse({ instanceId: 'abc', uid: 'dash-1', fields: 'panels' }).success
+    ).toBe(false);
+  });
+
+  it('rejects unexpected extra properties', () => {
+    expect(
+      grafanaGetDashboardSchema.safeParse({ instanceId: 'abc', uid: 'dash-1', extra: true }).success
+    ).toBe(false);
+  });
 });
 
 describe('grafanaQueryDatasourceSchema', () => {

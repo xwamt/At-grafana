@@ -39,7 +39,7 @@ This is a deliberate, explicit divergence from the "front-end connected OR backg
 | Tool | Purpose |
 |---|---|
 | `grafana_list_dashboards` | List dashboards grouped by folder (uid/title/tags/folder) |
-| `grafana_get_dashboard` | Full dashboard JSON model by uid (panel queries, datasource refs) |
+| `grafana_get_dashboard` | Dashboard by uid. Optional `fields`: `full` (default) / `summary` / `targets`; optional `panelIds` / `titleContains` filter. Prefer `targets` when reading panel queries. |
 | `grafana_list_folders` | Folder tree |
 | `grafana_list_alert_rules` | All alert rules + current state |
 | `grafana_get_alert_rule` | Full rule definition (condition, for, labels, annotations, notification policy refs) |

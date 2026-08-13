@@ -27,7 +27,7 @@ Clicking a dashboard or alert rule opens the **actual, fully interactive native 
 
 Nine tools, all `risk: read` and auto-approved once the AT Series MCP config is installed — no per-tool approval prompts. Two families:
 
-- **Management family** — `grafana_list_dashboards`, `grafana_get_dashboard`, `grafana_list_folders`, `grafana_list_alert_rules`, `grafana_get_alert_rule`, `grafana_get_alert_history`. For an Agent that wants to know *what is configured*: which dashboards/folders exist, what a panel actually queries, how an alert rule is defined and how it has fired historically.
+- **Management family** — `grafana_list_dashboards`, `grafana_get_dashboard`, `grafana_list_folders`, `grafana_list_alert_rules`, `grafana_get_alert_rule`, `grafana_get_alert_history`. For an Agent that wants to know *what is configured*: which dashboards/folders exist, what a panel actually queries (`grafana_get_dashboard` with `fields: "targets"` recommended), how an alert rule is defined and how it has fired historically.
 - **Monitoring family** — `grafana_list_datasources`, `grafana_query_datasource`. For an Agent that wants to know *what is actually happening*: the real Prometheus/Loki-style data behind a datasource, queried through Grafana's own proxy API.
 - `grafana_list_instances` (discovery) only ever returns instances with background access enabled, and never a token.
 

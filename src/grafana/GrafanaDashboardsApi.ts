@@ -20,7 +20,8 @@ export interface GrafanaFolder {
 export interface GrafanaDashboard {
   uid: string;
   title: string;
-  /** Full dashboard JSON model (panels, targets, datasource refs) — see requirements S5/MGT3. */
+  /** Full dashboard JSON model (panels, targets, datasource refs) — see requirements S5/MGT3.
+   *  May be projected by `grafana_get_dashboard` (`fields=summary|targets`). */
   model: Record<string, unknown>;
   folderUid?: string;
   folderTitle?: string;
