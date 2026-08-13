@@ -160,17 +160,17 @@ export function activate(context: vscode.ExtensionContext): void {
     try {
       await syncPackagedHub(context);
     } catch (error) {
-      await showTimedNotification(`AT Series hub sync failed: ${formatError(error)}`, 'error');
+      showTimedNotification(`AT Series hub sync failed: ${formatError(error)}`, 'error');
       return;
     }
     const result = await ensureAtSeriesConfigForCurrentIde({ ...hostEnv, workspaceFolder: currentWorkspaceFolder() });
     if (result) {
-      await showTimedNotification(
+      showTimedNotification(
         result.updated ? 'AT Series MCP config installed/repaired.' : 'AT Series MCP config is already up to date.'
       );
       return;
     }
-    await showTimedNotification(
+    showTimedNotification(
       'No supported IDE MCP config target was detected. Open a workspace to install Continue config.',
       'warning'
     );
@@ -179,14 +179,14 @@ export function activate(context: vscode.ExtensionContext): void {
   const uninstallMcpConfigCommand = vscode.commands.registerCommand('atGrafana.uninstallAtSeriesMcpConfig', async () => {
     const result = await uninstallAtSeriesConfigForCurrentIde({ ...hostEnv, workspaceFolder: currentWorkspaceFolder() });
     if (result?.removed) {
-      await showTimedNotification('AT Series MCP config uninstalled.');
+      showTimedNotification('AT Series MCP config uninstalled.');
       return;
     }
     if (result) {
-      await showTimedNotification('AT Series MCP config was not present.');
+      showTimedNotification('AT Series MCP config was not present.');
       return;
     }
-    await showTimedNotification(
+    showTimedNotification(
       'No supported IDE MCP config target was detected. Open a workspace to uninstall Continue config.',
       'warning'
     );
