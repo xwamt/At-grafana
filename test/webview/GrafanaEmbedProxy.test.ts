@@ -12,7 +12,7 @@ import {
   injectGrafanaEmbedShim,
   injectProxyBaseTag,
   isGrafanaNativePath,
-  parseInstanceCookie,
+  parseEmbedReferrer,
   parseInstancePath,
   parseProxyRoute,
   rewriteAbsoluteReferences,
@@ -73,6 +73,12 @@ interface RequestResult {
   body: string;
 }
 
+/** What an upstream actually received, so a test can assert *which* instance's credential arrived where. */
+interface UpstreamHit {
+  url: string;
+  authorization: string | undefined;
+}
+
 function requestProxy(
   port: number,
   path: string,
@@ -102,6 +108,8 @@ function cspHeader(headers: http.IncomingHttpHeaders): string {
 
 let proxy: GrafanaEmbedProxy | undefined;
 let upstream: TestHttpServer | undefined;
+/** Second upstream, for the multi-instance tests that a single upstream cannot express. */
+let secondUpstream: TestHttpServer | undefined;
 let rawServer: net.Server | undefined;
 
 function createProxy(deps: Partial<GrafanaEmbedProxyDependencies> & { configManager: GrafanaEmbedProxyDependencies['configManager'] }): GrafanaEmbedProxy {
@@ -147,6 +155,10 @@ afterEach(async () => {
   if (upstream) {
     await upstream.close();
     upstream = undefined;
+  }
+  if (secondUpstream) {
+    await secondUpstream.close();
+    secondUpstream = undefined;
   }
   if (rawServer) {
     await new Promise<void>((resolve) => rawServer!.close(() => resolve()));
@@ -369,6 +381,138 @@ describe('GrafanaEmbedProxy request authorization', () => {
   });
 });
 
+/**
+ * Every one of these needs *two* live instances: the failure mode is that a
+ * sub-resource request issued by instance A's dashboard gets routed to
+ * instance B and authenticated with **B's** Service Account Token. A
+ * single-instance test cannot observe that at all, because there is no second
+ * credential for the request to be mis-signed with.
+ *
+ * The setup below is what a browser genuinely does. `Path=/` cookies are a
+ * single slot per proxy origin, so opening B's dashboard after A's overwrites
+ * the routing hint for *both* iframes; A's page then keeps issuing bare
+ * `/api/...` requests (the ones that escape the appSubUrl rewrite) carrying
+ * the cookie that now says "B".
+ */
+describe('GrafanaEmbedProxy multi-instance isolation', () => {
+  const TOKEN_A = 'glsa_token_for_instance_a';
+  const TOKEN_B = 'glsa_token_for_instance_b';
+
+  interface TwoInstanceFixture {
+    embedProxy: GrafanaEmbedProxy;
+    token: string;
+    hitsA: UpstreamHit[];
+    hitsB: UpstreamHit[];
+  }
+
+  async function startTwoInstances(): Promise<TwoInstanceFixture> {
+    const hitsA: UpstreamHit[] = [];
+    const hitsB: UpstreamHit[] = [];
+    upstream = await listen((req, res) => {
+      hitsA.push({ url: req.url ?? '', authorization: req.headers.authorization });
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end('<html><head></head><body>A</body></html>');
+    });
+    secondUpstream = await listen((req, res) => {
+      hitsB.push({ url: req.url ?? '', authorization: req.headers.authorization });
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end('<html><head></head><body>B</body></html>');
+    });
+
+    const configManager = new FakeConfigManager();
+    configManager.addInstance(makeInstance('inst-a', upstream.url), TOKEN_A);
+    configManager.addInstance(makeInstance('inst-b', secondUpstream.url), TOKEN_B);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    return { embedProxy, token: embedToken(embedProxy), hitsA, hitsB };
+  }
+
+  it('does not send instance A\'s sub-resource request to instance B under B\'s token', async () => {
+    const { embedProxy, token, hitsA, hitsB } = await startTwoInstances();
+    const port = proxyPort(embedProxy);
+    const origin = embedProxy.origin ?? '';
+
+    // Both dashboards open, B opened last -- so a Path=/ cookie jar now says "B".
+    await requestProxy(port, `/e/${token}/instances/inst-a/d/uid-a/dash-a`);
+    await requestProxy(port, `/e/${token}/instances/inst-b/d/uid-b/dash-b`);
+
+    // A's iframe issues a bare API call: the browser attaches the (now "B")
+    // cookie, and a Referer naming the document that actually made the call.
+    await requestProxy(port, '/api/dashboards/home', {
+      headers: {
+        cookie: `atGrafanaEmbedInstance=inst-b; atGrafanaEmbedToken=${token}`,
+        referer: `${origin}/e/${token}/instances/inst-a/d/uid-a/dash-a`
+      }
+    });
+
+    expect(hitsB.filter((hit) => hit.url === '/api/dashboards/home')).toEqual([]);
+    expect(hitsA.filter((hit) => hit.url === '/api/dashboards/home')).toEqual([
+      { url: '/api/dashboards/home', authorization: `Bearer ${TOKEN_A}` }
+    ]);
+  });
+
+  it('mints no ambient Path=/ cookie that a second instance could overwrite', async () => {
+    const { embedProxy, token } = await startTwoInstances();
+
+    const result = await requestProxy(proxyPort(embedProxy), `/e/${token}/instances/inst-a/d/uid-a/dash-a`);
+
+    expect(result.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('refuses an unattributable bare request rather than guessing an instance', async () => {
+    const { embedProxy, token, hitsA, hitsB } = await startTwoInstances();
+
+    const result = await requestProxy(proxyPort(embedProxy), '/api/dashboards/home', {
+      headers: { cookie: `atGrafanaEmbedInstance=inst-b; atGrafanaEmbedToken=${token}` }
+    });
+
+    expect(result.status).toBe(404);
+    expect(hitsA).toEqual([]);
+    expect(hitsB).toEqual([]);
+  });
+
+  it('attributes each instance\'s bare requests independently when both are active', async () => {
+    const { embedProxy, token, hitsA, hitsB } = await startTwoInstances();
+    const port = proxyPort(embedProxy);
+    const origin = embedProxy.origin ?? '';
+
+    await requestProxy(port, '/api/search', {
+      headers: { referer: `${origin}/e/${token}/instances/inst-a/d/uid-a/dash-a` }
+    });
+    await requestProxy(port, '/api/search', {
+      headers: { referer: `${origin}/e/${token}/instances/inst-b/d/uid-b/dash-b` }
+    });
+
+    expect(hitsA).toEqual([{ url: '/api/search', authorization: `Bearer ${TOKEN_A}` }]);
+    expect(hitsB).toEqual([{ url: '/api/search', authorization: `Bearer ${TOKEN_B}` }]);
+  });
+
+  it('rejects a bare request whose Referer carries a wrong embed token', async () => {
+    const { embedProxy, token, hitsA, hitsB } = await startTwoInstances();
+    const origin = embedProxy.origin ?? '';
+    const wrongToken = 'x'.repeat(token.length);
+
+    const result = await requestProxy(proxyPort(embedProxy), '/api/search', {
+      headers: { referer: `${origin}/e/${wrongToken}/instances/inst-a/d/uid-a/dash-a` }
+    });
+
+    expect(result.status).toBe(404);
+    expect(hitsA).toEqual([]);
+    expect(hitsB).toEqual([]);
+  });
+
+  it('ignores a Referer pointing at some other origin entirely', async () => {
+    const { embedProxy, token, hitsA, hitsB } = await startTwoInstances();
+
+    const result = await requestProxy(proxyPort(embedProxy), '/api/search', {
+      headers: { referer: `https://attacker.example.com/e/${token}/instances/inst-a/d/uid-a/dash-a` }
+    });
+
+    expect(result.status).toBe(404);
+    expect(hitsA).toEqual([]);
+    expect(hitsB).toEqual([]);
+  });
+});
+
 describe('GrafanaEmbedProxy header injection', () => {
   it('injects the instance Bearer token and strips any client-supplied Authorization header', async () => {
     upstream = await listen((req, res) => {
@@ -516,7 +660,7 @@ describe('GrafanaEmbedProxy body rewriting', () => {
     expect(result.headers.location).toBe(`${embedProxy.origin}${embedPath(embedProxy, `/instances/${instance.id}`)}/d/moved-dash`);
   });
 
-  it('strips Set-Cookie headers from the proxied response', async () => {
+  it('strips Set-Cookie headers from the proxied response and sets none of its own', async () => {
     upstream = await listen((_req, res) => {
       res
         .writeHead(200, {
@@ -533,10 +677,22 @@ describe('GrafanaEmbedProxy body rewriting', () => {
 
     const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`));
 
-    expect(result.headers['set-cookie']).toEqual([
-      'atGrafanaEmbedInstance=inst-cookie; Path=/; HttpOnly; SameSite=Lax',
-      `atGrafanaEmbedToken=${embedToken(embedProxy)}; Path=/; HttpOnly; SameSite=Lax`
-    ]);
+    expect(result.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('sends a same-origin Referrer-Policy so root-relative sub-resources stay attributable', async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end('<html><head></head><body>ok</body></html>');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-referrer-policy', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`));
+
+    expect(result.headers['referrer-policy']).toBe('same-origin');
   });
 
   it("strips X-Frame-Options and replaces the upstream CSP with the proxy's own", async () => {
@@ -740,20 +896,47 @@ describe('rewriteGrafanaAppSubUrl', () => {
 });
 
 describe('parseProxyRoute', () => {
-  it('routes native Grafana paths through the embed instance cookie', () => {
+  it('routes native Grafana paths through the referrer-derived instance id', () => {
     const route = parseProxyRoute('/d/uid/slug?orgId=1', 'inst-abc');
 
     expect(route).toEqual({
       instanceId: 'inst-abc',
       remainingPath: '/d/uid/slug',
-      search: '?orgId=1',
-      viaCookie: true
+      search: '?orgId=1'
     });
   });
 
-  it('rejects native paths without a valid instance cookie', () => {
+  it('rejects native paths with no attributable instance', () => {
     expect(parseProxyRoute('/d/uid/slug', undefined)).toBeUndefined();
     expect(parseProxyRoute('/d/uid/slug', '../bad')).toBeUndefined();
+  });
+});
+
+describe('parseEmbedReferrer', () => {
+  const ORIGIN = 'http://127.0.0.1:4321';
+
+  it('extracts the token and instance id from a document URL this proxy served', () => {
+    expect(parseEmbedReferrer(`${ORIGIN}/e/tok123/instances/inst-a/d/uid/slug?orgId=1`, ORIGIN)).toEqual({
+      token: 'tok123',
+      instanceId: 'inst-a'
+    });
+  });
+
+  it('ignores a referrer from any other origin, however well-formed its path', () => {
+    expect(parseEmbedReferrer(`https://attacker.example.com/e/tok123/instances/inst-a/d/uid/slug`, ORIGIN)).toBeUndefined();
+  });
+
+  it('ignores a referrer that names no instance', () => {
+    expect(parseEmbedReferrer(`${ORIGIN}/e/tok123/api/health`, ORIGIN)).toBeUndefined();
+  });
+
+  it('ignores a referrer with an unsafe instance id', () => {
+    expect(parseEmbedReferrer(`${ORIGIN}/e/tok123/instances/..%2f..%2fetc/d/uid`, ORIGIN)).toBeUndefined();
+  });
+
+  it('returns undefined when there is no referrer or no proxy origin yet', () => {
+    expect(parseEmbedReferrer(undefined, ORIGIN)).toBeUndefined();
+    expect(parseEmbedReferrer(`${ORIGIN}/e/tok123/instances/inst-a/d/uid`, undefined)).toBeUndefined();
   });
 });
 

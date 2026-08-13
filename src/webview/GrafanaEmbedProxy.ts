@@ -240,18 +240,18 @@ export class GrafanaEmbedProxy {
 
       const rawUrl = request.url ?? '/';
       const tokenRoute = splitEmbedTokenPath(rawUrl);
-      // Cookie fallback exists for the same reason the instance cookie does:
-      // some Grafana sub-resource requests escape the appSubUrl/base rewrite
-      // and arrive at the proxy root. The cookie is only ever handed out on a
-      // response to an already-authorized request, so it grants nothing to a
-      // caller that never had the token.
-      const presentedToken = tokenRoute?.token ?? parseEmbedTokenCookie(request.headers.cookie);
+      // Fallback attribution for the sub-resource requests that escape the
+      // appSubUrl/base rewrite and arrive at the proxy root with neither the
+      // token nor the instance in their path. See parseEmbedReferrer for why
+      // this is read per-request from the Referer rather than from a cookie.
+      const referrer = parseEmbedReferrer(request.headers.referer, this.origin);
+      const presentedToken = tokenRoute?.token ?? referrer?.token;
       if (!this.isAuthorized(request, presentedToken)) {
         respondNotFound(response);
         return;
       }
 
-      const parsedPath = parseProxyRoute(tokenRoute?.target ?? rawUrl, parseInstanceCookie(request.headers.cookie));
+      const parsedPath = parseProxyRoute(tokenRoute?.target ?? rawUrl, referrer?.instanceId);
       if (!parsedPath) {
         respondError(response, 404, 'Unknown AT Grafana proxy route.');
         return;
@@ -301,7 +301,7 @@ export class GrafanaEmbedProxy {
         return;
       }
 
-      this.forward(request, response, targetUrl, realOrigin, instance.id, token, parsedPath.viaCookie);
+      this.forward(request, response, targetUrl, realOrigin, instance.id, token);
     } catch (error) {
       if (!response.headersSent) {
         respondError(response, 502, `AT Grafana proxy error: ${formatError(error)}`);
@@ -364,8 +364,7 @@ export class GrafanaEmbedProxy {
     targetUrl: URL,
     realOrigin: URL,
     instanceId: string,
-    token: string,
-    viaCookie = false
+    token: string
   ): void {
     const isHttps = targetUrl.protocol === 'https:';
     const client: typeof http | typeof https = isHttps ? https : http;
@@ -397,7 +396,7 @@ export class GrafanaEmbedProxy {
         rejectUnauthorized: isHttps ? false : undefined
       },
       (proxyResponse) => {
-        this.relayResponse(proxyResponse, clientResponse, realOrigin, instanceId, viaCookie);
+        this.relayResponse(proxyResponse, clientResponse, realOrigin, instanceId);
       }
     );
 
@@ -442,8 +441,7 @@ export class GrafanaEmbedProxy {
     proxyResponse: http.IncomingMessage,
     clientResponse: http.ServerResponse,
     realOrigin: URL,
-    instanceId: string,
-    viaCookie: boolean
+    instanceId: string
   ): void {
     // Both carry the token prefix so Grafana's own `<base>`/appSubUrl-relative
     // requests stay on an authorized route instead of 404ing at the gate.
@@ -469,6 +467,13 @@ export class GrafanaEmbedProxy {
     // Set after the copy loop above has dropped the upstream's own CSP, so
     // this is always the policy that ships -- never a passed-through one.
     headersOut['content-security-policy'] = buildProxiedDocumentCsp();
+    // Load-bearing, not hardening boilerplate: `parseEmbedReferrer` is the
+    // only remaining way to attribute a sub-resource request that reached the
+    // proxy root, and it needs the referrer's *path* (which carries the token
+    // and instance id). `same-origin` guarantees the full URL on same-origin
+    // requests -- which every request from the proxied document is -- while
+    // sending nothing at all if the page ever navigates elsewhere.
+    headersOut['referrer-policy'] = 'same-origin';
 
     const location = firstHeaderValue(proxyResponse.headers.location);
     if (location) {
@@ -476,9 +481,6 @@ export class GrafanaEmbedProxy {
     }
 
     const contentType = firstHeaderValue(proxyResponse.headers['content-type']);
-    if (!viaCookie) {
-      headersOut['set-cookie'] = [buildInstanceEmbedCookie(instanceId), buildEmbedTokenCookie(this.embedToken ?? '')];
-    }
     if (REWRITABLE_CONTENT_TYPE_PATTERN.test(contentType ?? '')) {
       this.relayRewritableBody(
         proxyResponse,
@@ -634,8 +636,6 @@ export interface ParsedInstancePath {
   instanceId: string;
   remainingPath: string;
   search: string;
-  /** True when the route was resolved from the embed cookie rather than `/instances/:id/...`. */
-  viaCookie?: boolean;
 }
 
 const GRAFANA_NATIVE_PATH_PREFIXES = [
@@ -651,9 +651,6 @@ const GRAFANA_NATIVE_PATH_PREFIXES = [
   '/plugins/',
   '/favicon.ico'
 ];
-
-const EMBED_INSTANCE_COOKIE = 'atGrafanaEmbedInstance';
-const EMBED_TOKEN_COOKIE = 'atGrafanaEmbedToken';
 
 /**
  * Splits `/e/:embedToken/...` into the presented token and the request target
@@ -721,10 +718,10 @@ export function parseInstancePath(rawUrl: string): ParsedInstancePath | undefine
 
 /**
  * Resolves either an explicit `/instances/:instanceId/...` route or a native
- * Grafana path (`/d/...`, `/api/...`, etc.) paired with the embed cookie set
- * on the first instance-scoped HTML response.
+ * Grafana path (`/d/...`, `/api/...`, etc.) attributed to the instance whose
+ * document issued it (`fallbackInstanceId`, from `parseEmbedReferrer`).
  */
-export function parseProxyRoute(rawUrl: string, instanceCookie?: string): ParsedInstancePath | undefined {
+export function parseProxyRoute(rawUrl: string, fallbackInstanceId?: string): ParsedInstancePath | undefined {
   const explicit = parseInstancePath(rawUrl);
   if (explicit) {
     return explicit;
@@ -737,15 +734,14 @@ export function parseProxyRoute(rawUrl: string, instanceCookie?: string): Parsed
     return undefined;
   }
 
-  if (!instanceCookie || !SAFE_INSTANCE_ID_PATTERN.test(instanceCookie) || !isGrafanaNativePath(parsed.pathname)) {
+  if (!fallbackInstanceId || !SAFE_INSTANCE_ID_PATTERN.test(fallbackInstanceId) || !isGrafanaNativePath(parsed.pathname)) {
     return undefined;
   }
 
   return {
-    instanceId: instanceCookie,
+    instanceId: fallbackInstanceId,
     remainingPath: parsed.pathname,
-    search: parsed.search,
-    viaCookie: true
+    search: parsed.search
   };
 }
 
@@ -761,38 +757,61 @@ export function isGrafanaNativePath(pathname: string): boolean {
   });
 }
 
-export function parseInstanceCookie(cookieHeader: string | undefined): string | undefined {
-  const instanceId = readCookie(cookieHeader, EMBED_INSTANCE_COOKIE);
-  return instanceId !== undefined && SAFE_INSTANCE_ID_PATTERN.test(instanceId) ? instanceId : undefined;
-}
-
-/** Unvalidated on purpose: the only meaningful check on a token is the constant-time comparison in `isAuthorized`. */
-export function parseEmbedTokenCookie(cookieHeader: string | undefined): string | undefined {
-  return readCookie(cookieHeader, EMBED_TOKEN_COOKIE);
-}
-
-function readCookie(cookieHeader: string | undefined, name: string): string | undefined {
-  if (!cookieHeader) {
+/**
+ * Recovers the token and instance id from the URL of the document that issued
+ * a request, for the sub-resource requests that reach the proxy root with
+ * neither in their own path.
+ *
+ * ## Why not a cookie
+ *
+ * This used to be two `Path=/` cookies (`atGrafanaEmbedInstance` /
+ * `atGrafanaEmbedToken`). A cookie is *ambient*: one slot per origin, shared
+ * by every instance framed against this proxy. With two dashboards open, the
+ * one that loaded last owned the slot, so the other one's bare `/api/...`
+ * requests were routed to the wrong instance **and signed with that
+ * instance's Service Account Token** -- instance A's panel driving instance B
+ * under B's credentials. Scoping the cookie to `Path=/instances/<id>` cannot
+ * fix that: a cookie path only matches request paths beneath it, so it would
+ * never be sent on the root-relative requests that are the entire reason the
+ * fallback exists.
+ *
+ * The referrer is per-request and names the exact document that made the
+ * call, so N instances stay attributed independently no matter how many are
+ * open. It is also strictly tighter than the cookie was: `SameSite=Lax` still
+ * attached the old cookie to a top-level GET navigation started by an
+ * unrelated page, whereas such a navigation carries that page's own referrer
+ * (or none) and lands on the bare 404. Scripts cannot forge it either --
+ * `Referer` is a forbidden header name, so page JS cannot set it.
+ *
+ * The same-origin check is what makes the token meaningful: only a document
+ * this proxy itself served has our origin *and* our token in its URL.
+ */
+export function parseEmbedReferrer(
+  referer: string | undefined,
+  proxyOrigin: string | undefined
+): { token: string; instanceId: string } | undefined {
+  if (!referer || !proxyOrigin) {
     return undefined;
   }
-  const match = new RegExp(`(?:^|;\\s*)${name}=([^;]+)`).exec(cookieHeader);
-  if (!match?.[1]) {
-    return undefined;
-  }
+  let parsed: URL;
   try {
-    return decodeURIComponent(match[1]);
+    parsed = new URL(referer);
   } catch {
     return undefined;
   }
-}
+  if (parsed.origin !== proxyOrigin) {
+    return undefined;
+  }
 
-function buildInstanceEmbedCookie(instanceId: string): string {
-  return `${EMBED_INSTANCE_COOKIE}=${encodeURIComponent(instanceId)}; Path=/; HttpOnly; SameSite=Lax`;
-}
-
-/** Same attributes as the instance cookie: HttpOnly keeps it out of reach of any script the proxied page runs. */
-function buildEmbedTokenCookie(token: string): string {
-  return `${EMBED_TOKEN_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax`;
+  const tokenRoute = splitEmbedTokenPath(`${parsed.pathname}${parsed.search}`);
+  if (!tokenRoute) {
+    return undefined;
+  }
+  const instancePath = parseInstancePath(tokenRoute.target);
+  if (!instancePath) {
+    return undefined;
+  }
+  return { token: tokenRoute.token, instanceId: instancePath.instanceId };
 }
 
 /**
