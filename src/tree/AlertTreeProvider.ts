@@ -14,7 +14,8 @@ import {
   type GrafanaTreeItem
 } from './GrafanaTreeItems';
 
-export type AlertApiClient = Pick<GrafanaApiClient, 'listAlertRules' | 'listAlertRuleStates' | 'getFolders'>;
+/** `getAllFolders` rather than `getFolders` for the same reason as the dashboard tree; see DashboardTreeProvider. */
+export type AlertApiClient = Pick<GrafanaApiClient, 'listAlertRules' | 'listAlertRuleStates' | 'getAllFolders'>;
 export type AlertClientFactory = (instance: GrafanaInstanceConfig) => Promise<AlertApiClient>;
 
 interface InstanceAlertGroup {
@@ -118,7 +119,7 @@ export class AlertTreeProvider implements vscode.TreeDataProvider<GrafanaTreeIte
     const [rules, states, folders] = await Promise.all([
       client.listAlertRules(),
       client.listAlertRuleStates(),
-      client.getFolders()
+      client.getAllFolders()
     ]);
     const stateIndex = buildAlertStateIndex(states);
     const folderTitleByUid = new Map(folders.map((folder) => [folder.uid, folder.title]));

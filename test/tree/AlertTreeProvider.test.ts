@@ -68,7 +68,7 @@ describe('AlertTreeProvider', () => {
       async (): Promise<AlertApiClient> => ({
         listAlertRules: async () => [],
         listAlertRuleStates: async () => [],
-        getFolders: async () => []
+        getAllFolders: async () => []
       })
     );
 
@@ -85,7 +85,7 @@ describe('AlertTreeProvider', () => {
       async (): Promise<AlertApiClient> => ({
         listAlertRules: async () => [],
         listAlertRuleStates: async () => [],
-        getFolders: async () => folders
+        getAllFolders: async () => folders
       })
     );
 
@@ -94,6 +94,21 @@ describe('AlertTreeProvider', () => {
 
     expect(children).toHaveLength(1);
     expect(children[0]).toBeInstanceOf(MessageTreeItem);
+  });
+
+  it('resolves folder titles from the complete paginated listing, not from a single truncated page', async () => {
+    const inst = instance();
+    const client: AlertApiClient = {
+      listAlertRules: async () => [rule({ uid: 'r1', title: 'CPU high', folderUid: 'f1', ruleGroup: 'g-a' })],
+      listAlertRuleStates: async () => [state({ uid: 'r1', state: 'firing', group: 'g-a' })],
+      getAllFolders: async () => folders
+    };
+    const provider = new AlertTreeProvider({ listInstances: async () => [inst] }, async () => client);
+
+    const [instanceItem] = await provider.getChildren();
+    const groups = (await provider.getChildren(instanceItem)) as AlertGroupTreeItem[];
+
+    expect(groups[0]?.label).toBe('Infra / g-a');
   });
 
   it('groups rules by folder+ruleGroup and sorts groups/rules firing before pending before normal', async () => {
@@ -111,7 +126,7 @@ describe('AlertTreeProvider', () => {
         state({ uid: 'r2', state: 'normal', group: 'g-a' }),
         state({ uid: 'r3', state: 'pending', group: 'g-b' })
       ],
-      getFolders: async () => folders
+      getAllFolders: async () => folders
     };
     const provider = new AlertTreeProvider({ listInstances: async () => [inst] }, async () => client);
 
@@ -145,7 +160,7 @@ describe('AlertTreeProvider', () => {
       async (): Promise<AlertApiClient> => ({
         listAlertRules: async () => [],
         listAlertRuleStates: async () => [],
-        getFolders: async () => []
+        getAllFolders: async () => []
       })
     );
 
@@ -176,7 +191,7 @@ describe('AlertTreeProvider', () => {
       { listInstances: async () => [inst] },
       async (): Promise<AlertApiClient> => {
         callCount += 1;
-        return { listAlertRules: async () => [], listAlertRuleStates: async () => [], getFolders: async () => [] };
+        return { listAlertRules: async () => [], listAlertRuleStates: async () => [], getAllFolders: async () => [] };
       }
     );
 
