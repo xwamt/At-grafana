@@ -1,11 +1,10 @@
 import * as vscode from 'vscode';
 import { formatError } from '../utils/errors';
-import type { GrafanaEmbedProxy } from './GrafanaEmbedProxy';
 import { buildEmbedWebviewOptions, renderEmbedWebviewHtml } from './html';
+import type { GrafanaEmbedProxy } from './GrafanaEmbedProxy';
+import { revealOpenPanel, trackOpenPanel } from './openPanels';
 
 export type AlertDetailEmbedProxy = Pick<GrafanaEmbedProxy, 'start' | 'origin' | 'buildAlertRuleUrl'>;
-
-const openPanels = new Map<string, vscode.WebviewPanel>();
 
 /**
  * Task 4.3 (docs/plans/2026-07-29-at-grafana-v1-implementation-plan.md,
@@ -16,7 +15,6 @@ const openPanels = new Map<string, vscode.WebviewPanel>();
  */
 export class AlertDetailPanel {
   static async open(
-    context: vscode.ExtensionContext,
     proxy: AlertDetailEmbedProxy,
     instanceId: string,
     uid: string,
@@ -27,10 +25,8 @@ export class AlertDetailPanel {
       return;
     }
 
-    const key = `${instanceId}:${uid}`;
-    const existing = openPanels.get(key);
-    if (existing) {
-      existing.reveal();
+    const key = `alert:${instanceId}:${uid}`;
+    if (revealOpenPanel(key)) {
       return;
     }
 
@@ -52,11 +48,7 @@ export class AlertDetailPanel {
       vscode.ViewColumn.Active,
       buildEmbedWebviewOptions(origin)
     );
-    openPanels.set(key, panel);
-    panel.onDidDispose(() => {
-      openPanels.delete(key);
-    });
-    context.subscriptions.push(panel);
+    trackOpenPanel(key, panel);
 
     panel.webview.html = renderEmbedWebviewHtml({
       title,

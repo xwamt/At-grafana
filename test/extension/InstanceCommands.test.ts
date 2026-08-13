@@ -55,8 +55,8 @@ function extensionContext(): vscode.ExtensionContext {
 describe('atGrafana instance commands', () => {
   const registeredCommands = new Map<string, (...args: unknown[]) => unknown>();
 
-  beforeEach(() => {
-    deactivate();
+  beforeEach(async () => {
+    await deactivate();
     registeredCommands.clear();
     vi.spyOn(vscode.commands, 'registerCommand').mockImplementation((name: string, handler: (...args: unknown[]) => unknown) => {
       registeredCommands.set(name, handler);
@@ -67,8 +67,8 @@ describe('atGrafana instance commands', () => {
     vi.spyOn(vscode.window, 'showQuickPick').mockResolvedValue(undefined);
   });
 
-  afterEach(() => {
-    deactivate();
+  afterEach(async () => {
+    await deactivate();
     vi.restoreAllMocks();
   });
 

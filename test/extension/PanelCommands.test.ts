@@ -98,8 +98,8 @@ function extensionContext(): vscode.ExtensionContext {
 describe('atGrafana panel commands', () => {
   const registeredCommands = new Map<string, (...args: unknown[]) => unknown>();
 
-  beforeEach(() => {
-    deactivate();
+  beforeEach(async () => {
+    await deactivate();
     registeredCommands.clear();
     vi.spyOn(vscode.commands, 'registerCommand').mockImplementation((name: string, handler: (...args: unknown[]) => unknown) => {
       registeredCommands.set(name, handler);
@@ -107,8 +107,8 @@ describe('atGrafana panel commands', () => {
     });
   });
 
-  afterEach(() => {
-    deactivate();
+  afterEach(async () => {
+    await deactivate();
     vi.clearAllMocks();
   });
 
@@ -130,7 +130,6 @@ describe('atGrafana panel commands', () => {
 
     expect(mocks.dashboardOpen).toHaveBeenCalledWith(
       expect.anything(),
-      expect.anything(),
       'inst-1',
       'uid-1',
       'My Dashboard',
@@ -148,7 +147,7 @@ describe('atGrafana panel commands', () => {
       title: 'High CPU'
     });
 
-    expect(mocks.alertOpen).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'inst-2', 'uid-2', 'High CPU');
+    expect(mocks.alertOpen).toHaveBeenCalledWith(expect.anything(), 'inst-2', 'uid-2', 'High CPU');
   });
 
   it('falls back to empty ids and a default title when invoked without arguments', async () => {
@@ -156,15 +155,7 @@ describe('atGrafana panel commands', () => {
 
     await registeredCommands.get('atGrafana.openDashboard')?.();
 
-    expect(mocks.dashboardOpen).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      '',
-      '',
-      'Dashboard',
-      undefined,
-      undefined
-    );
+    expect(mocks.dashboardOpen).toHaveBeenCalledWith(expect.anything(), '', '', 'Dashboard', undefined, undefined);
   });
 
   it('passes the same shared GrafanaEmbedProxy instance to both panel types', async () => {
@@ -173,17 +164,18 @@ describe('atGrafana panel commands', () => {
     await registeredCommands.get('atGrafana.openDashboard')?.({ instanceId: 'inst-1', uid: 'b', title: 'c' });
     await registeredCommands.get('atGrafana.openAlertRule')?.({ instanceId: 'inst-1', uid: 'b', title: 'c' });
 
-    const dashboardProxyArg = mocks.dashboardOpen.mock.calls[0]?.[1];
-    const alertProxyArg = mocks.alertOpen.mock.calls[0]?.[1];
+    const dashboardProxyArg = mocks.dashboardOpen.mock.calls[0]?.[0];
+    const alertProxyArg = mocks.alertOpen.mock.calls[0]?.[0];
     expect(dashboardProxyArg).toBeDefined();
     expect(dashboardProxyArg).toBe(alertProxyArg);
   });
 
-  it('adds the shared GrafanaEmbedProxy to context.subscriptions for disposal', () => {
+  it('shuts the shared GrafanaEmbedProxy down through deactivate, which is awaited', async () => {
     const context = extensionContext();
 
     activate(context);
+    await deactivate();
 
-    expect(context.subscriptions.some((sub) => (sub as { dispose?: unknown }).dispose === mocks.proxyDispose)).toBe(true);
+    expect(mocks.proxyDispose).toHaveBeenCalledTimes(1);
   });
 });

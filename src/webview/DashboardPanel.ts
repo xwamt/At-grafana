@@ -1,11 +1,10 @@
 import * as vscode from 'vscode';
 import { formatError } from '../utils/errors';
-import type { GrafanaEmbedProxy } from './GrafanaEmbedProxy';
 import { buildEmbedWebviewOptions, renderEmbedWebviewHtml } from './html';
+import type { GrafanaEmbedProxy } from './GrafanaEmbedProxy';
+import { revealOpenPanel, trackOpenPanel } from './openPanels';
 
 export type DashboardEmbedProxy = Pick<GrafanaEmbedProxy, 'start' | 'origin' | 'buildDashboardUrl'>;
-
-const openPanels = new Map<string, vscode.WebviewPanel>();
 
 /**
  * Task 4.2 (docs/plans/2026-07-29-at-grafana-v1-implementation-plan.md,
@@ -21,7 +20,6 @@ const openPanels = new Map<string, vscode.WebviewPanel>();
  */
 export class DashboardPanel {
   static async open(
-    context: vscode.ExtensionContext,
     proxy: DashboardEmbedProxy,
     instanceId: string,
     uid: string,
@@ -34,10 +32,8 @@ export class DashboardPanel {
       return;
     }
 
-    const key = `${instanceId}:${uid}`;
-    const existing = openPanels.get(key);
-    if (existing) {
-      existing.reveal();
+    const key = `dashboard:${instanceId}:${uid}`;
+    if (revealOpenPanel(key)) {
       return;
     }
 
@@ -59,11 +55,7 @@ export class DashboardPanel {
       vscode.ViewColumn.Active,
       buildEmbedWebviewOptions(origin)
     );
-    openPanels.set(key, panel);
-    panel.onDidDispose(() => {
-      openPanels.delete(key);
-    });
-    context.subscriptions.push(panel);
+    trackOpenPanel(key, panel);
 
     panel.webview.html = renderEmbedWebviewHtml({
       title,

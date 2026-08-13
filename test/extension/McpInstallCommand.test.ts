@@ -47,8 +47,8 @@ function extensionContext(extensionRoot = 'C:/Users/alan/.kiro/extensions/local.
 describe('atGrafana MCP config commands', () => {
   const registeredCommands = new Map<string, (...args: unknown[]) => unknown>();
 
-  beforeEach(() => {
-    deactivate();
+  beforeEach(async () => {
+    await deactivate();
     registeredCommands.clear();
     mocks.bridgeDispose.mockClear();
     mocks.bridgeStart.mockClear();
@@ -65,8 +65,8 @@ describe('atGrafana MCP config commands', () => {
     vi.spyOn(vscode.window, 'withProgress').mockResolvedValue(undefined);
   });
 
-  afterEach(() => {
-    deactivate();
+  afterEach(async () => {
+    await deactivate();
     vi.restoreAllMocks();
   });
 
@@ -121,7 +121,7 @@ describe('atGrafana MCP config commands', () => {
     for (const subscription of [...context.subscriptions].reverse()) {
       await Promise.resolve(subscription.dispose());
     }
-    deactivate();
+    await deactivate();
 
     expect(mocks.bridgeDispose).toHaveBeenCalled();
     expect(mocks.uninstallAtSeriesConfigForCurrentIde).not.toHaveBeenCalled();

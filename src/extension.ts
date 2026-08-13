@@ -20,6 +20,7 @@ import { AlertDetailPanel } from './webview/AlertDetailPanel';
 import { DashboardPanel } from './webview/DashboardPanel';
 import { GrafanaEmbedProxy } from './webview/GrafanaEmbedProxy';
 import { GrafanaInstanceFormPanel } from './webview/GrafanaInstanceFormPanel';
+import { disposeOpenPanels } from './webview/openPanels';
 
 /** Arguments shape already wired by DashboardTreeItem/AlertRuleTreeItem's `command.arguments` (see GrafanaTreeItems.ts). */
 interface OpenGrafanaEmbedArgs {
@@ -30,7 +31,7 @@ interface OpenGrafanaEmbedArgs {
   search?: string;
 }
 
-let extensionCleanup: { dispose(): void } | undefined;
+let extensionCleanup: { dispose(): Promise<void> } | undefined;
 
 /**
  * Fresh GrafanaApiClient per call (not cached across edits) so a token/URL
@@ -88,23 +89,9 @@ export function activate(context: vscode.ExtensionContext): void {
     dashboardTreeProvider.refresh();
     alertTreeProvider.refresh();
   };
-  let disposed = false;
-  const cleanup = {
-    dispose(): void {
-      if (disposed) {
-        return;
-      }
-      disposed = true;
-      if (extensionCleanup === cleanup) {
-        extensionCleanup = undefined;
-      }
-    }
-  };
-  extensionCleanup = cleanup;
-
   // MCP activate order: detectHostApp → syncPackagedHub → BridgeServer.start (publish) →
-  // ensureAtSeriesConfig → install/uninstall commands. Dispose (via BridgeServer in
-  // subscriptions) only unpublishes; never uninstalls MCP config or deletes hub.js.
+  // ensureAtSeriesConfig → install/uninstall commands. Shutdown (via `deactivate`
+  // below) only unpublishes; never uninstalls MCP config or deletes hub.js.
   const hostEnv = {
     appName: vscode.env.appName,
     appRoot: vscode.env.appRoot,
@@ -249,7 +236,7 @@ export function activate(context: vscode.ExtensionContext): void {
         args?.uid ?? '',
         args?.title ?? 'Dashboard',
         (instanceId, uid, title, slug, search) =>
-          DashboardPanel.open(context, grafanaEmbedProxy, instanceId, uid, title, slug, search),
+          DashboardPanel.open(grafanaEmbedProxy, instanceId, uid, title, slug, search),
         args?.slug,
         args?.search
       );
@@ -264,15 +251,48 @@ export function activate(context: vscode.ExtensionContext): void {
         args?.instanceId ?? '',
         args?.uid ?? '',
         args?.title ?? 'Alert Rule',
-        (instanceId, uid, title) => AlertDetailPanel.open(context, grafanaEmbedProxy, instanceId, uid, title)
+        (instanceId, uid, title) => AlertDetailPanel.open(grafanaEmbedProxy, instanceId, uid, title)
       );
     }
   );
 
+  // VS Code awaits the promise `deactivate()` returns. It does NOT await the
+  // `dispose()` of anything in `context.subscriptions` -- it calls each one and
+  // moves on. Both `BridgeServer.dispose` and `GrafanaEmbedProxy.dispose` are
+  // async and both finish work that has to actually complete: the bridge
+  // unpublishes its `~/.at-series` registry record, the proxy closes a
+  // listening socket. Registered as subscriptions they were fire-and-forget, so
+  // a shutdown could strand a registry entry pointing at a dead port -- which
+  // the Hub then pays a failed connection for on every later refresh. Hence
+  // they are awaited here instead of pushed below.
+  let disposed = false;
+  const cleanup = {
+    async dispose(): Promise<void> {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      if (extensionCleanup === cleanup) {
+        extensionCleanup = undefined;
+      }
+      // Synchronous, and first: closing webview panels must not be delayed by
+      // -- or lost to -- a slow or failing async shutdown below.
+      disposeOpenPanels();
+      const outcomes = await Promise.allSettled([bridgeServer.dispose(), grafanaEmbedProxy.dispose()]);
+      for (const outcome of outcomes) {
+        if (outcome.status === 'rejected') {
+          // One failed shutdown step must not skip the others, and must not
+          // reject out of `deactivate` -- VS Code would report the extension
+          // as failing to deactivate over a best-effort cleanup.
+          log.error(`deactivate: a shutdown step failed: ${formatError(outcome.reason)}`);
+        }
+      }
+    }
+  };
+  extensionCleanup = cleanup;
+
   context.subscriptions.push(
     logChannel,
-    bridgeServer,
-    grafanaEmbedProxy,
     installMcpConfigCommand,
     uninstallMcpConfigCommand,
     addInstanceCommand,
@@ -284,8 +304,7 @@ export function activate(context: vscode.ExtensionContext): void {
     filterDashboardsCommand,
     clearDashboardFilterCommand,
     openDashboardCommand,
-    openAlertRuleCommand,
-    cleanup
+    openAlertRuleCommand
   );
 }
 
@@ -384,6 +403,7 @@ async function deleteInstanceWithConfirmation(
   }
 }
 
-export function deactivate(): void {
-  extensionCleanup?.dispose();
+/** Async because VS Code awaits what this returns; see the `cleanup` doc in `activate`. */
+export async function deactivate(): Promise<void> {
+  await extensionCleanup?.dispose();
 }

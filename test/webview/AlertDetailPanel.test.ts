@@ -2,10 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import type { AlertDetailEmbedProxy } from '../../src/webview/AlertDetailPanel';
 import { AlertDetailPanel } from '../../src/webview/AlertDetailPanel';
-
-function fakeContext(): vscode.ExtensionContext {
-  return { subscriptions: [] } as unknown as vscode.ExtensionContext;
-}
+import { disposeOpenPanels } from '../../src/webview/openPanels';
 
 function fakeProxy(overrides: Partial<AlertDetailEmbedProxy> = {}): AlertDetailEmbedProxy {
   const origin = 'origin' in overrides ? overrides.origin : 'http://127.0.0.1:54321';
@@ -28,7 +25,7 @@ describe('AlertDetailPanel', () => {
     const proxy = fakeProxy();
     const createWebviewPanelSpy = vi.spyOn(vscode.window, 'createWebviewPanel');
 
-    await AlertDetailPanel.open(fakeContext(), proxy, 'instance-1', 'uid-1', 'High CPU');
+    await AlertDetailPanel.open(proxy, 'instance-1', 'uid-1', 'High CPU');
 
     expect(createWebviewPanelSpy).toHaveBeenCalledTimes(1);
     const panel = createWebviewPanelSpy.mock.results[0]?.value;
@@ -44,7 +41,7 @@ describe('AlertDetailPanel', () => {
     });
     const createWebviewPanelSpy = vi.spyOn(vscode.window, 'createWebviewPanel');
 
-    await AlertDetailPanel.open(fakeContext(), proxy, 'instance-2', 'uid-2', 'Secret Alert');
+    await AlertDetailPanel.open(proxy, 'instance-2', 'uid-2', 'Secret Alert');
 
     const panel = createWebviewPanelSpy.mock.results[0]?.value;
     expect(panel.webview.html).not.toContain('grafana.example.com');
@@ -57,11 +54,11 @@ describe('AlertDetailPanel', () => {
     const proxy = fakeProxy();
     const createWebviewPanelSpy = vi.spyOn(vscode.window, 'createWebviewPanel');
 
-    await AlertDetailPanel.open(fakeContext(), proxy, 'instance-3', 'uid-3', 'Dup Alert');
+    await AlertDetailPanel.open(proxy, 'instance-3', 'uid-3', 'Dup Alert');
     const panel = createWebviewPanelSpy.mock.results[0]?.value;
     const revealSpy = vi.spyOn(panel, 'reveal');
 
-    await AlertDetailPanel.open(fakeContext(), proxy, 'instance-3', 'uid-3', 'Dup Alert');
+    await AlertDetailPanel.open(proxy, 'instance-3', 'uid-3', 'Dup Alert');
 
     expect(createWebviewPanelSpy).toHaveBeenCalledTimes(1);
     expect(revealSpy).toHaveBeenCalledTimes(1);
@@ -71,11 +68,11 @@ describe('AlertDetailPanel', () => {
     const proxy = fakeProxy();
     const createWebviewPanelSpy = vi.spyOn(vscode.window, 'createWebviewPanel');
 
-    await AlertDetailPanel.open(fakeContext(), proxy, 'instance-4', 'uid-4', 'Alert');
+    await AlertDetailPanel.open(proxy, 'instance-4', 'uid-4', 'Alert');
     const panel = createWebviewPanelSpy.mock.results[0]?.value;
     panel.dispose();
 
-    await AlertDetailPanel.open(fakeContext(), proxy, 'instance-4', 'uid-4', 'Alert');
+    await AlertDetailPanel.open(proxy, 'instance-4', 'uid-4', 'Alert');
 
     expect(createWebviewPanelSpy).toHaveBeenCalledTimes(2);
   });
@@ -85,7 +82,7 @@ describe('AlertDetailPanel', () => {
     const createWebviewPanelSpy = vi.spyOn(vscode.window, 'createWebviewPanel');
     const showErrorMessage = vi.spyOn(vscode.window, 'showErrorMessage').mockResolvedValue(undefined);
 
-    await AlertDetailPanel.open(fakeContext(), proxy, 'instance-5', '', 'Alert');
+    await AlertDetailPanel.open(proxy, 'instance-5', '', 'Alert');
 
     expect(createWebviewPanelSpy).not.toHaveBeenCalled();
     expect(showErrorMessage).toHaveBeenCalledOnce();
@@ -100,7 +97,7 @@ describe('AlertDetailPanel', () => {
     const createWebviewPanelSpy = vi.spyOn(vscode.window, 'createWebviewPanel');
     const showErrorMessage = vi.spyOn(vscode.window, 'showErrorMessage').mockResolvedValue(undefined);
 
-    await AlertDetailPanel.open(fakeContext(), proxy, 'instance-6', 'uid-6', 'Alert');
+    await AlertDetailPanel.open(proxy, 'instance-6', 'uid-6', 'Alert');
 
     expect(createWebviewPanelSpy).not.toHaveBeenCalled();
     expect(showErrorMessage).toHaveBeenCalledWith(expect.stringContaining('EADDRINUSE'));
@@ -111,18 +108,21 @@ describe('AlertDetailPanel', () => {
     const createWebviewPanelSpy = vi.spyOn(vscode.window, 'createWebviewPanel');
     const showErrorMessage = vi.spyOn(vscode.window, 'showErrorMessage').mockResolvedValue(undefined);
 
-    await AlertDetailPanel.open(fakeContext(), proxy, 'instance-7', 'uid-7', 'Alert');
+    await AlertDetailPanel.open(proxy, 'instance-7', 'uid-7', 'Alert');
 
     expect(createWebviewPanelSpy).not.toHaveBeenCalled();
     expect(showErrorMessage).toHaveBeenCalledOnce();
   });
 
-  it('adds the created panel to context.subscriptions', async () => {
+  it('hands the panel to the shared registry so deactivate can close it', async () => {
     const proxy = fakeProxy();
-    const context = fakeContext();
+    const createWebviewPanelSpy = vi.spyOn(vscode.window, 'createWebviewPanel');
 
-    await AlertDetailPanel.open(context, proxy, 'instance-8', 'uid-8', 'Alert');
+    await AlertDetailPanel.open(proxy, 'instance-8', 'uid-8', 'Alert');
+    const panel = createWebviewPanelSpy.mock.results[0]?.value;
+    const disposeSpy = vi.spyOn(panel, 'dispose');
+    disposeOpenPanels();
 
-    expect(context.subscriptions.length).toBeGreaterThan(0);
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
   });
 });
