@@ -1,6 +1,7 @@
 import * as http from 'node:http';
 import * as https from 'node:https';
 import type { TLSSocket } from 'node:tls';
+import { asRedactedLog, type AtGrafanaLog } from '../utils/logger';
 import { isTlsConnectionError } from './testGrafanaConnection';
 
 /**
@@ -54,6 +55,13 @@ export interface GrafanaHttpClientOptions {
   token: string;
   certVerifier?: GrafanaCertVerifier;
   timeoutMs?: number;
+  /**
+   * Diagnostics only. A failed Grafana call currently surfaces as one line of
+   * red text in a tree node; the classified kind and status are what actually
+   * separate "your token expired" from "your TLS is untrusted" from "Grafana
+   * is down," so they go to the channel at `debug`.
+   */
+  log?: AtGrafanaLog;
 }
 
 export interface GrafanaRequestOptions {
@@ -90,9 +98,11 @@ const DEFAULT_TIMEOUT_MS = 15_000;
  */
 export class GrafanaHttpClient {
   private readonly baseUrl: string;
+  private readonly log: AtGrafanaLog;
 
   constructor(private readonly options: GrafanaHttpClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
+    this.log = asRedactedLog(options.log);
   }
 
   async requestJson<T>(method: string, path: string, requestOptions: GrafanaRequestOptions = {}): Promise<T> {
@@ -103,8 +113,28 @@ export class GrafanaHttpClient {
       throw new GrafanaApiError('invalid-response', `Invalid Grafana request path: ${path}`);
     }
     const bodyText = requestOptions.body === undefined ? undefined : JSON.stringify(requestOptions.body);
-    const { status, text } = await this.performRequest(target, method, bodyText, requestOptions.maxResponseBytes);
-    return parseJsonResponse<T>(status, text, target);
+    try {
+      const { status, text } = await this.performRequest(target, method, bodyText, requestOptions.maxResponseBytes);
+      return parseJsonResponse<T>(status, text, target);
+    } catch (error) {
+      this.logClassifiedFailure(method, target, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Only the classification reaches the channel -- never the query string,
+   * which on the datasource proxy path carries the caller's PromQL/LogQL and
+   * on a render URL can carry a token. `pathname` is what the existing error
+   * messages already expose, so this adds no new surface.
+   */
+  private logClassifiedFailure(method: string, target: URL, error: unknown): void {
+    if (error instanceof GrafanaApiError) {
+      const status = error.status === undefined ? '' : `, status=${error.status}`;
+      this.log.debug(`grafana-api: ${method} ${target.pathname} failed (kind=${error.kind}${status}): ${error.message}`);
+      return;
+    }
+    this.log.debug(`grafana-api: ${method} ${target.pathname} failed with an unclassified error: ${String(error)}`);
   }
 
   private buildUrl(path: string, query?: Record<string, string | undefined>): URL {

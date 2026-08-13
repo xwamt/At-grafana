@@ -6,6 +6,7 @@ import type { GrafanaInstanceConfigManager } from '../config/GrafanaInstanceConf
 import type { GrafanaCertTrustStore } from '../grafana/GrafanaCertTrustStore';
 import { attachCertVerification, type GrafanaCertVerifier } from '../grafana/GrafanaHttpClient';
 import { formatError } from '../utils/errors';
+import { asRedactedLog, type AtGrafanaLog } from '../utils/logger';
 import { redactSensitiveText } from '../utils/redaction';
 
 /**
@@ -96,6 +97,13 @@ export interface GrafanaEmbedProxyDependencies {
   certVerifier?: GrafanaCertVerifier;
   /** Overrides for DEFAULT_EMBED_PROXY_LIMITS; tests shrink the timeouts so they stay fast. */
   limits?: Partial<GrafanaEmbedProxyLimits>;
+  /**
+   * Diagnostics only. Everything this proxy refuses is refused *silently* by
+   * design -- a bare 404 with no product name, a 502 rendered inside an
+   * iframe the user may not even have open -- so the channel is the only
+   * place the reason can be recorded. Never consulted for a decision.
+   */
+  log?: AtGrafanaLog;
 }
 
 /**
@@ -180,6 +188,9 @@ const EMBED_TOKEN_PATH_PATTERN = /^\/e\/([^/]+)(\/.*)?$/;
 /** Instance ids are `randomUUID()` outputs; anything else is rejected outright rather than risk-assessed, which also forecloses `..`/`@`/`%`-based smuggling through the instanceId segment. */
 const SAFE_INSTANCE_ID_PATTERN = /^[a-zA-Z0-9-]+$/;
 
+/** Why `checkAdmission` refused, for the log only -- every value but `ok` produces the same bare 404. */
+type AdmissionResult = 'ok' | 'not-started' | 'no-token' | 'token-mismatch' | 'host-mismatch' | 'origin-mismatch';
+
 export class GrafanaEmbedProxy {
   private server: http.Server | undefined;
   private port: number | undefined;
@@ -188,9 +199,11 @@ export class GrafanaEmbedProxy {
   private readonly limits: GrafanaEmbedProxyLimits;
   private inFlightRequests = 0;
   private rewriteBufferBytesInFlight = 0;
+  private readonly log: AtGrafanaLog;
 
   constructor(private readonly deps: GrafanaEmbedProxyDependencies) {
     this.limits = { ...DEFAULT_EMBED_PROXY_LIMITS, ...deps.limits };
+    this.log = asRedactedLog(deps.log);
   }
 
   get origin(): string | undefined {
@@ -249,6 +262,8 @@ export class GrafanaEmbedProxy {
       throw new Error('Failed to start AT Grafana embed proxy.');
     }
     this.port = address.port;
+    // The origin, not the token-prefixed base: the base is a credential.
+    this.log.info(`embed-proxy: listening on ${this.origin ?? ''}`);
   }
 
   async dispose(): Promise<void> {
@@ -261,11 +276,13 @@ export class GrafanaEmbedProxy {
     if (!server) {
       return;
     }
+    const socketCount = this.sockets.size;
     for (const socket of this.sockets) {
       socket.destroy();
     }
     this.sockets.clear();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    this.log.info(`embed-proxy: stopped (closed ${socketCount} open socket(s))`);
   }
 
   /** Mirrors Grafana's own `/d/:uid/:slug` dashboard URL scheme (slug optional, cosmetic only — Grafana resolves by uid). */
@@ -318,25 +335,35 @@ export class GrafanaEmbedProxy {
       // this is read per-request from the Referer rather than from a cookie.
       const referrer = parseEmbedReferrer(request.headers.referer, this.origin);
       const presentedToken = tokenRoute?.token ?? referrer?.token;
-      if (!this.isAuthorized(request, presentedToken)) {
+      const admission = this.checkAdmission(request, presentedToken);
+      if (admission !== 'ok') {
+        // The 404 stays bare (see `respondNotFound`); the *reason* is only
+        // ever written here, where a port scanner cannot read it.
+        this.log.warn(
+          `embed-proxy: rejected a request (reason=${admission}, method=${request.method ?? 'GET'}, ` +
+            `path=${pathOnly(request.url ?? '/')})`
+        );
         respondNotFound(response);
         return;
       }
 
       const parsedPath = parseProxyRoute(tokenRoute?.target ?? rawUrl, referrer?.instanceId);
       if (!parsedPath) {
+        this.log.warn(`embed-proxy: no route matched ${pathOnly(request.url ?? '/')}`);
         respondError(response, 404, 'Unknown AT Grafana proxy route.');
         return;
       }
 
       const instance = await this.deps.configManager.getInstance(parsedPath.instanceId);
       if (!instance) {
+        this.log.warn(`embed-proxy: request named an unknown instance ${parsedPath.instanceId}`);
         respondError(response, 404, `Unknown Grafana instance: ${parsedPath.instanceId}.`);
         return;
       }
 
       const token = await this.deps.configManager.getToken(instance.id);
       if (!token) {
+        this.log.error(`embed-proxy: instance ${instance.id} has no Service Account Token configured`);
         respondError(response, 502, 'No Service Account Token is configured for this Grafana instance.');
         return;
       }
@@ -345,6 +372,7 @@ export class GrafanaEmbedProxy {
       try {
         realOrigin = new URL(instance.url);
       } catch {
+        this.log.error(`embed-proxy: instance ${instance.id} has an unparseable configured URL`);
         respondError(response, 502, 'This Grafana instance has an invalid configured URL.');
         return;
       }
@@ -352,6 +380,8 @@ export class GrafanaEmbedProxy {
       if (realOrigin.protocol === 'https:') {
         const trusted = await this.isHttpsOriginTrusted(realOrigin.hostname, portOf(realOrigin));
         if (!trusted) {
+          // GrafanaCertTrustStore already warned (deduplicated) about *why*.
+          this.log.error(`embed-proxy: refused instance ${instance.id}; its TLS certificate is not trusted`);
           respondError(
             response,
             502,
@@ -361,6 +391,7 @@ export class GrafanaEmbedProxy {
           return;
         }
       } else if (realOrigin.protocol !== 'http:') {
+        this.log.error(`embed-proxy: instance ${instance.id} uses an unsupported URL scheme ${realOrigin.protocol}`);
         respondError(response, 502, 'This Grafana instance has an unsupported URL scheme.');
         return;
       }
@@ -369,6 +400,7 @@ export class GrafanaEmbedProxy {
       try {
         targetUrl = buildTargetUrl(realOrigin, parsedPath.remainingPath, parsedPath.search);
       } catch {
+        this.log.warn(`embed-proxy: refused a path that escaped instance ${instance.id}'s own origin`);
         respondError(response, 400, 'Invalid proxy request path.');
         return;
       }
@@ -376,12 +408,18 @@ export class GrafanaEmbedProxy {
       // Claimed only now, once the request is known to be headed upstream, so
       // that rejected and unroutable requests cannot exhaust the budget.
       if (!this.acquireRequestSlot(response)) {
+        this.log.warn(
+          `embed-proxy: shed a request for ${targetUrl.pathname}; the concurrency cap of ` +
+            `${this.limits.maxConcurrentRequests} in-flight upstream requests is full`
+        );
         respondServiceUnavailable(response);
         return;
       }
 
+      this.log.trace(`embed-proxy: forwarding ${request.method ?? 'GET'} ${targetUrl.pathname} for instance ${instance.id}`);
       this.forward(request, response, targetUrl, realOrigin, instance.id, token);
     } catch (error) {
+      this.log.error(`embed-proxy: unhandled error while routing a request: ${formatError(error)}`);
       if (!response.headersSent) {
         respondError(response, 502, `AT Grafana proxy error: ${formatError(error)}`);
       } else {
@@ -422,20 +460,35 @@ export class GrafanaEmbedProxy {
    * holding the instance's Service Account Token, so knowing the instanceId
    * (which any local process can read out of `state.vscdb`) must not be
    * sufficient.
+   *
+   * Returns *which* check failed rather than a boolean. The distinction never
+   * leaves the process -- every failure produces the same bare 404, so no
+   * caller can tell these apart -- but "the Webview sent no token" and "some
+   * other local process is probing us" are opposite problems, and until this
+   * batch there was nowhere to tell them apart from the outside either.
    */
-  private isAuthorized(request: http.IncomingMessage, presentedToken: string | undefined): boolean {
+  private checkAdmission(request: http.IncomingMessage, presentedToken: string | undefined): AdmissionResult {
     const expected = this.embedToken;
-    if (expected === undefined || presentedToken === undefined || !timingSafeEqualToken(presentedToken, expected)) {
-      return false;
+    if (expected === undefined) {
+      return 'not-started';
+    }
+    if (presentedToken === undefined) {
+      return 'no-token';
+    }
+    if (!timingSafeEqualToken(presentedToken, expected)) {
+      return 'token-mismatch';
     }
     // Compared against the literal loopback authority rather than "some
     // hostname that resolves to 127.0.0.1", which is exactly the difference
     // that makes DNS rebinding fail here.
     if (request.headers.host !== `127.0.0.1:${this.port ?? ''}`) {
-      return false;
+      return 'host-mismatch';
     }
     const origin = request.headers.origin;
-    return origin === undefined || origin === this.origin;
+    if (origin !== undefined && origin !== this.origin) {
+      return 'origin-mismatch';
+    }
+    return 'ok';
   }
 
   /**
@@ -510,6 +563,9 @@ export class GrafanaEmbedProxy {
         return;
       }
       clientErrorHandled = true;
+      this.log.error(
+        `embed-proxy: upstream timed out after ${this.limits.upstreamTimeoutMs}ms for ${targetUrl.pathname} (instance ${instanceId})`
+      );
       // Node reports the idle socket but does not close it, so without this
       // the connection to Grafana survives for as long as Grafana keeps it --
       // exactly the leak that lets a wedged upstream accumulate sockets.
@@ -526,6 +582,9 @@ export class GrafanaEmbedProxy {
         return;
       }
       clientErrorHandled = true;
+      this.log.error(
+        `embed-proxy: upstream request to ${targetUrl.pathname} failed (instance ${instanceId}): ${formatError(error)}`
+      );
       if (!clientResponse.headersSent) {
         respondError(clientResponse, 502, `Failed to reach the Grafana instance: ${formatError(error)}`);
       } else {
@@ -549,6 +608,9 @@ export class GrafanaEmbedProxy {
         onVerified: () => clientRequest.pipe(proxyRequest),
         onRejected: (error) => {
           clientErrorHandled = true;
+          this.log.error(
+            `embed-proxy: live TLS verification failed for ${targetUrl.host} (instance ${instanceId}): ${error.message}`
+          );
           proxyRequest.destroy();
           if (!clientResponse.headersSent) {
             respondError(clientResponse, 502, `Grafana TLS certificate verification failed: ${redactSensitiveText(error.message)}`);
@@ -668,6 +730,10 @@ export class GrafanaEmbedProxy {
       if (size > this.limits.maxRewriteBufferBytes || this.rewriteBufferBytesInFlight > this.limits.maxTotalRewriteBufferBytes) {
         aborted = true;
         chunks.length = 0;
+        this.log.warn(
+          `embed-proxy: abandoned a rewritable response after ${size} bytes ` +
+            `(per-response cap ${this.limits.maxRewriteBufferBytes}, process-wide in flight ${this.rewriteBufferBytesInFlight}/${this.limits.maxTotalRewriteBufferBytes})`
+        );
         proxyResponse.destroy();
         if (!clientResponse.headersSent) {
           respondError(clientResponse, 502, 'Grafana response was too large to rewrite.');
@@ -693,10 +759,11 @@ export class GrafanaEmbedProxy {
       clientResponse.end(rewritten);
     });
 
-    proxyResponse.on('error', () => {
+    proxyResponse.on('error', (error) => {
       if (aborted) {
         return;
       }
+      this.log.error(`embed-proxy: upstream response stream failed mid-body: ${formatError(error)}`);
       if (!clientResponse.headersSent) {
         respondError(clientResponse, 502, 'Grafana upstream response error.');
       } else {
@@ -1041,6 +1108,19 @@ function splitJoin(text: string, search: string, replacement: string): string {
 
 function firstHeaderValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
+}
+
+/**
+ * The path of a request URL, without its query string. Log lines about
+ * rejected requests use this rather than `request.url`, since a rejected
+ * request is by definition attacker-influenced and its query string is not
+ * something worth copying into a file the user may paste into an issue.
+ * (`redactSensitiveText` would strip a recognized token from either form;
+ * this keeps unrecognized junk out too.)
+ */
+function pathOnly(rawUrl: string): string {
+  const queryStart = rawUrl.indexOf('?');
+  return queryStart === -1 ? rawUrl : rawUrl.slice(0, queryStart);
 }
 
 function portOf(url: URL): number {

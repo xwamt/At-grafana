@@ -19,6 +19,7 @@ import {
 } from '../grafana/QueryLimits';
 import { QueryRateLimiter, QueryThrottledError } from '../grafana/QueryRateLimiter';
 import { formatError } from '../utils/errors';
+import type { AtGrafanaLog } from '../utils/logger';
 import {
   describeZodError,
   grafanaGetAlertHistorySchema,
@@ -103,6 +104,12 @@ export interface GrafanaAgentToolServiceDependencies {
    * sleeping. Omitted in real usage, which builds one from the defaults.
    */
   queryRateLimiter?: QueryRateLimiter;
+  /**
+   * Handed to the `QueryRateLimiter` this class builds when none is injected,
+   * so a shed query says which instance ran out of budget. Ignored when
+   * `queryRateLimiter` is supplied -- that limiter carries its own.
+   */
+  log?: AtGrafanaLog;
 }
 
 /** Raw, unresolved `atGrafana.queryLimits.*` values; `undefined` means "not configured," resolved via QueryLimits.ts. */
@@ -167,7 +174,8 @@ export class GrafanaAgentToolService {
       new QueryRateLimiter({
         maxRequestsPerWindow: DEFAULT_MAX_QUERIES_PER_MINUTE,
         windowMs: 60_000,
-        maxConcurrent: DEFAULT_MAX_CONCURRENT_QUERIES
+        maxConcurrent: DEFAULT_MAX_CONCURRENT_QUERIES,
+        log: deps.log
       });
   }
 

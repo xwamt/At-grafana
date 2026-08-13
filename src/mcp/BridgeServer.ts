@@ -13,6 +13,7 @@ import {
 } from '@at-series/mcp-hub';
 import type { GrafanaAgentToolService } from '../agent/GrafanaAgentToolService';
 import { formatError } from '../utils/errors';
+import { asRedactedLog, noopLog, type AtGrafanaLog } from '../utils/logger';
 import { AT_GRAFANA_PLUGIN_DISPLAY_NAME } from './BridgeProtocol';
 import { BRIDGE_SCHEMAS_BY_TOOL_NAME, describeZodError } from './bridgeSchemas';
 import { AT_GRAFANA_PLUGIN_ID, AT_GRAFANA_TOOL_CATALOG } from './toolCatalog';
@@ -28,6 +29,8 @@ export interface BridgeServerOptions {
   toolService?: GrafanaAgentToolService;
   /** Shrunk by tests so socket-level deadlines are observable; ships as DEFAULT_BRIDGE_SERVER_LIMITS. */
   limits?: Partial<BridgeServerLimits>;
+  /** Diagnostics only; never consulted for an authorization or routing decision. */
+  log?: AtGrafanaLog;
 }
 
 /**
@@ -59,6 +62,7 @@ export interface BridgeHandlerDependencies {
   pluginVersion: string;
   pluginDisplayName?: string;
   toolService?: GrafanaAgentToolService;
+  log?: AtGrafanaLog;
 }
 
 export interface BridgeRequest {
@@ -98,6 +102,7 @@ export class BridgeServer {
   private readonly pluginVersion: string;
   private readonly toolService: GrafanaAgentToolService | undefined;
   private readonly limits: BridgeServerLimits;
+  private readonly log: AtGrafanaLog;
 
   constructor(options: BridgeServerOptions) {
     this.home = options.home ?? homedir();
@@ -105,6 +110,7 @@ export class BridgeServer {
     this.pluginVersion = options.pluginVersion ?? DEFAULT_PLUGIN_VERSION;
     this.toolService = options.toolService;
     this.limits = { ...DEFAULT_BRIDGE_SERVER_LIMITS, ...options.limits };
+    this.log = asRedactedLog(options.log);
   }
 
   async start(): Promise<void> {
@@ -120,7 +126,8 @@ export class BridgeServer {
       token,
       hostApp: this.hostApp,
       pluginVersion: this.pluginVersion,
-      toolService: this.toolService
+      toolService: this.toolService,
+      log: this.log
     });
     this.server = createServer(
       {
@@ -134,7 +141,7 @@ export class BridgeServer {
         headersTimeout: this.limits.headersTimeoutMs
       },
       (request, response) => {
-        void handleNodeRequest(handler, token, request, response);
+        void handleNodeRequest(handler, token, request, response, this.log);
       }
     );
     this.server.maxConnections = this.limits.maxConnections;
@@ -171,6 +178,10 @@ export class BridgeServer {
       void this.tickHeartbeat();
     }, BRIDGE_HEARTBEAT_INTERVAL_MS);
     this.heartbeatTimer.unref?.();
+    this.log.info(
+      `bridge: listening on ${BRIDGE_HOST}:${address.port} and published to the registry ` +
+        `(bridgeId=${this.bridgeId}, tools=${AT_GRAFANA_TOOL_CATALOG.length})`
+    );
   }
 
   async dispose(): Promise<void> {
@@ -190,6 +201,7 @@ export class BridgeServer {
       return;
     }
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    this.log.info(`bridge: stopped and unpublished (bridgeId=${this.bridgeId})`);
   }
 
   private async tickHeartbeat(): Promise<void> {
@@ -207,6 +219,7 @@ export class BridgeServer {
 
 export function createBridgeRequestHandler(dependencies: BridgeHandlerDependencies) {
   const pluginDisplayName = dependencies.pluginDisplayName ?? AT_GRAFANA_PLUGIN_DISPLAY_NAME;
+  const log = asRedactedLog(dependencies.log);
 
   return async (request: BridgeRequest): Promise<BridgeResponse> => {
     try {
@@ -214,6 +227,10 @@ export function createBridgeRequestHandler(dependencies: BridgeHandlerDependenci
       // this handler is a standalone unit that can be driven without that
       // transport, so it may not assume anything upstream of it ran.
       if (!isAuthorized(request.headers, dependencies.token)) {
+        // The presented value is deliberately not echoed: it is a credential
+        // (possibly the real one, arriving with a stale header name), and the
+        // useful diagnostic is that something local is calling us at all.
+        log.warn(`bridge: rejected an unauthorized request (${request.method.toUpperCase()} ${normalizePath(request.path)})`);
         return unauthorizedResponse();
       }
 
@@ -232,7 +249,7 @@ export function createBridgeRequestHandler(dependencies: BridgeHandlerDependenci
       }
 
       if (path === '/invoke' && method === 'POST') {
-        return await handleInvoke(request.body, dependencies.toolService);
+        return await handleInvoke(request.body, dependencies.toolService, log);
       }
 
       if (method !== 'GET' && method !== 'POST') {
@@ -241,7 +258,9 @@ export function createBridgeRequestHandler(dependencies: BridgeHandlerDependenci
 
       return bridgeError(404, 'NOT_FOUND', 'Unknown AT Grafana MCP bridge endpoint.');
     } catch (error) {
-      return bridgeError(500, 'INTERNAL_ERROR', error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      log.error(`bridge: request handling threw (${request.method.toUpperCase()} ${normalizePath(request.path)}): ${message}`);
+      return bridgeError(500, 'INTERNAL_ERROR', message);
     }
   };
 }
@@ -261,7 +280,11 @@ function buildHealthResponse(dependencies: BridgeHandlerDependencies, pluginDisp
   };
 }
 
-async function handleInvoke(body: string | undefined, toolService: GrafanaAgentToolService | undefined): Promise<BridgeResponse> {
+async function handleInvoke(
+  body: string | undefined,
+  toolService: GrafanaAgentToolService | undefined,
+  log: AtGrafanaLog
+): Promise<BridgeResponse> {
   let raw: unknown = {};
   if (body) {
     try {
@@ -309,8 +332,10 @@ async function handleInvoke(body: string | undefined, toolService: GrafanaAgentT
 
   const result = await toolService.invoke(name, args);
   if (result.ok) {
+    log.trace(`bridge: invoked ${name} successfully`);
     return json(200, { ok: true, name, result: result.result });
   }
+  log.error(`bridge: tool ${name} failed (code=${result.code}): ${result.message}`);
   return bridgeError(statusForToolErrorCode(result.code), result.code, result.message);
 }
 
@@ -399,7 +424,8 @@ async function handleNodeRequest(
   handler: ReturnType<typeof createBridgeRequestHandler>,
   token: string,
   request: IncomingMessage,
-  response: ServerResponse
+  response: ServerResponse,
+  log: AtGrafanaLog
 ): Promise<void> {
   try {
     // Credentials are settled from the headers alone, before `readLimitedBody`
@@ -410,11 +436,13 @@ async function handleNodeRequest(
     // as it arrives, which costs one stream buffer per connection rather than
     // two megabytes.
     if (!isAuthorized(request.headers, token)) {
+      log.warn(`bridge: rejected an unauthorized request (${request.method ?? 'GET'} ${normalizePath(request.url ?? '/')})`);
       respond(response, unauthorizedResponse());
       return;
     }
     const limited = await readLimitedBody(request, BRIDGE_MAX_BODY_BYTES);
     if (!limited.ok) {
+      log.warn(`bridge: ${limited.error}`);
       respond(response, bridgeError(limited.status, 'PAYLOAD_TOO_LARGE', limited.error));
       return;
     }
@@ -428,6 +456,7 @@ async function handleNodeRequest(
       })
     );
   } catch (error) {
+    log.error(`bridge: transport error while serving ${request.method ?? 'GET'} ${normalizePath(request.url ?? '/')}: ${formatError(error)}`);
     respond(response, bridgeError(500, 'INTERNAL_ERROR', formatError(error)));
   }
 }

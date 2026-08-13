@@ -124,7 +124,66 @@ const dialogState = {
   quickPickResults: [] as unknown[]
 };
 
+/**
+ * Records what the extension wrote to its `LogOutputChannel`, so a test can
+ * assert on the channel without a VS Code host. `__getLogChannels` is the
+ * escape hatch; the object itself satisfies the `LogSink` shape
+ * `src/utils/logger.ts` expects.
+ */
+export class LogOutputChannel {
+  readonly lines: Array<{ level: string; message: string }> = [];
+
+  constructor(public readonly name: string) {}
+
+  private append(level: string, message: string): void {
+    this.lines.push({ level, message });
+  }
+
+  error(message: string): void {
+    this.append('error', message);
+  }
+
+  warn(message: string): void {
+    this.append('warn', message);
+  }
+
+  info(message: string): void {
+    this.append('info', message);
+  }
+
+  debug(message: string): void {
+    this.append('debug', message);
+  }
+
+  trace(message: string): void {
+    this.append('trace', message);
+  }
+
+  appendLine(message: string): void {
+    this.append('info', message);
+  }
+
+  show(): void {
+    // No-op: nothing to reveal in the fixture.
+  }
+
+  dispose(): void {
+    this.lines.length = 0;
+  }
+}
+
+const logChannels: LogOutputChannel[] = [];
+
 export const window = {
+  createOutputChannel: (name: string, _options?: { log: true }): LogOutputChannel => {
+    const channel = new LogOutputChannel(name);
+    logChannels.push(channel);
+    return channel;
+  },
+  __getLogChannels: (): LogOutputChannel[] => logChannels,
+  __clearLogChannels: (): void => {
+    logChannels.length = 0;
+  },
   __resetDialogs: () => {
     dialogState.openDialogResults = [];
     dialogState.saveDialogResults = [];

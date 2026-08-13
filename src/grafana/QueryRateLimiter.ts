@@ -31,6 +31,8 @@
  * multi-query investigation actually needs.
  */
 
+import { asRedactedLog, type AtGrafanaLog } from '../utils/logger';
+
 export interface QueryRateLimiterOptions {
   /** Bucket capacity, and the number of tokens replenished over one window. */
   maxRequestsPerWindow: number;
@@ -39,6 +41,12 @@ export interface QueryRateLimiterOptions {
   maxConcurrent: number;
   /** Injectable clock; tests advance it by hand instead of sleeping. */
   now?: () => number;
+  /**
+   * Diagnostics only -- a shed query is invisible to the user (the agent sees
+   * a 503 and retries), so without a line here "the agent is being slow" has
+   * no explanation anywhere. Never consulted for a decision.
+   */
+  log?: AtGrafanaLog;
 }
 
 export type QueryRateLimitReason = 'rate' | 'concurrency';
@@ -96,9 +104,11 @@ interface InstanceBudget {
 export class QueryRateLimiter {
   private readonly budgets = new Map<string, InstanceBudget>();
   private readonly now: () => number;
+  private readonly log: AtGrafanaLog;
 
   constructor(private readonly options: QueryRateLimiterOptions) {
     this.now = options.now ?? Date.now;
+    this.log = asRedactedLog(options.log);
   }
 
   /**
@@ -114,15 +124,22 @@ export class QueryRateLimiter {
     // a request that never reached Grafana should not consume the budget for
     // one that would have.
     if (budget.inFlight >= this.options.maxConcurrent) {
+      this.logShed(instanceId, budget, 'concurrency', CONCURRENCY_RETRY_HINT_MS);
       return { allowed: false, rejection: { reason: 'concurrency', retryAfterMs: CONCURRENCY_RETRY_HINT_MS } };
     }
 
     if (budget.tokens < 1) {
-      return { allowed: false, rejection: { reason: 'rate', retryAfterMs: this.msUntilNextToken(budget) } };
+      const retryAfterMs = this.msUntilNextToken(budget);
+      this.logShed(instanceId, budget, 'rate', retryAfterMs);
+      return { allowed: false, rejection: { reason: 'rate', retryAfterMs } };
     }
 
     budget.tokens -= 1;
     budget.inFlight += 1;
+    this.log.trace(
+      `query-limits: admitted a query for instance ${instanceId} ` +
+        `(tokens ${budget.tokens.toFixed(2)}/${this.options.maxRequestsPerWindow}, in flight ${budget.inFlight}/${this.options.maxConcurrent})`
+    );
 
     let released = false;
     return {
@@ -137,6 +154,24 @@ export class QueryRateLimiter {
         }
       }
     };
+  }
+
+  /**
+   * The instance id is a `randomUUID()` already stored in plaintext in
+   * `globalState`, not a credential -- and without it the line cannot answer
+   * the only question worth asking, which is *whose* budget ran out.
+   */
+  private logShed(
+    instanceId: string,
+    budget: InstanceBudget,
+    reason: QueryRateLimitReason,
+    retryAfterMs: number
+  ): void {
+    this.log.warn(
+      `query-limits: shed a query for instance ${instanceId} (reason=${reason}, retryAfterMs=${retryAfterMs}, ` +
+        `tokens ${budget.tokens.toFixed(2)}/${this.options.maxRequestsPerWindow}, ` +
+        `in flight ${budget.inFlight}/${this.options.maxConcurrent})`
+    );
   }
 
   private budgetFor(instanceId: string): InstanceBudget {

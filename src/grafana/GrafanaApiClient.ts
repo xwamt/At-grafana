@@ -16,6 +16,7 @@
  * single domain (`health`); dashboards/alerts/datasources concerns live in
  * their own modules to stay under this project's ~300-line file guidance.
  */
+import type { AtGrafanaLog } from '../utils/logger';
 import { GrafanaAlertsApi } from './GrafanaAlertsApi';
 import { GrafanaDashboardsApi } from './GrafanaDashboardsApi';
 import { GrafanaDatasourcesApi } from './GrafanaDatasourcesApi';
@@ -33,6 +34,8 @@ export interface GrafanaApiClientOptions {
   token: string;
   certVerifier?: GrafanaCertVerifier;
   timeoutMs?: number;
+  /** Forwarded verbatim to `GrafanaHttpClient`; see its option doc. */
+  log?: AtGrafanaLog;
 }
 
 export interface GrafanaHealth {

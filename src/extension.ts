@@ -14,6 +14,7 @@ import { AlertTreeProvider } from './tree/AlertTreeProvider';
 import { DashboardTreeProvider } from './tree/DashboardTreeProvider';
 import type { GrafanaTreeItem } from './tree/GrafanaTreeItems';
 import { formatError } from './utils/errors';
+import { createRedactedLog, type AtGrafanaLog } from './utils/logger';
 import { showTimedNotification } from './utils/notifications';
 import { AlertDetailPanel } from './webview/AlertDetailPanel';
 import { DashboardPanel } from './webview/DashboardPanel';
@@ -40,7 +41,8 @@ let extensionCleanup: { dispose(): void } | undefined;
 function createGrafanaClient(
   configManager: Pick<GrafanaInstanceConfigManager, 'getToken'>,
   instance: GrafanaInstanceConfig,
-  certTrustStore: GrafanaCertTrustStore
+  certTrustStore: GrafanaCertTrustStore,
+  log: AtGrafanaLog
 ): Promise<GrafanaApiClient> {
   return configManager.getToken(instance.id).then((token) => {
     if (!token) {
@@ -49,7 +51,8 @@ function createGrafanaClient(
     return new GrafanaApiClient({
       baseUrl: instance.url,
       token,
-      certVerifier: createInteractiveCertVerifier(certTrustStore)
+      certVerifier: createInteractiveCertVerifier(certTrustStore),
+      log
     });
   });
 }
@@ -61,17 +64,25 @@ function createGrafanaClient(
  * docs/plans/2026-07-29-at-grafana-v1-implementation-plan.md).
  */
 export function activate(context: vscode.ExtensionContext): void {
+  // A `LogOutputChannel` rather than a plain one: VS Code then owns the level
+  // (Output panel gear / `Developer: Set Log Level...`) and stamps each line,
+  // so the extension contributes no setting of its own for it. Everything
+  // below writes through `createRedactedLog`, which is the only thing allowed
+  // to hand text to this channel -- see src/utils/logger.ts.
+  const logChannel = vscode.window.createOutputChannel('AT Grafana', { log: true });
+  const log = createRedactedLog(logChannel);
+
   const configManager = new GrafanaInstanceConfigManager(context.globalState, context.secrets);
-  const certTrustStore = new GrafanaCertTrustStore(context.globalState);
+  const certTrustStore = new GrafanaCertTrustStore(context.globalState, log);
   // Task 4.1's http.Server only binds on the first Webview panel open
   // (DashboardPanel/AlertDetailPanel call proxy.start(), itself idempotent)
   // — not eagerly here — per ADR-003's "not always-on" framing.
-  const grafanaEmbedProxy = new GrafanaEmbedProxy({ configManager, certTrustStore });
+  const grafanaEmbedProxy = new GrafanaEmbedProxy({ configManager, certTrustStore, log });
   const dashboardTreeProvider = new DashboardTreeProvider(configManager, (instance) =>
-    createGrafanaClient(configManager, instance, certTrustStore)
+    createGrafanaClient(configManager, instance, certTrustStore, log)
   );
   const alertTreeProvider = new AlertTreeProvider(configManager, (instance) =>
-    createGrafanaClient(configManager, instance, certTrustStore)
+    createGrafanaClient(configManager, instance, certTrustStore, log)
   );
   const refreshTreeViews = (): void => {
     dashboardTreeProvider.refresh();
@@ -106,11 +117,11 @@ export function activate(context: vscode.ExtensionContext): void {
   // Await hub sync before writing MCP config so node can resolve ~/.at-series/mcp/hub.js.
   const hubReady = syncPackagedHub(context)
     .then((result) => {
-      console.log(`AT Grafana hub sync ok (updated=${result.updated}, active=${result.activeVersion})`);
+      log.info(`hub-sync: ok (updated=${result.updated}, active=${result.activeVersion})`);
       return result;
     })
     .catch((error) => {
-      console.error('AT Grafana hub sync failed:', formatError(error));
+      log.error(`hub-sync: failed: ${formatError(error)}`);
       void showTimedNotification(
         `AT Series hub sync failed: ${formatError(error)}. MCP may not start until Repair succeeds.`,
         'warning'
@@ -125,7 +136,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const grafanaAgentToolService = new GrafanaAgentToolService({
     configManager,
     certTrustStore,
-    createClient: (baseUrl, token, certVerifier) => new GrafanaApiClient({ baseUrl, token, certVerifier }),
+    log,
+    createClient: (baseUrl, token, certVerifier) => new GrafanaApiClient({ baseUrl, token, certVerifier, log }),
     // Task 6.1: read live each call (not cached) so editing
     // atGrafana.queryLimits.* takes effect on the next grafana_query_datasource
     // call without a reload -- see GrafanaAgentToolServiceDependencies's doc.
@@ -142,15 +154,18 @@ export function activate(context: vscode.ExtensionContext): void {
     hostApp,
     pluginVersion:
       typeof context.extension?.packageJSON?.version === 'string' ? context.extension.packageJSON.version : undefined,
-    toolService: grafanaAgentToolService
+    toolService: grafanaAgentToolService,
+    log
   });
   void bridgeServer.start().catch((error) => {
+    log.error(`bridge: failed to start: ${formatError(error)}`);
     void showTimedNotification(`AT Grafana MCP bridge failed to start: ${formatError(error)}`, 'warning');
   });
 
   void hubReady
     .then(() => ensureAtSeriesConfigForCurrentIde({ ...hostEnv, workspaceFolder: currentWorkspaceFolder() }))
     .catch((error) => {
+      log.error(`mcp-config: could not be updated: ${formatError(error)}`);
       void showTimedNotification(`AT Series MCP config could not be updated: ${formatError(error)}`, 'warning');
     });
 
@@ -255,6 +270,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   context.subscriptions.push(
+    logChannel,
     bridgeServer,
     grafanaEmbedProxy,
     installMcpConfigCommand,
