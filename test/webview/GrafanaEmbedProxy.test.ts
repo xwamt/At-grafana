@@ -94,6 +94,12 @@ function requestProxy(
   });
 }
 
+/** `IncomingHttpHeaders` types every header as `string | string[]`; CSP only ever arrives as one value. */
+function cspHeader(headers: http.IncomingHttpHeaders): string {
+  const value = headers['content-security-policy'];
+  return Array.isArray(value) ? value.join('; ') : value ?? '';
+}
+
 let proxy: GrafanaEmbedProxy | undefined;
 let upstream: TestHttpServer | undefined;
 let rawServer: net.Server | undefined;
@@ -533,7 +539,7 @@ describe('GrafanaEmbedProxy body rewriting', () => {
     ]);
   });
 
-  it('strips X-Frame-Options and Content-Security-Policy so Grafana can render inside the Webview iframe', async () => {
+  it("strips X-Frame-Options and replaces the upstream CSP with the proxy's own", async () => {
     upstream = await listen((_req, res) => {
       res
         .writeHead(200, {
@@ -553,7 +559,7 @@ describe('GrafanaEmbedProxy body rewriting', () => {
 
     expect(result.status).toBe(200);
     expect(result.headers['x-frame-options']).toBeUndefined();
-    expect(result.headers['content-security-policy']).toBeUndefined();
+    expect(cspHeader(result.headers)).toContain("connect-src 'self'");
     expect(result.body).toContain('<base href=');
     expect(result.body).toContain('d.settings.appSubUrl=p');
   });
@@ -574,6 +580,76 @@ describe('GrafanaEmbedProxy body rewriting', () => {
     const proxyBase = `${embedProxy.origin}${embedPath(embedProxy, `/instances/${instance.id}`)}`;
 
     expect(result.body).toContain(`<base href="${proxyBase}/">`);
+  });
+});
+
+/**
+ * `buildRecommendedCsp` protects the *parent* Webview document, and CSP is
+ * per-document: its `frame-src` only governs which iframe may be loaded, never
+ * what the document inside that iframe may do. The document inside the iframe
+ * is the Grafana page this proxy returns, and the proxy strips Grafana's own
+ * CSP so the page can be framed at all. Without a replacement, that document
+ * runs with no CSP whatsoever -- and Grafana's Text panel supports raw HTML,
+ * which makes an imported third-party dashboard JSON a realistic delivery
+ * vehicle for a script that exfiltrates whatever the panel can read.
+ */
+describe('GrafanaEmbedProxy proxied-document CSP', () => {
+  async function fetchProxiedHtmlHeaders(upstreamCsp?: string): Promise<http.IncomingHttpHeaders> {
+    upstream = await listen((_req, res) => {
+      const headers: Record<string, string> = { 'content-type': 'text/html; charset=utf-8' };
+      if (upstreamCsp !== undefined) {
+        headers['content-security-policy'] = upstreamCsp;
+      }
+      res.writeHead(200, headers).end('<html><head></head><body>ok</body></html>');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-csp', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`));
+    return result.headers;
+  }
+
+  it('sends its own CSP on a proxied document even when the upstream sent none', async () => {
+    const headers = await fetchProxiedHtmlHeaders();
+
+    const csp = cspHeader(headers);
+    expect(csp).toContain("default-src 'self'");
+    expect(csp).toContain("connect-src 'self'");
+    expect(csp).toContain("form-action 'self'");
+  });
+
+  it("does not pass the upstream's CSP through in place of its own", async () => {
+    const headers = await fetchProxiedHtmlHeaders("default-src 'none'; connect-src https://telemetry.example.com");
+
+    const csp = cspHeader(headers);
+    expect(csp).not.toContain('telemetry.example.com');
+    expect(csp).toContain("connect-src 'self'");
+  });
+
+  it('keeps data: URIs allowed for images and fonts so Grafana icons still render', async () => {
+    const headers = await fetchProxiedHtmlHeaders();
+
+    const csp = cspHeader(headers);
+    expect(/img-src[^;]*\bdata:/.test(csp)).toBe(true);
+    expect(/font-src[^;]*\bdata:/.test(csp)).toBe(true);
+  });
+
+  it('lets the VS Code Webview frame the proxied document', async () => {
+    const headers = await fetchProxiedHtmlHeaders();
+
+    const csp = cspHeader(headers);
+    expect(csp).toContain('frame-ancestors');
+    expect(csp).toContain('vscode-webview:');
+  });
+
+  it('still lets Grafana boot: its inline boot script and the injected appSubUrl patch must be allowed', async () => {
+    const headers = await fetchProxiedHtmlHeaders();
+
+    const csp = cspHeader(headers);
+    expect(/script-src[^;]*'unsafe-inline'/.test(csp)).toBe(true);
   });
 });
 

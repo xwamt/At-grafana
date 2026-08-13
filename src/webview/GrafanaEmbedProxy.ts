@@ -466,6 +466,10 @@ export class GrafanaEmbedProxy {
       headersOut[key] = value;
     }
 
+    // Set after the copy loop above has dropped the upstream's own CSP, so
+    // this is always the policy that ships -- never a passed-through one.
+    headersOut['content-security-policy'] = buildProxiedDocumentCsp();
+
     const location = firstHeaderValue(proxyResponse.headers.location);
     if (location) {
       headersOut.location = rewriteAbsoluteReferences(location, realOrigin, proxyBase);
@@ -564,9 +568,55 @@ export class GrafanaEmbedProxy {
 }
 
 /**
+ * CSP for the **proxied Grafana document itself** — the thing inside the
+ * iframe. Not to be confused with `buildRecommendedCsp` below, which protects
+ * the parent Webview document; CSP is per-document, so that one's `frame-src`
+ * only decides *which* iframe may load, and says nothing about what the
+ * document inside it may then do.
+ *
+ * This has to exist because `EMBED_BLOCKING_RESPONSE_HEADERS` deletes
+ * Grafana's own CSP (it would otherwise refuse to be framed). Deleting it and
+ * sending nothing back left the Grafana page running with no CSP at all,
+ * which matters concretely: Grafana's Text panel supports raw HTML, so an
+ * imported third-party dashboard JSON is a realistic way to get a script into
+ * this document.
+ *
+ * `script-src` keeps `'unsafe-inline'`/`'unsafe-eval'` (as Grafana's own
+ * default CSP template does) because Grafana boots from an inline script, we
+ * inject another one for `appSubUrl`, and plugins eval. Constraining script
+ * execution is therefore not on the table; what this policy actually buys is
+ * the *egress* and *navigation* half -- `connect-src 'self'` stops an injected
+ * script from beaconing anything out to an attacker-controlled origin (which
+ * also cuts Grafana's own direct calls to grafana.com), `form-action 'self'`
+ * stops it POSTing the page elsewhere, and `object-src 'none'` plus
+ * `base-uri 'self'` close two classic rewrite tricks.
+ *
+ * `frame-ancestors` replaces the stripped `x-frame-options` and must admit the
+ * VS Code Webview host document, or the panel renders blank.
+ */
+export function buildProxiedDocumentCsp(): string {
+  return (
+    "default-src 'self'; " +
+    "base-uri 'self'; " +
+    "object-src 'none'; " +
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
+    "style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data: blob:; " +
+    "font-src 'self' data:; " +
+    "media-src 'self' data: blob:; " +
+    "worker-src 'self' blob:; " +
+    "connect-src 'self'; " +
+    "form-action 'self'; " +
+    "frame-ancestors 'self' vscode-webview: vscode-file:;"
+  );
+}
+
+/**
  * Recommended Webview CSP for Task 4.2/4.3, restricted entirely to this
  * proxy's own origin (ADR-003's last bullet) — pass `proxy.origin` once
- * `start()` has resolved.
+ * `start()` has resolved. This governs the **parent** Webview document; see
+ * `buildProxiedDocumentCsp` above for the one that governs the Grafana page
+ * inside the iframe.
  */
 export function buildRecommendedCsp(proxyOrigin: string): string {
   return (
