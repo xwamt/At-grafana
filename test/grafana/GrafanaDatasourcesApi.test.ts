@@ -178,6 +178,39 @@ describe('GrafanaApiClient datasource proxy path confinement', () => {
 });
 
 /**
+ * `QueryRateLimiter` spends one token per logical `grafana_query_datasource`
+ * call. These pin the other half of that accounting: one token must buy at
+ * most one upstream request, so the retry the rest of the client gets is
+ * deliberately switched off on this path.
+ */
+describe('datasource proxy retry budget', () => {
+  it('does not retry a 502 from the datasource proxy, so one admitted query is one upstream request', async () => {
+    server = await listen((_req, res) => res.writeHead(502).end());
+    const client = new GrafanaApiClient({ baseUrl: server.url, token: 'tok', retryBackoffMs: [1, 1] });
+
+    await client.proxyDatasourceRequest('ds1', 'GET', 'api/v1/query').catch(() => undefined);
+
+    expect(server.requestCount).toBe(1);
+  });
+
+  it('still retries the unmetered management reads on the same client', async () => {
+    let attempts = 0;
+    server = await listen((_req, res) => {
+      attempts++;
+      if (attempts === 1) {
+        res.writeHead(502).end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify([]));
+    });
+    const client = new GrafanaApiClient({ baseUrl: server.url, token: 'tok', retryBackoffMs: [1, 1] });
+
+    await expect(client.listDatasources()).resolves.toEqual([]);
+    expect(attempts).toBe(2);
+  });
+});
+
+/**
  * Belt-and-braces second layer, mirroring `buildTargetUrl`'s post-resolution
  * host assertion in GrafanaEmbedProxy: the join itself refuses to hand back a
  * path that no longer sits under this datasource's proxy prefix, so a future

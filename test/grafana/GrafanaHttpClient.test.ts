@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { GrafanaApiError, GrafanaHttpClient, verifyCertFingerprint, type GrafanaCertVerifier } from '../../src/grafana/GrafanaHttpClient';
+import type { AtGrafanaLog } from '../../src/utils/logger';
 import { listen, type TestHttpServer } from './testHttpServer';
 
 const SECRET_TOKEN = 'glsa_super_secret_token_do_not_leak';
+
+/** The real schedule is 200ms/600ms; these tests assert the policy, not the wall clock. */
+const FAST_BACKOFF = [1, 1];
 
 let server: TestHttpServer | undefined;
 
@@ -135,6 +139,119 @@ describe('GrafanaHttpClient.requestJson', () => {
     const client = new GrafanaHttpClient({ baseUrl: server.url, token: SECRET_TOKEN });
 
     await expect(client.requestJson('POST', '/api/anything', { body: { query: 'up' } })).resolves.toEqual({ result: 'ok' });
+  });
+});
+
+describe('GrafanaHttpClient retries', () => {
+  it('retries a GET through a transient 502 and returns the recovered response', async () => {
+    let attempts = 0;
+    server = await listen((_req, res) => {
+      attempts++;
+      if (attempts === 1) {
+        res.writeHead(502).end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true }));
+    });
+    const client = new GrafanaHttpClient({ baseUrl: server.url, token: SECRET_TOKEN, retryBackoffMs: FAST_BACKOFF });
+
+    await expect(client.requestJson('GET', '/api/search')).resolves.toEqual({ ok: true });
+    expect(attempts).toBe(2);
+  });
+
+  it('retries a GET whose connection dies mid-flight', async () => {
+    let attempts = 0;
+    server = await listen((req, res) => {
+      attempts++;
+      if (attempts === 1) {
+        req.socket.destroy();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true }));
+    });
+    const client = new GrafanaHttpClient({ baseUrl: server.url, token: SECRET_TOKEN, retryBackoffMs: FAST_BACKOFF });
+
+    await expect(client.requestJson('GET', '/api/search')).resolves.toEqual({ ok: true });
+    expect(attempts).toBe(2);
+  });
+
+  it('gives up after the configured attempts and throws the last classified error', async () => {
+    server = await listen((_req, res) => res.writeHead(503).end());
+    const client = new GrafanaHttpClient({ baseUrl: server.url, token: SECRET_TOKEN, retryBackoffMs: FAST_BACKOFF });
+
+    const error = await client.requestJson('GET', '/api/search').catch((e: unknown) => e);
+
+    expect((error as GrafanaApiError).kind).toBe('api-error');
+    expect((error as GrafanaApiError).status).toBe(503);
+    expect(server.requestCount).toBe(3);
+  });
+
+  it('does not retry a 404, because repeating it cannot change the answer', async () => {
+    server = await listen((_req, res) => res.writeHead(404).end());
+    const client = new GrafanaHttpClient({ baseUrl: server.url, token: SECRET_TOKEN, retryBackoffMs: FAST_BACKOFF });
+
+    await client.requestJson('GET', '/api/search').catch(() => undefined);
+
+    expect(server.requestCount).toBe(1);
+  });
+
+  it('does not retry a 401, so an expired token fails once instead of three times', async () => {
+    server = await listen((_req, res) => res.writeHead(401).end());
+    const client = new GrafanaHttpClient({ baseUrl: server.url, token: SECRET_TOKEN, retryBackoffMs: FAST_BACKOFF });
+
+    await client.requestJson('GET', '/api/search').catch(() => undefined);
+
+    expect(server.requestCount).toBe(1);
+  });
+
+  it('does not retry a malformed 2xx body, which is deterministic rather than transient', async () => {
+    server = await listen((_req, res) => res.writeHead(200, { 'content-type': 'text/plain' }).end('not json'));
+    const client = new GrafanaHttpClient({ baseUrl: server.url, token: SECRET_TOKEN, retryBackoffMs: FAST_BACKOFF });
+
+    await client.requestJson('GET', '/api/search').catch(() => undefined);
+
+    expect(server.requestCount).toBe(1);
+  });
+
+  it('does not retry a POST that fails with a 502, because it is not idempotent', async () => {
+    server = await listen((_req, res) => res.writeHead(502).end());
+    const client = new GrafanaHttpClient({ baseUrl: server.url, token: SECRET_TOKEN, retryBackoffMs: FAST_BACKOFF });
+
+    await client.requestJson('POST', '/api/anything', { body: { query: 'up' } }).catch(() => undefined);
+
+    expect(server.requestCount).toBe(1);
+  });
+
+  it('does not retry a GET whose caller opted out', async () => {
+    server = await listen((_req, res) => res.writeHead(502).end());
+    const client = new GrafanaHttpClient({ baseUrl: server.url, token: SECRET_TOKEN, retryBackoffMs: FAST_BACKOFF });
+
+    await client.requestJson('GET', '/api/search', { retry: false }).catch(() => undefined);
+
+    expect(server.requestCount).toBe(1);
+  });
+
+  it('records each retry attempt without leaking the credential', async () => {
+    const lines: string[] = [];
+    const log: AtGrafanaLog = {
+      error: (message) => lines.push(message),
+      warn: (message) => lines.push(message),
+      info: (message) => lines.push(message),
+      debug: (message) => lines.push(message),
+      trace: (message) => lines.push(message)
+    };
+    server = await listen((_req, res) => res.writeHead(502).end());
+    const client = new GrafanaHttpClient({
+      baseUrl: server.url,
+      token: SECRET_TOKEN,
+      retryBackoffMs: FAST_BACKOFF,
+      log
+    });
+
+    await client.requestJson('GET', '/api/search').catch(() => undefined);
+
+    expect(lines.filter((line) => line.includes('retrying'))).toHaveLength(2);
+    expect(lines.join('\n')).not.toContain(SECRET_TOKEN);
   });
 });
 

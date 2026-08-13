@@ -106,7 +106,18 @@ export class GrafanaDatasourcesApi {
       );
     }
     const proxyPath = buildDatasourceProxyPath(datasourceUid, path);
-    return this.http.requestJson<unknown>(method, proxyPath, { query, body, maxResponseBytes });
+    // The only call site that opts out of the client's automatic retry, and
+    // the only one metered by `QueryRateLimiter`. Those two facts are the same
+    // fact: the limiter spends one token per logical call, so a hidden retry
+    // would let an admitted query reach Grafana three times and turn a
+    // configured budget of 60 queries/minute into 180 -- against exactly the
+    // retry-loop burst shape the token bucket was chosen to bound (see
+    // QueryRateLimiter's "why a token bucket" note). Charging three tokens
+    // instead was the alternative, and it would put the limiter, which is an
+    // Agent-path concern, inside the HTTP client, which also serves the
+    // unmetered tree view. So a transient failure here is returned to the
+    // Agent, whose own retry is visible and costs a token -- unlike this one.
+    return this.http.requestJson<unknown>(method, proxyPath, { query, body, maxResponseBytes, retry: false });
   }
 }
 

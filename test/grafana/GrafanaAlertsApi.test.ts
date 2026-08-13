@@ -116,6 +116,31 @@ describe('GrafanaApiClient alerts', () => {
     ]);
   });
 
+  it('listAlertRuleStates() reads a group folderId from a Grafana too old to send folderUid', async () => {
+    server = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(
+        JSON.stringify({
+          status: 'success',
+          data: {
+            groups: [
+              {
+                name: 'infra',
+                file: 'default',
+                folderId: 12,
+                rules: [{ uid: 'r1', name: 'High CPU', state: 'firing' }]
+              }
+            ]
+          }
+        })
+      );
+    });
+    const client = new GrafanaApiClient({ baseUrl: server.url, token: 'tok' });
+
+    const [state] = await client.listAlertRuleStates();
+
+    expect(state?.folderUid).toBe('12');
+  });
+
   it('listAlertRuleStates() classifies a 403 as auth', async () => {
     server = await listen((_req, res) => res.writeHead(403).end());
     const client = new GrafanaApiClient({ baseUrl: server.url, token: 'tok' });

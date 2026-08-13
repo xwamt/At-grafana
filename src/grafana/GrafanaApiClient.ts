@@ -35,6 +35,8 @@ export interface GrafanaApiClientOptions {
   certVerifier?: GrafanaCertVerifier;
   timeoutMs?: number;
   /** Forwarded verbatim to `GrafanaHttpClient`; see its option doc. */
+  retryBackoffMs?: readonly number[];
+  /** Forwarded verbatim to `GrafanaHttpClient`; see its option doc. */
   log?: AtGrafanaLog;
 }
 

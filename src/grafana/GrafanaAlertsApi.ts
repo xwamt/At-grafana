@@ -1,5 +1,5 @@
 import { GrafanaApiError, type GrafanaHttpClient } from './GrafanaHttpClient';
-import { isRecord, toStringRecord } from './jsonGuards';
+import { isRecord, readUidOrLegacyId, toStringRecord } from './jsonGuards';
 
 export interface GrafanaAlertRule {
   uid: string;
@@ -70,7 +70,9 @@ export class GrafanaAlertsApi {
         continue;
       }
       const groupName = typeof group.name === 'string' ? group.name : '';
-      const folderUid = typeof group.folderUid === 'string' ? group.folderUid : undefined;
+      // `folderUid` only appears on newer Grafana; older builds of this same
+      // ruler endpoint carry the folder as a numeric id.
+      const folderUid = readUidOrLegacyId(group.folderUid, group.folderId);
       for (const rule of group.rules) {
         if (!isRecord(rule) || typeof rule.uid !== 'string' || typeof rule.state !== 'string') {
           continue;

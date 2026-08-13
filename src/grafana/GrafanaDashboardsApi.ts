@@ -1,6 +1,6 @@
 import { asRedactedLog, type AtGrafanaLog } from '../utils/logger';
 import { GrafanaApiError, type GrafanaHttpClient } from './GrafanaHttpClient';
-import { isRecord } from './jsonGuards';
+import { isRecord, readUidOrLegacyId } from './jsonGuards';
 
 export interface GrafanaSearchResult {
   uid: string;
@@ -224,20 +224,25 @@ function toSearchResult(entry: unknown): GrafanaSearchResult {
     title: entry.title,
     type: typeof entry.type === 'string' ? entry.type : 'dash-db',
     tags: Array.isArray(entry.tags) ? entry.tags.filter((tag): tag is string => typeof tag === 'string') : undefined,
-    folderUid: typeof entry.folderUid === 'string' ? entry.folderUid : undefined,
+    folderUid: readUidOrLegacyId(entry.folderUid, entry.folderId),
     folderTitle: typeof entry.folderTitle === 'string' ? entry.folderTitle : undefined,
     url: typeof entry.url === 'string' ? entry.url : undefined
   };
 }
 
 function toFolder(entry: unknown): GrafanaFolder {
-  if (!isRecord(entry) || typeof entry.uid !== 'string' || typeof entry.title !== 'string') {
+  // The `id` fallback has to move in lockstep with `toSearchResult`'s: if
+  // dashboards were keyed by a legacy numeric folderId while folders were
+  // still keyed by uid, nothing would match and every dashboard in a folder
+  // would disappear from the tree instead of merely losing its grouping.
+  const uid = isRecord(entry) ? readUidOrLegacyId(entry.uid, entry.id) : undefined;
+  if (!isRecord(entry) || uid === undefined || typeof entry.title !== 'string') {
     throw new GrafanaApiError('invalid-response', 'Grafana /api/folders returned a malformed entry.');
   }
   return {
-    uid: entry.uid,
+    uid,
     title: entry.title,
-    parentUid: typeof entry.parentUid === 'string' ? entry.parentUid : undefined
+    parentUid: readUidOrLegacyId(entry.parentUid, entry.parentId)
   };
 }
 

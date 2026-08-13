@@ -137,6 +137,63 @@ describe('GrafanaApiClient dashboards', () => {
   });
 });
 
+/**
+ * Grafana renamed the folder reference from a numeric `folderId` to a string
+ * `folderUid` in 9.0. Reading only the new spelling silently drops every
+ * dashboard's folder on an older instance.
+ */
+describe('GrafanaApiClient folder-uid version compatibility', () => {
+  it('search() reads a pre-9 numeric folderId as the folder uid', async () => {
+    server = await listen((_req, res) => {
+      res
+        .writeHead(200, { 'content-type': 'application/json' })
+        .end(JSON.stringify([{ uid: 'd1', title: 'CPU', type: 'dash-db', folderId: 12, folderTitle: 'Infra' }]));
+    });
+    const client = new GrafanaApiClient({ baseUrl: server.url, token: 'tok' });
+
+    const [result] = await client.search();
+
+    expect(result?.folderUid).toBe('12');
+  });
+
+  it('search() treats folderId 0 as the General bucket rather than a folder called "0"', async () => {
+    server = await listen((_req, res) => {
+      res
+        .writeHead(200, { 'content-type': 'application/json' })
+        .end(JSON.stringify([{ uid: 'd1', title: 'Loose', type: 'dash-db', folderId: 0 }]));
+    });
+    const client = new GrafanaApiClient({ baseUrl: server.url, token: 'tok' });
+
+    const [result] = await client.search();
+
+    expect(result?.folderUid).toBeUndefined();
+  });
+
+  it('search() still prefers folderUid when a modern Grafana sends both', async () => {
+    server = await listen((_req, res) => {
+      res
+        .writeHead(200, { 'content-type': 'application/json' })
+        .end(JSON.stringify([{ uid: 'd1', title: 'CPU', type: 'dash-db', folderUid: 'f-abc', folderId: 12 }]));
+    });
+    const client = new GrafanaApiClient({ baseUrl: server.url, token: 'tok' });
+
+    const [result] = await client.search();
+
+    expect(result?.folderUid).toBe('f-abc');
+  });
+
+  it('getFolders() falls back to the numeric id so folder keys still match what search returns', async () => {
+    server = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify([{ id: 12, title: 'Infra' }]));
+    });
+    const client = new GrafanaApiClient({ baseUrl: server.url, token: 'tok' });
+
+    const [folder] = await client.getFolders();
+
+    expect(folder?.uid).toBe('12');
+  });
+});
+
 describe('GrafanaApiClient paginated listings', () => {
   it('searchAll() keeps paging until a short page ends the walk', async () => {
     const seen: { page: string | null; limit: string | null }[] = [];

@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GrafanaAgentToolService, type GrafanaApiClientLike, type RawQueryLimitsConfig } from '../../src/agent/GrafanaAgentToolService';
 import type { GrafanaInstanceConfig } from '../../src/config/schema';
+import { GrafanaApiClient } from '../../src/grafana/GrafanaApiClient';
 import { GrafanaCertTrustStore, type CertTrustMemento } from '../../src/grafana/GrafanaCertTrustStore';
 import { GrafanaApiError, type GrafanaCertVerifier } from '../../src/grafana/GrafanaHttpClient';
 import { QueryRateLimiter } from '../../src/grafana/QueryRateLimiter';
+import { listen } from '../grafana/testHttpServer';
 
 class MemoryMemento implements CertTrustMemento {
   private data = new Map<string, unknown>();
@@ -579,6 +581,49 @@ describe('GrafanaAgentToolService', () => {
         expect(result).toMatchObject({ ok: false, code: 'INTERNAL_ERROR' });
       }
       expect(proxyDatasourceRequest).toHaveBeenCalledTimes(3);
+    });
+
+    it('lets a token buy exactly one request against a real failing Grafana, not one per retry', async () => {
+      const clock = fakeClock();
+      const upstream = await listen((_req, res) => res.writeHead(502).end());
+      try {
+        const { service } = await makeService({
+          client: new GrafanaApiClient({ baseUrl: upstream.url, token: 'tok', retryBackoffMs: [1, 1] }),
+          queryRateLimiter: limiterAt(clock)
+        });
+
+        await service.invoke('grafana_query_datasource', queryArgs);
+        await service.invoke('grafana_query_datasource', queryArgs);
+
+        // Two tokens, two requests. With the transport's default retry left on
+        // this path it would be six, and the instance's configured budget
+        // would mean a third of what it says.
+        expect(upstream.requestCount).toBe(2);
+      } finally {
+        await upstream.close();
+      }
+    });
+
+    it('spends exactly one token per logical query even when the query fails, leaving the retry to the agent', async () => {
+      const clock = fakeClock();
+      const proxyDatasourceRequest = vi.fn(async () => {
+        throw new GrafanaApiError('api-error', 'Grafana returned HTTP 502.', 502);
+      });
+      const { service } = await makeService({
+        client: fakeClient({ proxyDatasourceRequest }),
+        queryRateLimiter: limiterAt(clock)
+      });
+
+      // A budget of 2 buys exactly two failed calls, not two-thirds of a call:
+      // the transport does not retry this path, so nothing is spent invisibly.
+      await service.invoke('grafana_query_datasource', queryArgs);
+      await service.invoke('grafana_query_datasource', queryArgs);
+
+      expect(await service.invoke('grafana_query_datasource', queryArgs)).toMatchObject({
+        ok: false,
+        code: 'UNAVAILABLE'
+      });
+      expect(proxyDatasourceRequest).toHaveBeenCalledTimes(2);
     });
 
     it('does not meter the management tools, which cost Grafana almost nothing', async () => {

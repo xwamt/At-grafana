@@ -56,6 +56,12 @@ export interface GrafanaHttpClientOptions {
   certVerifier?: GrafanaCertVerifier;
   timeoutMs?: number;
   /**
+   * Delay before each retry, and by its length the number of retries. See
+   * `DEFAULT_RETRY_BACKOFF_MS`. Overridable for the same reason `timeoutMs`
+   * is: so a test can assert the policy without sleeping through it.
+   */
+  retryBackoffMs?: readonly number[];
+  /**
    * Diagnostics only. A failed Grafana call currently surfaces as one line of
    * red text in a tree node; the classified kind and status are what actually
    * separate "your token expired" from "your TLS is untrusted" from "Grafana
@@ -77,9 +83,66 @@ export interface GrafanaRequestOptions {
    * so every existing call site that doesn't opt in is unaffected.
    */
   maxResponseBytes?: number;
+  /**
+   * Opt out of the automatic retry that idempotent requests otherwise get.
+   *
+   * There is exactly one caller that must: `proxyDatasourceRequest`, the only
+   * path metered by `QueryRateLimiter`. See `RETRIABLE_METHODS` for why.
+   */
+  retry?: boolean;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+
+/**
+ * Two retries at 200ms then 600ms, i.e. three attempts and at most 800ms of
+ * added latency before a request is declared failed. Short enough that a
+ * genuinely dead Grafana still surfaces in the tree quickly, long enough to
+ * ride out the restart of a single Grafana replica behind a load balancer.
+ *
+ * Timeouts are classified `network` and therefore retried too, so a
+ * hard-hung Grafana costs three `timeoutMs` waits rather than one. That is
+ * the deliberate price of not failing the tree on one slow response.
+ */
+export const DEFAULT_RETRY_BACKOFF_MS: readonly number[] = [200, 600];
+
+/**
+ * Methods safe to repeat. Retrying is only sound when a request that may
+ * already have been executed can be executed again without a second effect,
+ * so the non-idempotent half of the datasource proxy allowlist (POST) is
+ * excluded even when it fails in a way that looks transient.
+ */
+const RETRIABLE_METHODS = new Set(['GET', 'HEAD']);
+
+/**
+ * Whether repeating this failure could plausibly produce a different answer.
+ *
+ * `network` covers connection failures and timeouts; a 5xx is the server
+ * saying it failed rather than that the request was wrong. Everything else is
+ * excluded on purpose: 4xx and `auth` are verdicts about the request that a
+ * second identical request cannot change, `invalid-response` and
+ * `response-too-large` are deterministic properties of the body, and a `tls`
+ * rejection means a fingerprint the user has not trusted -- repeating it just
+ * fails again.
+ */
+function isRetriableFailure(error: unknown): error is GrafanaApiError {
+  if (!(error instanceof GrafanaApiError)) {
+    return false;
+  }
+  if (error.kind === 'network') {
+    return true;
+  }
+  return error.kind === 'api-error' && error.status !== undefined && error.status >= 500;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** The classification only -- never the query string, which carries PromQL/LogQL and sometimes a token. */
+function describeFailure(error: GrafanaApiError): string {
+  return error.status === undefined ? `kind=${error.kind}` : `kind=${error.kind}, status=${error.status}`;
+}
 
 /**
  * Thin wrapper around node:http/node:https carrying the trickiest, most
@@ -113,13 +176,34 @@ export class GrafanaHttpClient {
       throw new GrafanaApiError('invalid-response', `Invalid Grafana request path: ${path}`);
     }
     const bodyText = requestOptions.body === undefined ? undefined : JSON.stringify(requestOptions.body);
-    try {
-      const { status, text } = await this.performRequest(target, method, bodyText, requestOptions.maxResponseBytes);
-      return parseJsonResponse<T>(status, text, target);
-    } catch (error) {
-      this.logClassifiedFailure(method, target, error);
-      throw error;
+    const backoffs = this.backoffScheduleFor(method, requestOptions.retry);
+
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const { status, text } = await this.performRequest(target, method, bodyText, requestOptions.maxResponseBytes);
+        return parseJsonResponse<T>(status, text, target);
+      } catch (error) {
+        const backoffMs = backoffs[attempt];
+        if (backoffMs === undefined || !isRetriableFailure(error)) {
+          this.logClassifiedFailure(method, target, error);
+          throw error;
+        }
+        this.log.debug(
+          `grafana-api: ${method} ${target.pathname} failed transiently ` +
+            `(${describeFailure(error)}); retrying in ${backoffMs}ms ` +
+            `(attempt ${attempt + 2} of ${backoffs.length + 1})`
+        );
+        await delay(backoffMs);
+      }
     }
+  }
+
+  /** An empty schedule means "one attempt"; see `RETRIABLE_METHODS` and `GrafanaRequestOptions.retry`. */
+  private backoffScheduleFor(method: string, retry: boolean | undefined): readonly number[] {
+    if (retry === false || !RETRIABLE_METHODS.has(method.toUpperCase())) {
+      return [];
+    }
+    return this.options.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS;
   }
 
   /**
@@ -130,8 +214,7 @@ export class GrafanaHttpClient {
    */
   private logClassifiedFailure(method: string, target: URL, error: unknown): void {
     if (error instanceof GrafanaApiError) {
-      const status = error.status === undefined ? '' : `, status=${error.status}`;
-      this.log.debug(`grafana-api: ${method} ${target.pathname} failed (kind=${error.kind}${status}): ${error.message}`);
+      this.log.debug(`grafana-api: ${method} ${target.pathname} failed (${describeFailure(error)}): ${error.message}`);
       return;
     }
     this.log.debug(`grafana-api: ${method} ${target.pathname} failed with an unclassified error: ${String(error)}`);
