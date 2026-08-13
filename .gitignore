@@ -20,6 +20,7 @@ coverage/
 .kilo/
 .tmp/
 .tmp-*/
+.ssh-terminal-manager/
 .cache/
 
 # Local docs and ops notes (not for public repo)
