@@ -85,7 +85,7 @@ export function resolveMaxResponseBytes(configuredMaxResponseBytes: number | und
   return resolvePositiveNumberSetting(configuredMaxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES);
 }
 
-type TimestampFormat = 'rfc3339' | 'unix-seconds' | 'unix-ms';
+type TimestampFormat = 'rfc3339' | 'unix-seconds' | 'unix-ms' | 'unix-nanos';
 
 interface ParsedTimestamp {
   epochMs: number;
@@ -111,6 +111,22 @@ const SECONDS_VS_MS_THRESHOLD = 1e12;
  */
 const MAX_PLAUSIBLE_UNIX_MS = 1e15;
 
+/**
+ * The band in which a numeric timestamp is read as Unix **nanoseconds**, the
+ * default unit for Loki's `query_range`. 1e17 ns is 1973 and 1e20 ns is the
+ * year 5138, which covers every value a real Loki query carries.
+ *
+ * The gap between `MAX_PLAUSIBLE_UNIX_MS` (1e15) and this lower bound is left
+ * deliberately unparseable rather than being folded into either neighbour: a
+ * value there is either microseconds (which neither Prometheus nor Loki
+ * accepts) or a millisecond value tens of thousands of years out, so there is
+ * no reading of it that is more likely to be right than wrong.
+ */
+const MIN_PLAUSIBLE_UNIX_NANOS = 1e17;
+const MAX_PLAUSIBLE_UNIX_NANOS = 1e20;
+
+const NANOS_PER_MS = 1_000_000n;
+
 const RFC3339_PREFIX_PATTERN = /^\d{4}-\d{2}-\d{2}T/;
 const NUMERIC_PATTERN = /^\d+(\.\d+)?$/;
 
@@ -121,19 +137,19 @@ const NUMERIC_PATTERN = /^\d+(\.\d+)?$/;
  * fractional per Prometheus's `<rfc3339 | unix_timestamp>` convention), and
  * Unix milliseconds (`1690000000000`).
  *
+ * Unix **nanosecond** epochs (Loki's `query_range` default) are recognized
+ * too. They used to be rejected on the theory that guessing wrong was worse
+ * than not enforcing -- but since `clampQueryTimeRange` treats "can't parse"
+ * as "leave it alone," that reasoning handed anyone querying Loki in
+ * nanoseconds an unlimited time range. The ambiguity that motivated the
+ * original rejection is confined to the band between `MAX_PLAUSIBLE_UNIX_MS`
+ * and `MIN_PLAUSIBLE_UNIX_NANOS`, which stays unparseable.
+ *
  * Explicitly NOT recognized -- a documented limitation of a generic,
  * datasource-agnostic proxy (D8), not a bug to fix here:
- * - Unix **nanosecond** epoch timestamps, which Loki's `query_range` also
- *   accepts by default. A 19-digit nanosecond value would otherwise be
- *   misread as an implausibly large millisecond value; rather than guess
- *   wrong, this function returns `undefined` for it, and
- *   `clampQueryTimeRange` treats "can't parse" as "leave it alone."
  * - Relative/duration-shaped values (e.g. `-1h`), which some datasource UIs
  *   display but neither Prometheus's nor Loki's HTTP query APIs accept as
  *   literal `start`/`end` query values.
- * - Any time-range information embedded outside the flat `query` params
- *   object -- e.g. inside a POST `body` for some hypothetical exotic
- *   datasource -- since the generic-proxy design never introspects `body`.
  */
 function parseTimestamp(raw: string): ParsedTimestamp | undefined {
   if (RFC3339_PREFIX_PATTERN.test(raw)) {
@@ -150,10 +166,17 @@ function parseTimestamp(raw: string): ParsedTimestamp | undefined {
   if (numeric < SECONDS_VS_MS_THRESHOLD) {
     return { epochMs: numeric * 1000, format: 'unix-seconds' };
   }
-  if (numeric > MAX_PLAUSIBLE_UNIX_MS) {
-    return undefined;
+  if (numeric <= MAX_PLAUSIBLE_UNIX_MS) {
+    return { epochMs: numeric, format: 'unix-ms' };
   }
-  return { epochMs: numeric, format: 'unix-ms' };
+  if (numeric >= MIN_PLAUSIBLE_UNIX_NANOS && numeric < MAX_PLAUSIBLE_UNIX_NANOS) {
+    // Lossy by ~256ns at this magnitude (past the point where a double can
+    // represent consecutive integers), which is irrelevant for deciding
+    // whether a range exceeds hours. `formatTimestamp` reintroduces exactness
+    // where it matters, on the way back out.
+    return { epochMs: numeric / 1e6, format: 'unix-nanos' };
+  }
+  return undefined;
 }
 
 function formatTimestamp(epochMs: number, format: TimestampFormat): string {
@@ -164,6 +187,10 @@ function formatTimestamp(epochMs: number, format: TimestampFormat): string {
       return String(Math.floor(epochMs / 1000));
     case 'unix-ms':
       return String(Math.round(epochMs));
+    case 'unix-nanos':
+      // Via BigInt so the result is an exact integer string: the millisecond
+      // value is exactly representable as a double, the nanosecond one is not.
+      return (BigInt(Math.round(epochMs)) * NANOS_PER_MS).toString();
   }
 }
 
@@ -206,6 +233,304 @@ export function clampQueryTimeRange(
   }
   const clampedStart = formatTimestamp(end.epochMs - maxRangeMs, start.format);
   return { query: { ...query, start: clampedStart }, clamped: true };
+}
+
+/**
+ * Default ceiling on evaluated points per `query_range` call
+ * (range / step). Prometheus's own server-side ceiling is 11000; this is far
+ * lower because the consumer is an LLM context window, not a chart. 1000
+ * points across a handful of series is already tens of KB of JSON, and an
+ * agent that genuinely needs finer resolution can ask for a shorter range and
+ * get it at full fidelity.
+ */
+export const DEFAULT_MAX_QUERY_POINTS = 1000;
+
+/** Default ceiling on Loki's `limit` (log lines returned). Loki's own default is 100. */
+export const DEFAULT_MAX_LOKI_LIMIT = 1000;
+
+/**
+ * Default query timeout handed *to Prometheus*, distinct from the socket
+ * timeout in `GrafanaHttpClient`. The socket timeout stops us waiting; this
+ * one stops Prometheus computing, which is the half that actually protects
+ * the monitoring system rather than just the editor.
+ */
+export const DEFAULT_QUERY_TIMEOUT_MS = 10_000;
+
+/** Default sustained query budget per instance, and the size of one burst from idle. */
+export const DEFAULT_MAX_QUERIES_PER_MINUTE = 60;
+
+/** Default ceiling on queries in flight against one instance at once. */
+export const DEFAULT_MAX_CONCURRENT_QUERIES = 4;
+
+export interface EffectiveQueryLimits {
+  maxRangeMs: number;
+  maxResponseBytes: number;
+  maxPoints: number;
+  maxLokiLimit: number;
+  queryTimeoutMs: number;
+}
+
+/**
+ * The query endpoints this module knows the cost model of. Everything else
+ * stays a pure pass-through, per D8: recognizing a path is what licenses
+ * rewriting its parameters, and we only recognize the two datasources whose
+ * query APIs are actually documented here.
+ */
+export type QueryEndpointKind = 'prometheus-range' | 'prometheus-instant' | 'loki-range' | 'loki-instant';
+
+const QUERY_ENDPOINTS = new Map<string, QueryEndpointKind>([
+  ['api/v1/query_range', 'prometheus-range'],
+  ['api/v1/query', 'prometheus-instant'],
+  ['loki/api/v1/query_range', 'loki-range'],
+  ['loki/api/v1/query', 'loki-instant']
+]);
+
+export function classifyQueryEndpoint(path: string): QueryEndpointKind | undefined {
+  const normalized = (path.startsWith('/') ? path.slice(1) : path).split('?')[0] ?? '';
+  return QUERY_ENDPOINTS.get(normalized);
+}
+
+export type QueryLimitAdjustment = 'time-range' | 'step' | 'loki-limit' | 'query-timeout';
+
+export interface QueryLimitPlan {
+  query: Record<string, string> | undefined;
+  body: unknown;
+  adjustments: QueryLimitAdjustment[];
+}
+
+export interface QueryLimitPlanInput {
+  path: string;
+  query?: Record<string, string>;
+  body?: unknown;
+  limits: EffectiveQueryLimits;
+  now: number;
+}
+
+/**
+ * Applies every cost control this module knows how to apply to one
+ * `grafana_query_datasource` call, and reports what it changed.
+ *
+ * `clampQueryTimeRange` alone only bites when `start` and `end` are both
+ * present, both parseable, and forward-moving -- which left several ways to
+ * reach Prometheus or Loki unmetered. This closes them:
+ *
+ * - **A missing bound.** Omitting `end` (Loki defaults it to now) or `start`
+ *   left the condition unsatisfiable, so nothing was clamped. Both are now
+ *   materialized from `now` before clamping, but only on an endpoint whose
+ *   `start`/`end` semantics we actually know -- inventing bounds for an
+ *   unrecognized datasource would be a guess about its API.
+ * - **A cheap-looking range with a ruinous step.** `step=1s` over a compliant
+ *   12h range is 43,200 evaluations per series. The step floor is derived
+ *   from the range and a point budget rather than being a fixed minimum, so
+ *   it bounds the actual work instead of a proxy for it, and a short range
+ *   keeps its fine resolution.
+ * - **An unbounded Loki `limit`.**
+ * - **An instant query**, which has no range to clamp at all. Its cost is
+ *   evaluation, so the only lever is telling Prometheus when to give up.
+ * - **A range in the POST body.** The generic-proxy design never introspected
+ *   `body`; on a recognized endpoint the same clamp now applies there.
+ *
+ * Note that Grafana's own `/api/ds/query` -- the usual way a time range
+ * travels in a POST body -- is not reachable from this tool at all:
+ * `buildDatasourceProxyPath` confines every path under
+ * `/api/datasources/proxy/uid/:uid/`, and `/api/ds/query` lives outside it.
+ */
+export function planQueryLimits(input: QueryLimitPlanInput): QueryLimitPlan {
+  const kind = classifyQueryEndpoint(input.path);
+  if (!kind) {
+    return { query: input.query, body: input.body, adjustments: [] };
+  }
+
+  const adjustments: QueryLimitAdjustment[] = [];
+  let query = input.query ? { ...input.query } : undefined;
+  let body = input.body;
+
+  if (kind === 'prometheus-range' || kind === 'loki-range') {
+    const ranged = applyRangeLimits(query ?? {}, input.limits, input.now, adjustments);
+    query = ranged;
+  }
+
+  if (kind === 'loki-range' || kind === 'loki-instant') {
+    query = applyLokiLimit(query ?? {}, input.limits.maxLokiLimit, adjustments);
+  }
+
+  if (kind === 'prometheus-range' || kind === 'prometheus-instant') {
+    query = applyPrometheusTimeout(query ?? {}, input.limits.queryTimeoutMs, adjustments);
+  }
+
+  body = clampBodyTimeRange(body, input.limits.maxRangeMs, adjustments);
+
+  return { query, body, adjustments };
+}
+
+/** Materializes whichever bound is missing, clamps the span, then floors the step against what remains. */
+function applyRangeLimits(
+  query: Record<string, string>,
+  limits: EffectiveQueryLimits,
+  now: number,
+  adjustments: QueryLimitAdjustment[]
+): Record<string, string> {
+  let next = { ...query };
+
+  const hasStart = next.start !== undefined && parseTimestamp(next.start) !== undefined;
+  const hasEnd = next.end !== undefined && parseTimestamp(next.end) !== undefined;
+
+  if (hasStart && !hasEnd) {
+    const start = parseTimestamp(next.start ?? '');
+    if (start) {
+      next.end = formatTimestamp(now, start.format);
+      adjustments.push('time-range');
+    }
+  } else if (!hasStart && hasEnd) {
+    const end = parseTimestamp(next.end ?? '');
+    if (end) {
+      next.start = formatTimestamp(end.epochMs - limits.maxRangeMs, end.format);
+      adjustments.push('time-range');
+    }
+  }
+
+  const clamped = clampQueryTimeRange(next, limits.maxRangeMs);
+  if (clamped.clamped) {
+    if (!adjustments.includes('time-range')) {
+      adjustments.push('time-range');
+    }
+    next = clamped.query ?? next;
+  }
+
+  return applyStepFloor(next, limits.maxPoints, adjustments);
+}
+
+/**
+ * Raises `step` until `range / step` fits the point budget.
+ *
+ * An unparseable step is replaced rather than left alone: "cannot parse, so
+ * allow" is precisely the reasoning that made the original clamp bypassable,
+ * and on an endpoint we have positively recognized the step format is
+ * documented, so an unrecognizable one is malformed rather than exotic.
+ */
+function applyStepFloor(
+  query: Record<string, string>,
+  maxPoints: number,
+  adjustments: QueryLimitAdjustment[]
+): Record<string, string> {
+  const start = query.start === undefined ? undefined : parseTimestamp(query.start);
+  const end = query.end === undefined ? undefined : parseTimestamp(query.end);
+  if (!start || !end || end.epochMs <= start.epochMs) {
+    return query;
+  }
+
+  const rangeSeconds = (end.epochMs - start.epochMs) / 1000;
+  const minStepSeconds = Math.max(1, Math.ceil(rangeSeconds / maxPoints));
+  const currentStepSeconds = query.step === undefined ? undefined : parseDurationSeconds(query.step);
+
+  if (currentStepSeconds !== undefined && currentStepSeconds >= minStepSeconds) {
+    return query;
+  }
+
+  adjustments.push('step');
+  return { ...query, step: `${minStepSeconds}s` };
+}
+
+function applyLokiLimit(
+  query: Record<string, string>,
+  maxLokiLimit: number,
+  adjustments: QueryLimitAdjustment[]
+): Record<string, string> {
+  if (query.limit === undefined) {
+    return query;
+  }
+  const requested = Number(query.limit);
+  if (Number.isFinite(requested) && requested > 0 && requested <= maxLokiLimit) {
+    return query;
+  }
+  adjustments.push('loki-limit');
+  return { ...query, limit: String(maxLokiLimit) };
+}
+
+function applyPrometheusTimeout(
+  query: Record<string, string>,
+  queryTimeoutMs: number,
+  adjustments: QueryLimitAdjustment[]
+): Record<string, string> {
+  const capSeconds = Math.max(1, Math.round(queryTimeoutMs / 1000));
+  const requested = query.timeout === undefined ? undefined : parseDurationSeconds(query.timeout);
+  if (requested !== undefined && requested <= capSeconds) {
+    return query;
+  }
+  adjustments.push('query-timeout');
+  return { ...query, timeout: `${capSeconds}s` };
+}
+
+/**
+ * Applies the range clamp to a flat `{ start, end }` JSON body on a
+ * recognized query endpoint.
+ *
+ * Narrow on purpose: it only touches string `start`/`end` at the top level of
+ * a plain object, because that is the only body shape whose meaning we can be
+ * sure of. A body it does not recognize passes through untouched rather than
+ * being rewritten on a guess.
+ */
+function clampBodyTimeRange(body: unknown, maxRangeMs: number, adjustments: QueryLimitAdjustment[]): unknown {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return body;
+  }
+  const record = body as Record<string, unknown>;
+  if (typeof record.start !== 'string' || typeof record.end !== 'string') {
+    return body;
+  }
+
+  const clamped = clampQueryTimeRange({ start: record.start, end: record.end }, maxRangeMs);
+  if (!clamped.clamped || !clamped.query) {
+    return body;
+  }
+  if (!adjustments.includes('time-range')) {
+    adjustments.push('time-range');
+  }
+  return { ...record, start: clamped.query.start };
+}
+
+const DURATION_COMPONENT_PATTERN = /(\d+(?:\.\d+)?)(ms|s|m|h|d|w|y)/g;
+const DURATION_UNIT_SECONDS: Record<string, number> = {
+  ms: 0.001,
+  s: 1,
+  m: 60,
+  h: 3600,
+  d: 86400,
+  w: 604800,
+  y: 31536000
+};
+
+/**
+ * Parses the two step/timeout shapes Prometheus and Loki accept: a bare float
+ * count of seconds, or a Go-style duration, which may be multi-component
+ * (`1h30m`). Returns undefined for anything else so the caller can decide --
+ * here, to overwrite it.
+ */
+export function parseDurationSeconds(raw: string): number | undefined {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+  if (NUMERIC_PATTERN.test(trimmed)) {
+    const seconds = Number(trimmed);
+    return Number.isFinite(seconds) ? seconds : undefined;
+  }
+
+  DURATION_COMPONENT_PATTERN.lastIndex = 0;
+  let total = 0;
+  let consumed = 0;
+  for (const match of trimmed.matchAll(DURATION_COMPONENT_PATTERN)) {
+    const amount = Number(match[1]);
+    const unitSeconds = DURATION_UNIT_SECONDS[match[2] ?? ''];
+    if (!Number.isFinite(amount) || unitSeconds === undefined) {
+      return undefined;
+    }
+    total += amount * unitSeconds;
+    consumed += match[0].length;
+  }
+  // Every character has to belong to a component, so `12x` or `1h!` is
+  // malformed rather than silently read as `1h`.
+  return consumed === trimmed.length && consumed > 0 ? total : undefined;
 }
 
 export type QueryLimitsTruncationReason = 'time-range' | 'response-size';

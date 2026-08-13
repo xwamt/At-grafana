@@ -273,6 +273,10 @@ function statusForToolErrorCode(code: string): number {
       return 404;
     case 'VALIDATION_ERROR':
       return 422;
+    // Load shedding, not a failure: 503 tells the Hub (and the agent) that
+    // the identical call is worth repeating shortly.
+    case 'UNAVAILABLE':
+      return 503;
     default:
       return 500;
   }

@@ -3,6 +3,7 @@ import { GrafanaAgentToolService, type GrafanaApiClientLike, type RawQueryLimits
 import type { GrafanaInstanceConfig } from '../../src/config/schema';
 import { GrafanaCertTrustStore, type CertTrustMemento } from '../../src/grafana/GrafanaCertTrustStore';
 import { GrafanaApiError, type GrafanaCertVerifier } from '../../src/grafana/GrafanaHttpClient';
+import { QueryRateLimiter } from '../../src/grafana/QueryRateLimiter';
 
 class MemoryMemento implements CertTrustMemento {
   private data = new Map<string, unknown>();
@@ -50,6 +51,7 @@ interface ServiceOptions {
   client?: GrafanaApiClientLike;
   trustedHost?: { host: string; port: number; fingerprint: string };
   queryLimitsConfig?: RawQueryLimitsConfig;
+  queryRateLimiter?: QueryRateLimiter;
 }
 
 async function makeService(options: ServiceOptions = {}) {
@@ -74,7 +76,8 @@ async function makeService(options: ServiceOptions = {}) {
     configManager,
     certTrustStore,
     createClient,
-    getQueryLimitsConfig: options.queryLimitsConfig ? () => options.queryLimitsConfig! : undefined
+    getQueryLimitsConfig: options.queryLimitsConfig ? () => options.queryLimitsConfig! : undefined,
+    queryRateLimiter: options.queryRateLimiter
   });
   return { service, createClient, certTrustStore, configManager };
 }
@@ -326,11 +329,13 @@ describe('GrafanaAgentToolService', () => {
       });
 
       expect(result).toEqual({ ok: true, result: { status: 'success', data: { result: [] } } });
+      // `timeout` is added by the cost planner: an instant query has no range
+      // to clamp, so a server-side deadline is the only bound available.
       expect(proxyDatasourceRequest).toHaveBeenCalledWith(
         'ds1',
         'GET',
         'api/v1/query',
-        { query: 'up' },
+        { query: 'up', timeout: '10s' },
         undefined,
         expect.any(Number)
       );
@@ -375,8 +380,15 @@ describe('GrafanaAgentToolService', () => {
         query
       });
 
+      // Unwrapped, i.e. no truncation envelope: the range itself was left alone.
       expect(result).toEqual({ ok: true, result: { ok: true } });
-      expect(proxyDatasourceRequest).toHaveBeenCalledWith('ds1', 'GET', 'api/v1/query_range', query, undefined, expect.any(Number));
+      const [, , , forwardedQuery] = proxyDatasourceRequest.mock.calls[0] as unknown as [
+        string,
+        string,
+        string,
+        Record<string, string>
+      ];
+      expect(forwardedQuery).toMatchObject(query);
     });
 
     it('grafana_query_datasource marks an oversized response truncated: true, reason: response-size, without crashing or returning malformed data', async () => {
@@ -414,6 +426,54 @@ describe('GrafanaAgentToolService', () => {
       expect(proxyDatasourceRequest).not.toHaveBeenCalled();
     });
 
+    it('grafana_query_datasource forwards the step floor and query timeout it injected', async () => {
+      const proxyDatasourceRequest = vi.fn(async () => ({ ok: true }));
+      const client = fakeClient({ proxyDatasourceRequest });
+      const { service } = await makeService({ client });
+
+      const end = 1_770_000_000;
+      await service.invoke('grafana_query_datasource', {
+        instanceId: 'instance-1',
+        datasourceUid: 'ds1',
+        method: 'GET',
+        path: 'api/v1/query_range',
+        query: { query: 'up', start: String(end - 3600), end: String(end), step: '1s' }
+      });
+
+      const [, , , forwardedQuery] = proxyDatasourceRequest.mock.calls[0] as unknown as [
+        string,
+        string,
+        string,
+        Record<string, string>
+      ];
+      expect(forwardedQuery.step).toBe('4s'); // 3600s / 1000 points
+      expect(forwardedQuery.timeout).toBe('10s');
+    });
+
+    it('grafana_query_datasource clamps a range smuggled through the POST body', async () => {
+      const proxyDatasourceRequest = vi.fn(async () => ({ ok: true }));
+      const client = fakeClient({ proxyDatasourceRequest });
+      const { service } = await makeService({ client, queryLimitsConfig: { maxRangeMs: 3_600_000 } });
+
+      const end = 1_770_000_000;
+      await service.invoke('grafana_query_datasource', {
+        instanceId: 'instance-1',
+        datasourceUid: 'ds1',
+        method: 'POST',
+        path: 'api/v1/query_range',
+        body: { query: 'up', start: String(end - 4 * 3600), end: String(end) }
+      });
+
+      const [, , , , forwardedBody] = proxyDatasourceRequest.mock.calls[0] as unknown as [
+        string,
+        string,
+        string,
+        unknown,
+        Record<string, string>
+      ];
+      expect(forwardedBody.start).toBe(String(end - 3600));
+    });
+
     it('grafana_query_datasource rejects an unknown/unauthorized instance the same way management tools do', async () => {
       const { service } = await makeService({ instances: [instance({ id: 'known', allowBackgroundAccess: false })] });
 
@@ -425,6 +485,110 @@ describe('GrafanaAgentToolService', () => {
       });
 
       expect(result).toMatchObject({ ok: false, code: 'VALIDATION_ERROR' });
+    });
+  });
+
+  /**
+   * These guard INV-5 as much as they guard the instance: throttling here is
+   * resource protection, so it must stay transient, must depend only on
+   * recent request volume, and must never harden into "this caller may not
+   * use this tool." A test that only proved requests get rejected would be
+   * equally satisfied by an ACL, so each one below also pins down the
+   * property that distinguishes the two.
+   */
+  describe('grafana_query_datasource resource metering', () => {
+    function limiterAt(clock: { now: () => number }, maxRequestsPerWindow = 2, maxConcurrent = 4): QueryRateLimiter {
+      return new QueryRateLimiter({ maxRequestsPerWindow, windowMs: 60_000, maxConcurrent, now: clock.now });
+    }
+
+    function fakeClock(start = 1_000_000): { now: () => number; advance: (ms: number) => void } {
+      let current = start;
+      return { now: () => current, advance: (ms: number) => void (current += ms) };
+    }
+
+    const queryArgs = {
+      instanceId: 'instance-1',
+      datasourceUid: 'ds1',
+      method: 'GET' as const,
+      path: 'api/v1/query',
+      query: { query: 'up' }
+    };
+
+    it('sheds a query burst with a retryable UNAVAILABLE rather than an authorization failure', async () => {
+      const clock = fakeClock();
+      const proxyDatasourceRequest = vi.fn(async () => ({ ok: true }));
+      const { service } = await makeService({
+        client: fakeClient({ proxyDatasourceRequest }),
+        queryRateLimiter: limiterAt(clock)
+      });
+
+      await service.invoke('grafana_query_datasource', queryArgs);
+      await service.invoke('grafana_query_datasource', queryArgs);
+      const shed = await service.invoke('grafana_query_datasource', queryArgs);
+
+      expect(shed).toMatchObject({ ok: false, code: 'UNAVAILABLE' });
+      expect((shed as { message: string }).message).toMatch(/retry/i);
+      expect(proxyDatasourceRequest).toHaveBeenCalledTimes(2);
+    });
+
+    it('admits the identical call once the budget refills, proving the limit is not an access decision', async () => {
+      const clock = fakeClock();
+      const { service } = await makeService({ queryRateLimiter: limiterAt(clock) });
+
+      await service.invoke('grafana_query_datasource', queryArgs);
+      await service.invoke('grafana_query_datasource', queryArgs);
+      expect(await service.invoke('grafana_query_datasource', queryArgs)).toMatchObject({ ok: false });
+
+      clock.advance(60_000);
+
+      expect(await service.invoke('grafana_query_datasource', queryArgs)).toMatchObject({ ok: true });
+    });
+
+    it('meters each instance separately, so a busy instance cannot lock out a quiet one', async () => {
+      const clock = fakeClock();
+      const { service } = await makeService({
+        instances: [instance({ id: 'busy' }), instance({ id: 'quiet' })],
+        tokens: { busy: 'token-busy', quiet: 'token-quiet' },
+        queryRateLimiter: limiterAt(clock)
+      });
+
+      await service.invoke('grafana_query_datasource', { ...queryArgs, instanceId: 'busy' });
+      await service.invoke('grafana_query_datasource', { ...queryArgs, instanceId: 'busy' });
+      expect(await service.invoke('grafana_query_datasource', { ...queryArgs, instanceId: 'busy' })).toMatchObject({
+        ok: false
+      });
+
+      expect(await service.invoke('grafana_query_datasource', { ...queryArgs, instanceId: 'quiet' })).toMatchObject({
+        ok: true
+      });
+    });
+
+    it('releases the concurrency slot even when the query throws', async () => {
+      const clock = fakeClock();
+      const proxyDatasourceRequest = vi.fn(async () => {
+        throw new GrafanaApiError('network', 'upstream exploded');
+      });
+      const { service } = await makeService({
+        client: fakeClient({ proxyDatasourceRequest }),
+        queryRateLimiter: limiterAt(clock, 100, 1)
+      });
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const result = await service.invoke('grafana_query_datasource', queryArgs);
+        // A leaked slot would turn the second attempt into UNAVAILABLE.
+        expect(result).toMatchObject({ ok: false, code: 'INTERNAL_ERROR' });
+      }
+      expect(proxyDatasourceRequest).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not meter the management tools, which cost Grafana almost nothing', async () => {
+      const clock = fakeClock();
+      const { service } = await makeService({ queryRateLimiter: limiterAt(clock, 1, 1) });
+
+      for (let attempt = 0; attempt < 5; attempt++) {
+        expect(await service.invoke('grafana_list_dashboards', { instanceId: 'instance-1' })).toMatchObject({ ok: true });
+        expect(await service.invoke('grafana_list_datasources', { instanceId: 'instance-1' })).toMatchObject({ ok: true });
+      }
     });
   });
 

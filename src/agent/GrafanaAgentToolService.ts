@@ -7,10 +7,17 @@ import { GrafanaApiError, type GrafanaCertVerifier } from '../grafana/GrafanaHtt
 import {
   buildResponseSizeTruncationEnvelope,
   buildTimeRangeTruncationEnvelope,
-  clampQueryTimeRange,
+  DEFAULT_MAX_CONCURRENT_QUERIES,
+  DEFAULT_MAX_LOKI_LIMIT,
+  DEFAULT_MAX_QUERIES_PER_MINUTE,
+  DEFAULT_MAX_QUERY_POINTS,
+  DEFAULT_QUERY_TIMEOUT_MS,
+  planQueryLimits,
   resolveMaxRangeMs,
-  resolveMaxResponseBytes
+  resolveMaxResponseBytes,
+  type EffectiveQueryLimits
 } from '../grafana/QueryLimits';
+import { QueryRateLimiter, QueryThrottledError } from '../grafana/QueryRateLimiter';
 import { formatError } from '../utils/errors';
 import {
   describeZodError,
@@ -55,7 +62,13 @@ export type GrafanaApiClientLike = Pick<
  */
 export type GrafanaAgentClientFactory = (baseUrl: string, token: string, certVerifier: GrafanaCertVerifier) => GrafanaApiClientLike;
 
-export type ToolInvokeErrorCode = 'VALIDATION_ERROR' | 'NOT_FOUND' | 'INTERNAL_ERROR';
+/**
+ * `UNAVAILABLE` is the transient one: the call was well-formed and
+ * authorized, and repeating it later will work. It is deliberately distinct
+ * from `VALIDATION_ERROR`, which is what an authorization refusal uses here
+ * -- see `queryDatasource` and INV-5.
+ */
+export type ToolInvokeErrorCode = 'VALIDATION_ERROR' | 'NOT_FOUND' | 'INTERNAL_ERROR' | 'UNAVAILABLE';
 
 export interface ToolInvokeSuccess {
   ok: true;
@@ -85,6 +98,11 @@ export interface GrafanaAgentToolServiceDependencies {
    * care about limits) falls back to QueryLimits.ts's proposed defaults.
    */
   getQueryLimitsConfig?: () => RawQueryLimitsConfig;
+  /**
+   * Injectable so tests can drive the bucket from a fake clock instead of
+   * sleeping. Omitted in real usage, which builds one from the defaults.
+   */
+  queryRateLimiter?: QueryRateLimiter;
 }
 
 /** Raw, unresolved `atGrafana.queryLimits.*` values; `undefined` means "not configured," resolved via QueryLimits.ts. */
@@ -141,7 +159,17 @@ const UNAUTHORIZED_INSTANCE_MESSAGE =
  * it never prompts.
  */
 export class GrafanaAgentToolService {
-  constructor(private readonly deps: GrafanaAgentToolServiceDependencies) {}
+  private readonly queryRateLimiter: QueryRateLimiter;
+
+  constructor(private readonly deps: GrafanaAgentToolServiceDependencies) {
+    this.queryRateLimiter =
+      deps.queryRateLimiter ??
+      new QueryRateLimiter({
+        maxRequestsPerWindow: DEFAULT_MAX_QUERIES_PER_MINUTE,
+        windowMs: 60_000,
+        maxConcurrent: DEFAULT_MAX_CONCURRENT_QUERIES
+      });
+  }
 
   async invoke(name: string, args: unknown): Promise<ToolInvokeResult> {
     try {
@@ -305,39 +333,85 @@ export class GrafanaAgentToolService {
 
   /**
    * MON2/D8/D9: generic pass-through to `GrafanaApiClient.proxyDatasourceRequest`,
-   * with the two Task 6.1 query-limits caps applied around it -- see
-   * src/grafana/QueryLimits.ts for the clamp heuristic and the truncation
+   * with the Task 6.1 query-limits caps applied around it -- see
+   * src/grafana/QueryLimits.ts for the clamp heuristics and the truncation
    * envelope shape. The method allowlist itself is enforced earlier, at
    * schema validation (`grafanaQueryDatasourceSchema`'s `z.enum(['GET',
    * 'POST'])`) and again inside `proxyDatasourceRequest` itself (defense in
    * depth) -- nothing new to do here for that part.
+   *
+   * ## Why the metering lives here and nowhere else
+   *
+   * This is the only path on which an Agent can ask Grafana to *compute*
+   * something. Everything else in this catalog reads configuration, and the
+   * user's own dashboards go through `GrafanaEmbedProxy`, which shares no
+   * code with this method -- so none of this can make interactive use feel
+   * slower. That separation is the reason the budget can be tight enough to
+   * be worth having.
+   *
+   * The rejection is transient by construction (INV-5): it is a function of
+   * recent query volume alone, it carries a delay after which the identical
+   * call succeeds, and it is reported as `UNAVAILABLE`, not as the
+   * `VALIDATION_ERROR` this class uses for an actual authorization refusal.
+   * Whether a tool may be called at all remains `allowBackgroundAccess`'s
+   * decision, made before this method is reached.
    */
   private async queryDatasource(client: GrafanaApiClientLike, parsed: GrafanaQueryDatasourceInput): Promise<unknown> {
     const limits = this.effectiveQueryLimits();
-    const { query: effectiveQuery, clamped } = clampQueryTimeRange(parsed.query, limits.maxRangeMs);
+    const decision = this.queryRateLimiter.tryAcquire(parsed.instanceId);
+    if (!decision.allowed) {
+      throw new QueryThrottledError(decision.rejection.reason, decision.rejection.retryAfterMs, {
+        maxRequestsPerWindow: DEFAULT_MAX_QUERIES_PER_MINUTE,
+        maxConcurrent: DEFAULT_MAX_CONCURRENT_QUERIES
+      });
+    }
+
     try {
+      const plan = planQueryLimits({
+        path: parsed.path,
+        query: parsed.query,
+        body: parsed.body,
+        limits,
+        now: Date.now()
+      });
       const result = await client.proxyDatasourceRequest(
         parsed.datasourceUid,
         parsed.method,
         parsed.path,
-        effectiveQuery,
-        parsed.body,
+        plan.query,
+        plan.body,
         limits.maxResponseBytes
       );
-      return clamped ? buildTimeRangeTruncationEnvelope(limits.maxRangeMs, result) : result;
+      return plan.adjustments.includes('time-range')
+        ? buildTimeRangeTruncationEnvelope(limits.maxRangeMs, result)
+        : result;
     } catch (error) {
       if (error instanceof GrafanaApiError && error.kind === 'response-too-large') {
         return buildResponseSizeTruncationEnvelope(limits.maxResponseBytes);
       }
       throw error;
+    } finally {
+      // Must run on every path: a leaked slot permanently shrinks this
+      // instance's concurrency budget until the window resets.
+      decision.lease.release();
     }
   }
 
-  private effectiveQueryLimits(): { maxRangeMs: number; maxResponseBytes: number } {
+  /**
+   * `maxRangeMs`/`maxResponseBytes` remain user-settable via
+   * `atGrafana.queryLimits.*`. The three cost controls added alongside them
+   * are constants for now: exposing a setting means contributing it in
+   * package.json, and shipping a knob nobody has calibrated yet invites
+   * someone to widen it past the point where it protects anything.
+   */
+  private effectiveQueryLimits(): EffectiveQueryLimits {
     const raw = this.deps.getQueryLimitsConfig?.() ?? {};
     return {
       maxRangeMs: resolveMaxRangeMs(raw.maxRangeMs),
-      maxResponseBytes: resolveMaxResponseBytes(raw.maxResponseBytes)
+      maxResponseBytes: resolveMaxResponseBytes(raw.maxResponseBytes),
+      maxPoints: DEFAULT_MAX_QUERY_POINTS,
+      maxLokiLimit: DEFAULT_MAX_LOKI_LIMIT,
+      queryTimeoutMs: DEFAULT_QUERY_TIMEOUT_MS
     };
   }
 
@@ -347,6 +421,9 @@ export class GrafanaAgentToolService {
     // Grafana token into a message in the first place (see
     // GrafanaHttpClient.ts's class doc), so nothing token-shaped can reach
     // this tool result either way.
+    if (error instanceof QueryThrottledError) {
+      return { ok: false, code: 'UNAVAILABLE', message: error.message };
+    }
     if (error instanceof GrafanaApiError && error.kind === 'api-error' && error.status === 404) {
       return { ok: false, code: 'NOT_FOUND', message: formatError(error) };
     }
