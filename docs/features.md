@@ -31,7 +31,7 @@ Nine tools, all `risk: read` and auto-approved once the AT Series MCP config is 
 - **Monitoring family** — `grafana_list_datasources`, `grafana_query_datasource`. For an Agent that wants to know *what is actually happening*: the real Prometheus/Loki-style data behind a datasource, queried through Grafana's own proxy API.
 - `grafana_list_instances` (discovery) only ever returns instances with background access enabled, and never a token.
 
-`grafana_query_datasource` only allows `GET`/`POST` (never a mutating method), and enforces configurable time-range and response-size caps — an over-cap request is truncated with a `truncated: true` marker in the result rather than failing, so an Agent can narrow its query and retry.
+`grafana_query_datasource` only allows `GET`/`POST` (never a mutating method), and confines `path` to `/api/datasources/proxy/uid/<datasourceUid>/` — `..`, `\`, and percent-encoded separators are rejected, and the joined path is re-checked after URL normalization, so the tool cannot be steered into Grafana's own APIs by an Agent acting on attacker-authored input. It also enforces configurable time-range and response-size caps — an over-cap request is truncated with a `truncated: true` marker in the result rather than failing, so an Agent can narrow its query and retry.
 
 ## Hub / IDE integration
 

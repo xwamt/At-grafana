@@ -122,12 +122,14 @@ export const AT_GRAFANA_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'grafana_query_datasource',
     title: 'Query Grafana datasource',
     description:
-      'Generic read-only pass-through to a datasource\'s query API via Grafana\'s proxy (e.g. Prometheus ' +
-      '`/api/v1/query_range`, Loki `/loki/api/v1/query_range`). You construct the full path/query/body yourself, ' +
-      'including whatever time-range params the target datasource API expects. Only GET/POST are allowed -- any other ' +
-      'method is rejected before reaching Grafana. Time range and response size are capped by plugin settings; an ' +
-      'over-cap request is truncated with `truncated: true` in the result (with an explanatory message) rather than ' +
-      `failing outright, so you can narrow your query and retry.${MONITORING_FAMILY_SUFFIX}`,
+      'Pass-through to a datasource\'s own query API via Grafana\'s datasource proxy (e.g. Prometheus ' +
+      '`/api/v1/query_range`, Loki `/loki/api/v1/query_range`). You construct the path/query/body yourself, ' +
+      'including whatever time-range params the target datasource API expects. `path` is resolved strictly under ' +
+      '`/api/datasources/proxy/uid/<datasourceUid>/` -- it may not contain `..`, `\\`, or percent-encoded ' +
+      'separators, so this tool cannot reach Grafana\'s own APIs. Only GET/POST are allowed -- any other method is ' +
+      'rejected before reaching Grafana. Time range and response size are capped by plugin settings; an over-cap ' +
+      'request is truncated with `truncated: true` in the result (with an explanatory message) rather than failing ' +
+      `outright, so you can narrow your query and retry.${MONITORING_FAMILY_SUFFIX}`,
     risk: 'read',
     inputSchema: GRAFANA_QUERY_DATASOURCE_INPUT_SCHEMA
   }

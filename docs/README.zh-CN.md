@@ -17,7 +17,7 @@ AT Grafana 是 **AT 系列** VS Code / Cursor 扩展的一员（同系列还有 
 - **9 个 MCP 工具**（全部 `risk: read`，安装 AT Series MCP 配置后自动批准）：
   - 发现：`grafana_list_instances`
   - 管理：`grafana_list_dashboards`、`grafana_get_dashboard`、`grafana_list_folders`、`grafana_list_alert_rules`、`grafana_get_alert_rule`、`grafana_get_alert_history`
-  - 监控：`grafana_list_datasources`、`grafana_query_datasource`（仅 `GET`/`POST`；可配置时间范围 / 响应体积上限）
+  - 监控：`grafana_list_datasources`、`grafana_query_datasource`（仅 `GET`/`POST`；`path` 被限制在 `/api/datasources/proxy/uid/<uid>/` 之内，无法触达 Grafana 自身 API；可配置时间范围 / 响应体积上限）
 - **共享 AT Series Hub** — Cursor / Kiro / Continue 共用一条 `AT Series` MCP 入口，不单独再建插件专属 MCP server
 
 ## 当前版本不包含

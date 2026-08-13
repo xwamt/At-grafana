@@ -149,4 +149,23 @@ describe('grafanaQueryDatasourceSchema', () => {
   it('rejects unexpected extra top-level properties', () => {
     expect(grafanaQueryDatasourceSchema.safeParse({ ...validBase, extra: true }).success).toBe(false);
   });
+
+  it('rejects a path that could traverse out of the datasource proxy prefix', () => {
+    for (const path of [
+      '../../../../../api/auth/keys',
+      '/../../../../../api/dashboards/db',
+      'api/v1/../../../../api/auth/keys',
+      '%2e%2e/%2e%2e/api/auth/keys',
+      'api%2f..%2f..%2fapi/auth/keys',
+      '..\\..\\..\\api\\auth\\keys'
+    ]) {
+      expect(grafanaQueryDatasourceSchema.safeParse({ ...validBase, path }).success).toBe(false);
+    }
+  });
+
+  it('still accepts the realistic Prometheus/Loki query paths this tool exists to serve', () => {
+    for (const path of ['api/v1/query_range', '/api/v1/query', 'loki/api/v1/query_range', 'api/v1/labels']) {
+      expect(grafanaQueryDatasourceSchema.safeParse({ ...validBase, path }).success).toBe(true);
+    }
+  });
 });

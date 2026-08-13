@@ -55,8 +55,11 @@ This is a deliberate, explicit divergence from the "front-end connected OR backg
 ### Safety constraints on `grafana_query_datasource`
 
 - Method allowlist `{GET, POST}` enforced in the Bridge handler itself (not left to the agent's discretion) — any other method returns `422 VALIDATION_ERROR` before any request reaches Grafana.
+- **Path confinement**: `path` must resolve under `/api/datasources/proxy/uid/<datasourceUid>/`. `..`, `\`, and the percent-encoded separator forms (`%2e`/`%2f`/`%5c`) are rejected, and the joined path is re-checked against that prefix *after* URL normalization. Enforced in three places: the Zod/JSON-Schema `path` constraint at the Bridge transport layer, an input check in `GrafanaDatasourcesApi.proxyDatasourceRequest`, and the post-join assertion in `buildDatasourceProxyPath`.
+
+  This constraint is load-bearing for the `risk=read` classification below, and it was **absent** until 2026-08-13. Without it `path` normalized through `new URL(...)`, so `POST ../../../../../api/auth/keys` reached Grafana's Admin API under the instance's Service Account Token — enough to mint a long-lived API key, overwrite dashboards via `/api/dashboards/db`, or silence alerts. The caller here is an Agent, so the input may be attacker-authored (a poisoned dashboard description, an injected log line) rather than merely mistaken.
 - Default and maximum time-range and response-size caps are enforced in the Bridge (exact default values are an implementation parameter tracked in the implementation plan, not re-litigated here); requests exceeding the cap are truncated with an explicit truncation notice in the tool result rather than silently dropped or hard-failed, so the agent can retry with a narrower range.
-- Tool is still `risk=read` because it cannot mutate Grafana or datasource state through the allowed methods for the query-oriented proxy paths in scope (Prometheus/Loki query APIs are read operations even when issued as `POST`).
+- Tool is `risk=read` because, **given the path confinement above**, the reachable surface is the datasource's own query API, and the allowed methods cannot mutate Grafana or datasource state there (Prometheus/Loki query APIs are read operations even when issued as `POST`). Note this is a property of the *Grafana* surface only: what an arbitrary datasource exposes under its own proxy subtree is not enumerated. A per-datasource-type endpoint allowlist (which Prometheus/Loki paths to permit) is the natural next tightening and needs its own ADR.
 
 ### V1 write scope
 

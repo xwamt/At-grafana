@@ -17,7 +17,7 @@ AT Grafana is a VS Code / Cursor extension in the **AT Series** (alongside `at-t
 - **9 MCP tools** (`risk: read`, auto-approved after AT Series MCP install):
   - Discovery: `grafana_list_instances`
   - Management: `grafana_list_dashboards`, `grafana_get_dashboard`, `grafana_list_folders`, `grafana_list_alert_rules`, `grafana_get_alert_rule`, `grafana_get_alert_history`
-  - Monitoring: `grafana_list_datasources`, `grafana_query_datasource` (`GET`/`POST` only; configurable time-range / response-size caps)
+  - Monitoring: `grafana_list_datasources`, `grafana_query_datasource` (`GET`/`POST` only; `path` confined to `/api/datasources/proxy/uid/<uid>/`, so it cannot reach Grafana's own APIs; configurable time-range / response-size caps)
 - **Shared AT Series Hub** — one `AT Series` MCP entry for Cursor / Kiro / Continue; no plugin-specific MCP server
 
 ## Not in this release

@@ -28,7 +28,7 @@ All tools are `risk: read`. Every tool needs `instanceId` except `grafana_list_i
 
 1. Call `grafana_list_instances` first. Empty → tell the user no instance has background access; do not guess ids.
 2. For dashboards/alerts, use the management family. Prefer `grafana_get_dashboard` with `fields: "targets"` (optional `titleContains` / `panelIds`) to read panel `expr` + datasource `uid` without the full UI chrome; use `fields: "summary"` for panel inventory, `fields: "full"` only when you need the complete model.
-3. For live data: `grafana_list_datasources` → `grafana_query_datasource` with `method` (`GET`/`POST`), native `path` (e.g. Prometheus `api/v1/query_range`, Loki `loki/api/v1/query_range`), and `query`/`body` from step 2.
+3. For live data: `grafana_list_datasources` → `grafana_query_datasource` with `method` (`GET`/`POST`), native `path` (e.g. Prometheus `api/v1/query_range`, Loki `loki/api/v1/query_range`), and `query`/`body` from step 2. `path` is resolved under the datasource's own proxy subtree only — `..`, `\`, and percent-encoded separators are rejected, so do not try to reach Grafana's own `/api/...` endpoints through this tool; use the management family instead.
 4. If `truncated: true`, narrow the time range or query and retry.
 5. Never surface Service Account tokens or credential-shaped values.
 

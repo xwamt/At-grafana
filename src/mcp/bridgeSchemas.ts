@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { JsonSchemaObject } from '@at-series/mcp-hub';
+import { DATASOURCE_PROXY_PATH_DENY_PATTERN } from '../grafana/GrafanaDatasourcesApi';
 
 /**
  * Server-side input validation for every AT Grafana MCP tool (Task 5.1,
@@ -55,17 +56,33 @@ export const grafanaListDatasourcesSchema = z.object({ instanceId: z.string().mi
  * `GrafanaAgentToolService`, let alone `GrafanaApiClient.proxyDatasourceRequest`'s
  * own runtime guard (defense in depth, not a replacement for it).
  *
+ * `path` carries the same shape of risk as `method` and is validated the same
+ * way: an Agent-supplied `..` walks straight out of the datasource proxy
+ * subtree into Grafana's Admin API (see
+ * `GrafanaDatasourcesApi.DATASOURCE_PROXY_PATH_DENY_PATTERN`). Rejecting it
+ * here means the request never leaves the transport layer; the two checks
+ * inside `proxyDatasourceRequest`/`buildDatasourceProxyPath` remain as the
+ * layers that protect non-Bridge callers.
+ *
  * `query` is a flat string-to-string map, matching
  * `GrafanaDatasourcesApi.proxyDatasourceRequest`'s existing
  * `query?: Record<string, string>` shape -- this is also exactly the shape
  * `QueryLimits.clampQueryTimeRange` expects for its `start`/`end` heuristic.
  */
+const datasourceProxyPathSchema = z
+  .string()
+  .min(1)
+  .refine((value) => !DATASOURCE_PROXY_PATH_DENY_PATTERN.test(value), {
+    message:
+      'must stay inside the datasource proxy subtree: "..", "\\", and percent-encoded separators (%2e/%2f/%5c) are rejected'
+  });
+
 export const grafanaQueryDatasourceSchema = z
   .object({
     instanceId: z.string().min(1),
     datasourceUid: z.string().min(1),
     method: z.enum(['GET', 'POST']),
-    path: z.string().min(1),
+    path: datasourceProxyPathSchema,
     query: z.record(z.string()).optional(),
     body: z.unknown().optional()
   })
@@ -179,13 +196,23 @@ export const GRAFANA_GET_ALERT_RULE_INPUT_SCHEMA: JsonSchemaObject = instanceIdA
 export const GRAFANA_GET_ALERT_HISTORY_INPUT_SCHEMA: JsonSchemaObject = instanceIdAndUidInputSchema();
 export const GRAFANA_LIST_DATASOURCES_INPUT_SCHEMA: JsonSchemaObject = instanceIdOnlyInputSchema();
 
+/** Negative-lookahead twin of DATASOURCE_PROXY_PATH_DENY_PATTERN; derived from its source so the two cannot drift. */
+const DATASOURCE_PROXY_PATH_JSON_SCHEMA_PATTERN = `^(?!.*(?:${DATASOURCE_PROXY_PATH_DENY_PATTERN.source})).+$`;
+
 export const GRAFANA_QUERY_DATASOURCE_INPUT_SCHEMA: JsonSchemaObject = {
   type: 'object',
   properties: {
     instanceId: { type: 'string', minLength: 1 },
     datasourceUid: { type: 'string', minLength: 1 },
     method: { type: 'string', enum: ['GET', 'POST'] },
-    path: { type: 'string', minLength: 1 },
+    path: {
+      type: 'string',
+      minLength: 1,
+      pattern: DATASOURCE_PROXY_PATH_JSON_SCHEMA_PATTERN,
+      description:
+        'Path relative to the datasource proxy root, e.g. "api/v1/query_range". Must stay inside the datasource ' +
+        'subtree: "..", "\\", and percent-encoded separators (%2e/%2f/%5c) are rejected.'
+    },
     query: { type: 'object', additionalProperties: { type: 'string' } },
     body: {}
   },
