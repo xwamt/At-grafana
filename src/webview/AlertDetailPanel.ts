@@ -3,6 +3,7 @@ import { formatError } from '../utils/errors';
 import { buildEmbedWebviewOptions, renderEmbedWebviewHtml } from './html';
 import type { GrafanaEmbedProxy } from './GrafanaEmbedProxy';
 import { revealOpenPanel, trackOpenPanel } from './openPanels';
+import { t } from '../i18n/t';
 
 export type AlertDetailEmbedProxy = Pick<GrafanaEmbedProxy, 'start' | 'origin' | 'buildAlertRuleUrl'>;
 
@@ -21,7 +22,7 @@ export class AlertDetailPanel {
     title: string
   ): Promise<void> {
     if (!instanceId || !uid) {
-      await vscode.window.showErrorMessage('Cannot open this alert rule: the instance or rule id is missing.');
+      await vscode.window.showErrorMessage(t('Cannot open this alert rule: the instance or rule id is missing.'));
       return;
     }
 
@@ -34,13 +35,16 @@ export class AlertDetailPanel {
     try {
       await proxy.start();
       if (!proxy.origin) {
-        throw new Error('AT Grafana embed proxy did not report an origin after starting.');
+        throw new Error(t('AT Grafana embed proxy did not report an origin after starting.'));
       }
       origin = proxy.origin;
     } catch (error) {
-      await vscode.window.showErrorMessage(`Could not open alert rule "${title}": ${formatError(error)}`);
+      await vscode.window.showErrorMessage(
+        t('Could not open alert rule "{title}": {message}', { title, message: formatError(error) })
+      );
       return;
     }
+
 
     const panel = vscode.window.createWebviewPanel(
       'atGrafana.alertDetailPanel',

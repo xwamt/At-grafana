@@ -4,6 +4,7 @@ import type { GrafanaInstanceConfig } from '../config/schema';
 import { ALERT_STATE_RANK, buildAlertStateIndex, correlateAlertState, type NormalizedAlertState } from '../grafana/correlateAlertState';
 import type { GrafanaApiClient } from '../grafana/GrafanaApiClient';
 import { formatError } from '../utils/errors';
+import { t } from '../i18n/t';
 import {
   AlertGroupTreeItem,
   AlertRuleTreeItem,
@@ -13,6 +14,7 @@ import {
   type AlertRuleWithState,
   type GrafanaTreeItem
 } from './GrafanaTreeItems';
+
 
 /** `getAllFolders` rather than `getFolders` for the same reason as the dashboard tree; see DashboardTreeProvider. */
 export type AlertApiClient = Pick<GrafanaApiClient, 'listAlertRules' | 'listAlertRuleStates' | 'getAllFolders'>;
@@ -90,7 +92,7 @@ export class AlertTreeProvider implements vscode.TreeDataProvider<GrafanaTreeIte
       return [new ErrorTreeItem(formatError(error))];
     }
     if (groups.length === 0) {
-      return [new MessageTreeItem('No alert rules found.')];
+      return [new MessageTreeItem(t('No alert rules found.'))];
     }
     return groups.map(
       (group) => new AlertGroupTreeItem(instance, group.folderUid, group.ruleGroup, group.label, group.worstState, group.rules)
@@ -99,10 +101,11 @@ export class AlertTreeProvider implements vscode.TreeDataProvider<GrafanaTreeIte
 
   private getGroupChildren(element: AlertGroupTreeItem): GrafanaTreeItem[] {
     if (element.rules.length === 0) {
-      return [new MessageTreeItem('No alert rules in this group.')];
+      return [new MessageTreeItem(t('No alert rules in this group.'))];
     }
     return element.rules.map((rule) => new AlertRuleTreeItem(element.instance, rule));
   }
+
 
   private loadInstanceGroups(instance: GrafanaInstanceConfig): Promise<InstanceAlertGroup[]> {
     const cached = this.instanceGroupsCache.get(instance.id);

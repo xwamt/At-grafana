@@ -21,6 +21,7 @@ import { DashboardPanel } from './webview/DashboardPanel';
 import { GrafanaEmbedProxy } from './webview/GrafanaEmbedProxy';
 import { GrafanaInstanceFormPanel } from './webview/GrafanaInstanceFormPanel';
 import { disposeOpenPanels } from './webview/openPanels';
+import { t } from './i18n/t';
 
 /** Arguments shape already wired by DashboardTreeItem/AlertRuleTreeItem's `command.arguments` (see GrafanaTreeItems.ts). */
 interface OpenGrafanaEmbedArgs {
@@ -47,7 +48,11 @@ function createGrafanaClient(
 ): Promise<GrafanaApiClient> {
   return configManager.getToken(instance.id).then((token) => {
     if (!token) {
-      throw new Error(`No Service Account Token is configured for "${instance.label}". Edit the instance to add one.`);
+      throw new Error(
+        t('No Service Account Token is configured for "{label}". Edit the instance to add one.', {
+          label: instance.label
+        })
+      );
     }
     return new GrafanaApiClient({
       baseUrl: instance.url,
@@ -57,6 +62,7 @@ function createGrafanaClient(
     });
   });
 }
+
 
 /**
  * Phase 1: adds Grafana instance configuration (SecretStorage-backed token,
@@ -110,7 +116,9 @@ export function activate(context: vscode.ExtensionContext): void {
     .catch((error) => {
       log.error(`hub-sync: failed: ${formatError(error)}`);
       void showTimedNotification(
-        `AT Series hub sync failed: ${formatError(error)}. MCP may not start until Repair succeeds.`,
+        t('AT Series hub sync failed: {message}. MCP may not start until Repair succeeds.', {
+          message: formatError(error)
+        }),
         'warning'
       );
       throw error;
@@ -146,32 +154,38 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   void bridgeServer.start().catch((error) => {
     log.error(`bridge: failed to start: ${formatError(error)}`);
-    void showTimedNotification(`AT Grafana MCP bridge failed to start: ${formatError(error)}`, 'warning');
+    void showTimedNotification(
+      t('AT Grafana MCP bridge failed to start: {message}', { message: formatError(error) }),
+      'warning'
+    );
   });
 
   void hubReady
     .then(() => ensureAtSeriesConfigForCurrentIde({ ...hostEnv, workspaceFolder: currentWorkspaceFolder() }))
     .catch((error) => {
       log.error(`mcp-config: could not be updated: ${formatError(error)}`);
-      void showTimedNotification(`AT Series MCP config could not be updated: ${formatError(error)}`, 'warning');
+      void showTimedNotification(
+        t('AT Series MCP config could not be updated: {message}', { message: formatError(error) }),
+        'warning'
+      );
     });
 
   const installMcpConfigCommand = vscode.commands.registerCommand('atGrafana.installMcpConfig', async () => {
     try {
       await syncPackagedHub(context);
     } catch (error) {
-      showTimedNotification(`AT Series hub sync failed: ${formatError(error)}`, 'error');
+      showTimedNotification(t('AT Series hub sync failed: {message}', { message: formatError(error) }), 'error');
       return;
     }
     const result = await ensureAtSeriesConfigForCurrentIde({ ...hostEnv, workspaceFolder: currentWorkspaceFolder() });
     if (result) {
       showTimedNotification(
-        result.updated ? 'AT Series MCP config installed/repaired.' : 'AT Series MCP config is already up to date.'
+        result.updated ? t('AT Series MCP config installed/repaired.') : t('AT Series MCP config is already up to date.')
       );
       return;
     }
     showTimedNotification(
-      'No supported IDE MCP config target was detected. Open a workspace to install Continue config.',
+      t('No supported IDE MCP config target was detected. Open a workspace to install Continue config.'),
       'warning'
     );
   });
@@ -179,15 +193,15 @@ export function activate(context: vscode.ExtensionContext): void {
   const uninstallMcpConfigCommand = vscode.commands.registerCommand('atGrafana.uninstallAtSeriesMcpConfig', async () => {
     const result = await uninstallAtSeriesConfigForCurrentIde({ ...hostEnv, workspaceFolder: currentWorkspaceFolder() });
     if (result?.removed) {
-      showTimedNotification('AT Series MCP config uninstalled.');
+      showTimedNotification(t('AT Series MCP config uninstalled.'));
       return;
     }
     if (result) {
-      showTimedNotification('AT Series MCP config was not present.');
+      showTimedNotification(t('AT Series MCP config was not present.'));
       return;
     }
     showTimedNotification(
-      'No supported IDE MCP config target was detected. Open a workspace to uninstall Continue config.',
+      t('No supported IDE MCP config target was detected. Open a workspace to uninstall Continue config.'),
       'warning'
     );
   });
@@ -214,8 +228,8 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   const filterDashboardsCommand = vscode.commands.registerCommand('atGrafana.filterDashboards', async () => {
     const value = await vscode.window.showInputBox({
-      prompt: 'Filter dashboards by title',
-      placeHolder: 'e.g. api-latency',
+      prompt: t('Filter dashboards by title'),
+      placeHolder: t('e.g. api-latency'),
       value: dashboardTreeProvider.getFilter() ?? ''
     });
     if (value !== undefined) {
@@ -234,7 +248,7 @@ export function activate(context: vscode.ExtensionContext): void {
         certTrustStore,
         args?.instanceId ?? '',
         args?.uid ?? '',
-        args?.title ?? 'Dashboard',
+        args?.title ?? t('Dashboard'),
         (instanceId, uid, title, slug, search) =>
           DashboardPanel.open(grafanaEmbedProxy, instanceId, uid, title, slug, search),
         args?.slug,
@@ -250,7 +264,7 @@ export function activate(context: vscode.ExtensionContext): void {
         certTrustStore,
         args?.instanceId ?? '',
         args?.uid ?? '',
-        args?.title ?? 'Alert Rule',
+        args?.title ?? t('Alert Rule'),
         (instanceId, uid, title) => AlertDetailPanel.open(grafanaEmbedProxy, instanceId, uid, title)
       );
     }
@@ -325,21 +339,24 @@ async function openGrafanaEmbedPanel(
 
   const instance = await configManager.getInstance(instanceId);
   if (!instance) {
-    await vscode.window.showErrorMessage(`Cannot open "${title}": unknown Grafana instance.`);
+    await vscode.window.showErrorMessage(t('Cannot open "{title}": unknown Grafana instance.', { title }));
     return;
   }
 
   const token = await configManager.getToken(instanceId);
   if (!token) {
     await vscode.window.showErrorMessage(
-      `Cannot open "${title}": no Service Account Token is configured for "${instance.label}".`
+      t('Cannot open "{title}": no Service Account Token is configured for "{label}".', {
+        title,
+        label: instance.label
+      })
     );
     return;
   }
 
   const trust = await ensureGrafanaTlsTrust(instance.url, token, certTrustStore);
   if (!trust.ok) {
-    await vscode.window.showErrorMessage(`Cannot open "${title}": ${trust.message}`);
+    await vscode.window.showErrorMessage(t('Cannot open "{title}": {message}', { title, message: trust.message }));
     return;
   }
 
@@ -354,10 +371,10 @@ async function manageInstances(
   const instances = await configManager.listInstances();
   if (instances.length === 0) {
     const answer = await vscode.window.showInformationMessage(
-      'No Grafana instances configured yet.',
-      'Add Instance'
+      t('No Grafana instances configured yet.'),
+      t('Add Instance')
     );
-    if (answer === 'Add Instance') {
+    if (answer === t('Add Instance')) {
       await GrafanaInstanceFormPanel.open(context, configManager, onChanged);
     }
     return;
@@ -369,20 +386,20 @@ async function manageInstances(
       description: instance.url,
       instance
     })),
-    { placeHolder: 'Select a Grafana instance to edit or delete' }
+    { placeHolder: t('Select a Grafana instance to edit or delete') }
   );
   if (!picked) {
     return;
   }
 
-  const action = await vscode.window.showQuickPick(['Edit', 'Delete'], {
+  const action = await vscode.window.showQuickPick([t('Edit'), t('Delete')], {
     placeHolder: `${picked.instance.label}`
   });
-  if (action === 'Edit') {
+  if (action === t('Edit')) {
     await GrafanaInstanceFormPanel.open(context, configManager, onChanged, picked.instance);
     return;
   }
-  if (action === 'Delete') {
+  if (action === t('Delete')) {
     await deleteInstanceWithConfirmation(configManager, picked.instance, onChanged);
   }
 }
@@ -393,15 +410,16 @@ async function deleteInstanceWithConfirmation(
   onChanged: () => void
 ): Promise<void> {
   const answer = await vscode.window.showWarningMessage(
-    `Delete Grafana instance "${instance.label}"?`,
+    t('Delete Grafana instance "{label}"?', { label: instance.label }),
     { modal: true },
-    'Delete'
+    t('Delete')
   );
-  if (answer === 'Delete') {
+  if (answer === t('Delete')) {
     await configManager.deleteInstance(instance.id);
     onChanged();
   }
 }
+
 
 /** Async because VS Code awaits what this returns; see the `cleanup` doc in `activate`. */
 export async function deactivate(): Promise<void> {

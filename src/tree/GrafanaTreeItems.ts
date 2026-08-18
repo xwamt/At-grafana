@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { GrafanaInstanceConfig } from '../config/schema';
+import { t } from '../i18n/t';
 // NormalizedAlertState/ALERT_STATE_RANK/normalizeAlertState moved to
 // src/grafana/correlateAlertState.ts (Task 5.1), shared with
 // GrafanaAgentToolService; AlertTreeProvider now imports the rank/normalize
@@ -67,7 +68,7 @@ export class DashboardTreeItem extends vscode.TreeItem {
     // TODO(phase-4): replace with the real dashboard Webview panel command (Task 4.2).
     this.command = {
       command: 'atGrafana.openDashboard',
-      title: 'Open Dashboard',
+      title: t('Open Dashboard'),
       arguments: [{ instanceId: instance.id, uid, title, ...dashboardRouteFromUrl(url) }]
     };
   }
@@ -83,7 +84,7 @@ export class MessageTreeItem extends vscode.TreeItem {
 
 export class ErrorTreeItem extends vscode.TreeItem {
   constructor(message: string) {
-    super('Failed to load', vscode.TreeItemCollapsibleState.None);
+    super(t('Failed to load'), vscode.TreeItemCollapsibleState.None);
     this.contextValue = 'atGrafana.error';
     this.iconPath = new vscode.ThemeIcon('error');
     this.description = message;
@@ -112,7 +113,10 @@ export class AlertGroupTreeItem extends vscode.TreeItem {
     this.id = `atGrafana.alertGroup:${instance.id}:${folderUid}:${ruleGroup}`;
     this.contextValue = 'atGrafana.alertGroup';
     this.iconPath = alertStateIcon(worstState);
-    this.description = `${rules.length} rule${rules.length === 1 ? '' : 's'}`;
+    this.description =
+      rules.length === 1
+        ? t('{count} rule', { count: rules.length })
+        : t('{count} rules', { count: rules.length });
   }
 }
 
@@ -124,11 +128,13 @@ export class AlertRuleTreeItem extends vscode.TreeItem {
     this.iconPath = alertStateIcon(rule.state);
     const stateLabel = rule.rawState ?? rule.state;
     this.description = stateLabel;
-    this.tooltip = rule.activeAt ? `State: ${stateLabel}\nActive since: ${rule.activeAt}` : `State: ${stateLabel}`;
+    this.tooltip = rule.activeAt
+      ? t('State: {state}\nActive since: {time}', { state: stateLabel, time: rule.activeAt })
+      : t('State: {state}', { state: stateLabel });
     // TODO(phase-4): replace with the real alert-rule detail Webview panel command (Task 4.3).
     this.command = {
       command: 'atGrafana.openAlertRule',
-      title: 'Open Alert Rule',
+      title: t('Open Alert Rule'),
       arguments: [{ instanceId: instance.id, uid: rule.uid, title: rule.title }]
     };
   }
@@ -142,3 +148,4 @@ export type GrafanaTreeItem =
   | AlertRuleTreeItem
   | MessageTreeItem
   | ErrorTreeItem;
+

@@ -1,0 +1,20 @@
+{
+  "atGrafana.displayName": "AT Grafana",
+  "atGrafana.description": "Grafana dashboards, alerts, and datasource access inside VS Code, with Agent (MCP) integration via AT Series.",
+  "atGrafana.viewsContainer.title": "AT Grafana",
+  "atGrafana.view.dashboards.name": "Dashboards",
+  "atGrafana.view.alerts.name": "Alerts",
+  "atGrafana.command.addInstance.title": "AT Grafana: Add Instance",
+  "atGrafana.command.manageInstances.title": "AT Grafana: Manage Instances",
+  "atGrafana.command.installMcpConfig.title": "AT Grafana: Install/Repair AT Series MCP Config",
+  "atGrafana.command.uninstallAtSeriesMcpConfig.title": "AT Grafana: Uninstall AT Series MCP Config",
+  "atGrafana.command.refreshDashboards.title": "AT Grafana: Refresh Dashboards",
+  "atGrafana.command.filterDashboards.title": "AT Grafana: Filter Dashboards",
+  "atGrafana.command.clearDashboardFilter.title": "AT Grafana: Clear Dashboard Filter",
+  "atGrafana.command.refreshAlerts.title": "AT Grafana: Refresh Alerts",
+  "atGrafana.command.openDashboard.title": "AT Grafana: Open Dashboard",
+  "atGrafana.command.openAlertRule.title": "AT Grafana: Open Alert Rule",
+  "atGrafana.welcome.dashboards": "No Grafana instances are configured yet.\n[Add Grafana Instance](command:atGrafana.addInstance)\nAlready configured elsewhere? [Manage Instances](command:atGrafana.manageInstances) lets you edit or remove one.",
+  "atGrafana.welcome.alerts": "No Grafana instances are configured yet.\n[Add Grafana Instance](command:atGrafana.addInstance)\nAlready configured elsewhere? [Manage Instances](command:atGrafana.manageInstances) lets you edit or remove one.",
+  "atGrafana.configuration.title": "AT Grafana"
+}

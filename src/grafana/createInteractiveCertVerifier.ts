@@ -1,10 +1,7 @@
 import * as vscode from 'vscode';
+import { t } from '../i18n/t';
 import type { GrafanaCertTrustStore } from './GrafanaCertTrustStore';
 import type { GrafanaCertVerifier } from './GrafanaHttpClient';
-
-const TRUST_NEW_CERTIFICATE_ACTION = 'Trust New Certificate';
-const TRUST_CERTIFICATE_ACTION = 'Trust Certificate';
-const REJECT_ACTION = 'Reject';
 
 /**
  * The first real, interactive Trust-On-First-Use verifier (Task 4.1). Mirrors
@@ -42,18 +39,22 @@ export function createInteractiveCertVerifier(trustStore: GrafanaCertTrustStore)
 
       if (status === 'changed') {
         const previous = trustStore.getTrusted(host, port);
+        const trustAction = t('Trust New Certificate');
         const choice = await vscode.window.showWarningMessage(
-          `SECURITY WARNING: The TLS certificate for Grafana instance ${host}:${port} has CHANGED since it was last trusted.\n\n` +
-            `Previously trusted fingerprint: ${previous?.fingerprint ?? '(unknown)'}\n` +
-            `New fingerprint presented: ${fingerprint256}\n\n` +
-            'This can happen after a legitimate certificate rotation, but it can also indicate a ' +
-            'machine-in-the-middle attack. Only continue if you can independently confirm the new ' +
-            'fingerprint with whoever administers this Grafana server.',
+          t(
+            'SECURITY WARNING: The TLS certificate for Grafana instance {host}:{port} has CHANGED since it was last trusted.\n\nPreviously trusted fingerprint: {previousFingerprint}\nNew fingerprint presented: {fingerprint}\n\nThis can happen after a legitimate certificate rotation, but it can also indicate a machine-in-the-middle attack. Only continue if you can independently confirm the new fingerprint with whoever administers this Grafana server.',
+            {
+              host,
+              port,
+              previousFingerprint: previous?.fingerprint ?? t('(unknown)'),
+              fingerprint: fingerprint256
+            }
+          ),
           { modal: true },
-          TRUST_NEW_CERTIFICATE_ACTION,
-          REJECT_ACTION
+          trustAction,
+          t('Reject')
         );
-        if (choice === TRUST_NEW_CERTIFICATE_ACTION) {
+        if (choice === trustAction) {
           await trustStore.trust(host, port, fingerprint256);
           return true;
         }
@@ -64,16 +65,17 @@ export function createInteractiveCertVerifier(trustStore: GrafanaCertTrustStore)
       }
 
       // status === 'unknown'
+      const trustAction = t('Trust Certificate');
       const choice = await vscode.window.showWarningMessage(
-        `Grafana instance ${host}:${port} presented a TLS certificate that has not been seen before.\n\n` +
-          `Fingerprint: ${fingerprint256}\n\n` +
-          'If you recognize and trust this Grafana server (for example, it uses a self-signed or ' +
-          'private-CA certificate you administer), you can trust it now. Otherwise, reject the connection.',
+        t(
+          'Grafana instance {host}:{port} presented a TLS certificate that has not been seen before.\n\nFingerprint: {fingerprint}\n\nIf you recognize and trust this Grafana server (for example, it uses a self-signed or private-CA certificate you administer), you can trust it now. Otherwise, reject the connection.',
+          { host, port, fingerprint: fingerprint256 }
+        ),
         { modal: true },
-        TRUST_CERTIFICATE_ACTION,
-        REJECT_ACTION
+        trustAction,
+        t('Reject')
       );
-      if (choice === TRUST_CERTIFICATE_ACTION) {
+      if (choice === trustAction) {
         await trustStore.trust(host, port, fingerprint256);
         return true;
       }
@@ -81,3 +83,4 @@ export function createInteractiveCertVerifier(trustStore: GrafanaCertTrustStore)
     }
   };
 }
+

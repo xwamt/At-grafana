@@ -2,14 +2,43 @@ type VsCodeApi = { postMessage(message: unknown): void };
 
 declare const acquireVsCodeApi: () => VsCodeApi;
 
+interface FormStrings {
+  submit: string;
+  saving: string;
+  testConnection: string;
+  testing: string;
+  unknownError: string;
+}
+
+const FALLBACK_STRINGS: FormStrings = {
+  submit: 'Add Instance',
+  saving: 'Saving...',
+  testConnection: 'Test Connection',
+  testing: 'Testing connection...',
+  unknownError: 'Something went wrong.'
+};
+
 const vscode = acquireVsCodeApi();
+const strings = readStrings();
 const form = document.querySelector<HTMLFormElement>('#instance-form');
 const error = document.querySelector<HTMLElement>('#form-error');
 const testStatus = document.querySelector<HTMLElement>('#testStatus');
 const testConnectionButton = document.querySelector<HTMLButtonElement>('#testConnectionButton');
 const submitButton = document.querySelector<HTMLButtonElement>('#submitButton');
 const submitLabel = document.querySelector<HTMLElement>('#submitLabel');
-const defaultSubmitLabel = submitLabel?.textContent ?? 'Add Instance';
+const defaultSubmitLabel = submitLabel?.textContent ?? strings.submit;
+
+function readStrings(): FormStrings {
+  const block = document.getElementById('atGrafanaStrings');
+  if (!block?.textContent) {
+    return FALLBACK_STRINGS;
+  }
+  try {
+    return { ...FALLBACK_STRINGS, ...(JSON.parse(block.textContent) as Partial<FormStrings>) };
+  } catch {
+    return FALLBACK_STRINGS;
+  }
+}
 
 function field(name: string): HTMLInputElement | null {
   const element = form?.elements.namedItem(name);
@@ -38,16 +67,17 @@ function setTestStatus(message: string, state?: 'success' | 'error'): void {
 function setSaving(isSaving: boolean): void {
   submitButton?.toggleAttribute('disabled', isSaving);
   if (submitLabel) {
-    submitLabel.textContent = isSaving ? 'Saving...' : defaultSubmitLabel;
+    submitLabel.textContent = isSaving ? strings.saving : defaultSubmitLabel;
   }
 }
 
 function setTesting(isTesting: boolean): void {
   testConnectionButton?.toggleAttribute('disabled', isTesting);
   if (testConnectionButton) {
-    testConnectionButton.textContent = isTesting ? 'Testing...' : 'Test Connection';
+    testConnectionButton.textContent = isTesting ? strings.testing : strings.testConnection;
   }
 }
+
 
 function payloadFromForm(): Record<string, unknown> {
   return {
@@ -67,7 +97,7 @@ form?.addEventListener('submit', (event) => {
 
 testConnectionButton?.addEventListener('click', () => {
   clearError();
-  setTestStatus('Testing connection...');
+  setTestStatus(strings.testing);
   setTesting(true);
   vscode.postMessage({ type: 'testConnection', payload: payloadFromForm() });
 });
@@ -76,7 +106,7 @@ window.addEventListener('message', (event: MessageEvent<{ type?: string; payload
   const message = event.data;
   if (message.type === 'error') {
     setSaving(false);
-    setError(typeof message.payload === 'string' ? message.payload : 'Something went wrong.');
+    setError(typeof message.payload === 'string' ? message.payload : strings.unknownError);
     return;
   }
   if (message.type === 'connectionTestResult') {
@@ -85,3 +115,4 @@ window.addEventListener('message', (event: MessageEvent<{ type?: string; payload
     setTestStatus(payload.message, payload.ok ? 'success' : 'error');
   }
 });
+

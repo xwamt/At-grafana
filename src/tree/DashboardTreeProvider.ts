@@ -3,6 +3,7 @@ import type { GrafanaInstanceConfigManager } from '../config/GrafanaInstanceConf
 import type { GrafanaInstanceConfig } from '../config/schema';
 import type { GrafanaApiClient, GrafanaFolder, GrafanaSearchResult } from '../grafana/GrafanaApiClient';
 import { formatError } from '../utils/errors';
+import { t } from '../i18n/t';
 import {
   DashboardTreeItem,
   ErrorTreeItem,
@@ -21,12 +22,11 @@ import {
 export type DashboardApiClient = Pick<GrafanaApiClient, 'searchAll' | 'getAllFolders'>;
 export type DashboardClientFactory = (instance: GrafanaInstanceConfig) => Promise<DashboardApiClient>;
 
-const GENERAL_FOLDER_TITLE = 'General';
-
 interface InstanceDashboardData {
   folders: GrafanaFolder[];
   dashboards: GrafanaSearchResult[];
 }
+
 
 /**
  * `GrafanaDashboardsApi.searchAll()` has no server-side folder filter (see
@@ -122,10 +122,10 @@ export class DashboardTreeProvider implements vscode.TreeDataProvider<GrafanaTre
     const items: GrafanaTreeItem[] = data.folders.map((folder) => new FolderTreeItem(instance, folder.uid, folder.title));
     const hasFolderlessDashboards = data.dashboards.some((dashboard) => !dashboard.folderUid);
     if (hasFolderlessDashboards || data.folders.length === 0) {
-      items.push(new FolderTreeItem(instance, undefined, GENERAL_FOLDER_TITLE));
+      items.push(new FolderTreeItem(instance, undefined, t('General')));
     }
     if (items.length === 0) {
-      return [new MessageTreeItem('No dashboards found.')];
+      return [new MessageTreeItem(t('No dashboards found.'))];
     }
     return items;
   }
@@ -145,7 +145,7 @@ export class DashboardTreeProvider implements vscode.TreeDataProvider<GrafanaTre
     const filtered = this.applyFilter(inFolder);
     if (filtered.length === 0) {
       return [
-        new MessageTreeItem(this.filterText ? 'No dashboards match the current filter.' : 'No dashboards in this folder.')
+        new MessageTreeItem(this.filterText ? t('No dashboards match the current filter.') : t('No dashboards in this folder.'))
       ];
     }
     return filtered.map((dashboard) => new DashboardTreeItem(instance, dashboard.uid, dashboard.title, dashboard.url));
@@ -179,6 +179,9 @@ export class DashboardTreeProvider implements vscode.TreeDataProvider<GrafanaTre
     if (!this.treeView) {
       return;
     }
-    this.treeView.message = this.filterText ? `Filter: "${this.filterText}"` : undefined;
+    this.treeView.message = this.filterText
+      ? t('Filter: "{filterText}"', { filterText: this.filterText })
+      : undefined;
   }
 }
+

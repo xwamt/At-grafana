@@ -35,6 +35,9 @@ if (activityIcon !== 'media/at-grafana-activity.svg') {
 // Webview HTML references CSS by extensionUri-relative path (see renderWebviewHtml);
 // only the .ts sources are stripped by .vscodeignore at vsce-package time below.
 await cp(join(root, 'webview'), join(stage, 'webview'), { recursive: true }).catch(() => {});
+await cp(join(root, 'l10n'), join(stage, 'l10n'), { recursive: true }).catch(() => {});
+await cp(join(root, 'package.nls.json'), join(stage, 'package.nls.json')).catch(() => {});
+await cp(join(root, 'package.nls.zh-cn.json'), join(stage, 'package.nls.zh-cn.json')).catch(() => {});
 await cp(join(root, '.vscodeignore'), join(stage, '.vscodeignore'));
 await writeFile(join(stage, 'package.json'), `${JSON.stringify(packagedManifest, null, 2)}\n`, 'utf8');
 await cp(join(root, 'README.md'), join(stage, 'README.md'));

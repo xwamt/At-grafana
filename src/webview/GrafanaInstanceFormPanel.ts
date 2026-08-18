@@ -4,6 +4,7 @@ import type { GrafanaInstanceConfig } from '../config/schema';
 import { testGrafanaConnection, type GrafanaConnectionTestResult } from '../grafana/testGrafanaConnection';
 import { formatError } from '../utils/errors';
 import { renderWebviewHtml } from './html';
+import { buildWebviewStrings, t } from '../i18n/t';
 
 type SubmitPayload = Record<string, unknown>;
 
@@ -23,9 +24,12 @@ export class GrafanaInstanceFormPanel {
     onSaved: () => void,
     existing?: GrafanaInstanceConfig
   ): Promise<void> {
+    const title = existing
+      ? t('Edit Grafana Instance: {label}', { label: existing.label })
+      : t('Add Grafana Instance');
     const panel = vscode.window.createWebviewPanel(
       'grafanaInstanceForm',
-      existing ? `Edit Grafana Instance: ${existing.label}` : 'Add Grafana Instance',
+      title,
       vscode.ViewColumn.Active,
       {
         enableScripts: true,
@@ -33,6 +37,7 @@ export class GrafanaInstanceFormPanel {
       }
     );
     const existingToken = existing ? await configManager.getToken(existing.id) : undefined;
+    const formHtml = renderInstanceForm(existing, Boolean(existingToken));
 
     panel.webview.html = renderWebviewHtml(
       panel.webview,
@@ -40,7 +45,8 @@ export class GrafanaInstanceFormPanel {
         script: vscode.Uri.joinPath(context.extensionUri, 'dist', 'webview', 'grafana-instance-form.js'),
         style: vscode.Uri.joinPath(context.extensionUri, 'webview', 'grafana-instance-form', 'index.css')
       },
-      renderInstanceForm(existing, Boolean(existingToken))
+      formHtml.body,
+      formHtml.data
     );
 
     panel.webview.onDidReceiveMessage(async (message: InstanceFormMessage) => {
@@ -74,17 +80,17 @@ export async function handleInstanceFormMessage(
       message.payload.allowBackgroundAccess === 'on' || message.payload.allowBackgroundAccess === true;
 
     if (!label) {
-      await panel.webview.postMessage({ type: 'error', payload: 'Label is required.' });
+      await panel.webview.postMessage({ type: 'error', payload: t('Label is required.') });
       return true;
     }
     if (!url || !isValidGrafanaUrl(url)) {
-      await panel.webview.postMessage({ type: 'error', payload: 'A valid Grafana URL is required.' });
+      await panel.webview.postMessage({ type: 'error', payload: t('A valid Grafana URL is required.') });
       return true;
     }
     if (!existing && !token) {
       await panel.webview.postMessage({
         type: 'error',
-        payload: 'A Service Account Token is required for new instances.'
+        payload: t('A Service Account Token is required for new instances.')
       });
       return true;
     }
@@ -113,7 +119,7 @@ async function handleConnectionTest(
   if (!url || !isValidGrafanaUrl(url)) {
     await panel.webview.postMessage({
       type: 'connectionTestResult',
-      payload: { ok: false, message: 'Enter a valid Grafana URL before testing.' }
+      payload: { ok: false, message: t('Enter a valid Grafana URL before testing.') }
     });
     return;
   }
@@ -122,7 +128,7 @@ async function handleConnectionTest(
   const result = await runTest(url, token);
   await panel.webview.postMessage({
     type: 'connectionTestResult',
-    payload: result.ok ? { ok: true, message: 'Connection succeeded.' } : { ok: false, message: result.message }
+    payload: result.ok ? { ok: true, message: t('Connection succeeded.') } : { ok: false, message: result.message }
   });
 }
 
@@ -140,32 +146,35 @@ function isValidGrafanaUrl(value: string): boolean {
   }
 }
 
-export function renderInstanceForm(existing?: GrafanaInstanceConfig, hasStoredToken = false): string {
-  const submitText = existing ? 'Save Instance' : 'Add Instance';
+export function renderInstanceForm(
+  existing?: GrafanaInstanceConfig,
+  hasStoredToken = false
+): { body: string; data: Record<string, unknown> } {
+  const submitText = existing ? t('Save Instance') : t('Add Instance');
   const tokenHelp =
     existing && hasStoredToken
-      ? 'Leave blank to keep the saved Service Account Token.'
-      : 'Stored securely in VS Code SecretStorage. Create one under Grafana → Administration → Service accounts.';
+      ? t('Leave blank to keep the saved Service Account Token.')
+      : t('Stored securely in VS Code SecretStorage. Create one under Grafana → Administration → Service accounts.');
   const tokenPlaceholder = existing && hasStoredToken ? '••••••••' : 'glsa_...';
 
-  return `<main class="instance-form-shell">
+  const body = `<main class="instance-form-shell">
   <header class="form-header">
     <div>
-      <h1>${existing ? 'Edit Grafana Instance' : 'Add Grafana Instance'}</h1>
-      <p>Connect AT Grafana to a Grafana instance via a Service Account Token.</p>
+      <h1>${escapeAttr(existing ? t('Edit Grafana Instance') : t('Add Grafana Instance'))}</h1>
+      <p>${escapeAttr(t('Connect AT Grafana to a Grafana instance via a Service Account Token.'))}</p>
     </div>
   </header>
   <form id="instance-form" class="instance-form">
-    <label class="field-stack">Label <input name="label" value="${escapeAttr(existing?.label ?? '')}" required autocomplete="off"></label>
-    <label class="field-stack">Grafana URL <input name="url" type="url" placeholder="https://grafana.example.com" value="${escapeAttr(existing?.url ?? '')}" required autocomplete="off"></label>
-    <label class="field-stack">Service Account Token
+    <label class="field-stack">${escapeAttr(t('Label'))} <input name="label" value="${escapeAttr(existing?.label ?? '')}" required autocomplete="off"></label>
+    <label class="field-stack">${escapeAttr(t('Grafana URL'))} <input name="url" type="url" placeholder="https://grafana.example.com" value="${escapeAttr(existing?.url ?? '')}" required autocomplete="off"></label>
+    <label class="field-stack">${escapeAttr(t('Service Account Token'))}
       <input name="token" type="password" autocomplete="new-password" placeholder="${tokenPlaceholder}">
-      <span class="field-help">${tokenHelp}</span>
+      <span class="field-help">${escapeAttr(tokenHelp)}</span>
     </label>
     <label class="toggle-row" for="allowBackgroundAccess">
       <span class="toggle-copy">
-        <span class="toggle-title">Allow background Agent access</span>
-        <span class="field-help">Lets Agents query this instance's dashboards, alerts, and datasources via MCP even when no panel is open (ADR-004).</span>
+        <span class="toggle-title">${escapeAttr(t('Allow background Agent access'))}</span>
+        <span class="field-help">${escapeAttr(t("Lets Agents query this instance's dashboards, alerts, and datasources via MCP even when no panel is open (ADR-004)."))}</span>
       </span>
       <input id="allowBackgroundAccess" name="allowBackgroundAccess" type="checkbox"${existing?.allowBackgroundAccess ? ' checked' : ''}>
     </label>
@@ -175,16 +184,30 @@ export function renderInstanceForm(existing?: GrafanaInstanceConfig, hasStoredTo
         <div id="testStatus" class="test-status" role="status" aria-live="polite"></div>
       </div>
       <div class="form-actions">
-        <button id="testConnectionButton" class="secondary-action" type="button">Test Connection</button>
+        <button id="testConnectionButton" class="secondary-action" type="button">${escapeAttr(t('Test Connection'))}</button>
         <button id="submitButton" class="primary-action" type="submit">
-          <span id="submitLabel">${submitText}</span>
+          <span id="submitLabel">${escapeAttr(submitText)}</span>
         </button>
       </div>
     </footer>
   </form>
 </main>`;
+
+  return {
+    body,
+    data: {
+      atGrafanaStrings: buildWebviewStrings({
+        submit: existing ? 'Save Instance' : 'Add Instance',
+        saving: 'Saving...',
+        testConnection: 'Test Connection',
+        testing: 'Testing connection...',
+        unknownError: 'Something went wrong.'
+      })
+    }
+  };
 }
 
 function escapeAttr(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
+

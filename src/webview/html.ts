@@ -7,9 +7,17 @@ export interface WebviewAsset {
   style?: vscode.Uri;
 }
 
-export function renderWebviewHtml(webview: vscode.Webview, asset: WebviewAsset, body: string): string {
+export function renderWebviewHtml(
+  webview: vscode.Webview,
+  asset: WebviewAsset,
+  body: string,
+  data: Readonly<Record<string, unknown>> = {}
+): string {
   const nonce = createNonce();
   const styleTag = asset.style ? `<link rel="stylesheet" href="${webview.asWebviewUri(asset.style)}">` : '';
+  const dataTags = Object.entries(data)
+    .map(([id, value]) => `\n  ${renderJsonScript(id, value, nonce)}`)
+    .join('');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -20,11 +28,17 @@ export function renderWebviewHtml(webview: vscode.Webview, asset: WebviewAsset, 
   ${styleTag}
 </head>
 <body>
-  ${body}
+  ${body}${dataTags}
   <script nonce="${nonce}" src="${webview.asWebviewUri(asset.script)}"></script>
 </body>
 </html>`;
 }
+
+export function renderJsonScript(id: string, value: unknown, nonce: string): string {
+  const json = JSON.stringify(value) ?? 'null';
+  return `<script type="application/json" id="${escapeAttr(id)}" nonce="${escapeAttr(nonce)}">${json.replaceAll('<', '\\u003c')}</script>`;
+}
+
 
 export interface EmbedWebviewOptions {
   title: string;

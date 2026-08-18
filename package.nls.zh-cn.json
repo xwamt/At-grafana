@@ -1,0 +1,20 @@
+{
+  "atGrafana.displayName": "AT Grafana",
+  "atGrafana.description": "在 VS Code 中访问 Grafana 仪表盘、告警与数据源，并通过 AT Series 集成 Agent (MCP)。",
+  "atGrafana.viewsContainer.title": "AT Grafana",
+  "atGrafana.view.dashboards.name": "仪表盘",
+  "atGrafana.view.alerts.name": "告警规则",
+  "atGrafana.command.addInstance.title": "AT Grafana: 添加实例",
+  "atGrafana.command.manageInstances.title": "AT Grafana: 管理实例",
+  "atGrafana.command.installMcpConfig.title": "AT Grafana: 安装/修复 AT Series MCP 配置",
+  "atGrafana.command.uninstallAtSeriesMcpConfig.title": "AT Grafana: 卸载 AT Series MCP 配置",
+  "atGrafana.command.refreshDashboards.title": "AT Grafana: 刷新仪表盘",
+  "atGrafana.command.filterDashboards.title": "AT Grafana: 过滤仪表盘",
+  "atGrafana.command.clearDashboardFilter.title": "AT Grafana: 清除仪表盘过滤",
+  "atGrafana.command.refreshAlerts.title": "AT Grafana: 刷新告警",
+  "atGrafana.command.openDashboard.title": "AT Grafana: 打开仪表盘",
+  "atGrafana.command.openAlertRule.title": "AT Grafana: 打开告警规则",
+  "atGrafana.welcome.dashboards": "尚未配置任何 Grafana 实例。\n[添加 Grafana 实例](command:atGrafana.addInstance)\n已在其他地方配置？使用 [管理实例](command:atGrafana.manageInstances) 进行编辑或移除。",
+  "atGrafana.welcome.alerts": "尚未配置任何 Grafana 实例。\n[添加 Grafana 实例](command:atGrafana.addInstance)\n已在其他地方配置？使用 [管理实例](command:atGrafana.manageInstances) 进行编辑或移除。",
+  "atGrafana.configuration.title": "AT Grafana"
+}
