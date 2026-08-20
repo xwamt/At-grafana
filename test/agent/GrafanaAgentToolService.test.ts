@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GrafanaAgentToolService, type GrafanaApiClientLike, type RawQueryLimitsConfig } from '../../src/agent/GrafanaAgentToolService';
+import { DEFAULT_MAX_RANGE_MS } from '../../src/grafana/QueryLimits';
 import type { GrafanaInstanceConfig } from '../../src/config/schema';
 import { GrafanaApiClient } from '../../src/grafana/GrafanaApiClient';
 import { GrafanaCertTrustStore, type CertTrustMemento } from '../../src/grafana/GrafanaCertTrustStore';
@@ -483,7 +484,7 @@ describe('GrafanaAgentToolService', () => {
       const client = fakeClient({ proxyDatasourceRequest });
       const { service } = await makeService({ client });
 
-      await service.invoke('grafana_query_loki', {
+      const result = await service.invoke('grafana_query_loki', {
         instanceId: 'instance-1',
         datasourceUid: 'loki',
         expr: '{job="api"}',
@@ -498,6 +499,18 @@ describe('GrafanaAgentToolService', () => {
         undefined,
         expect.any(Number)
       );
+      const [, , , forwardedQuery] = proxyDatasourceRequest.mock.calls[0] as unknown as [
+        string,
+        string,
+        string,
+        Record<string, string>
+      ];
+      const start = Date.parse(forwardedQuery.start);
+      const end = Date.parse(forwardedQuery.end);
+      expect(Number.isNaN(start)).toBe(false);
+      expect(Number.isNaN(end)).toBe(false);
+      expect(end - start).toBe(DEFAULT_MAX_RANGE_MS);
+      expect(result).not.toMatchObject({ result: { truncated: true, reason: 'time-range' } });
     });
 
     it('grafana_query_datasource clamps an over-max-range query and marks the result truncated: true, reason: time-range', async () => {

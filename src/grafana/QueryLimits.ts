@@ -346,7 +346,7 @@ export function planQueryLimits(input: QueryLimitPlanInput): QueryLimitPlan {
   let body = input.body;
 
   if (kind === 'prometheus-range' || kind === 'loki-range') {
-    const ranged = applyRangeLimits(query ?? {}, input.limits, input.now, adjustments);
+    const ranged = applyRangeLimits(query ?? {}, input.limits, input.now, adjustments, body);
     query = ranged;
   }
 
@@ -365,8 +365,10 @@ export function planQueryLimits(input: QueryLimitPlanInput): QueryLimitPlan {
 
 /**
  * Materializes whichever bound is missing (or a rfc3339 `now-maxRangeMs`..`now`
- * window when both are missing), clamps the span, then floors the step against
- * what remains.
+ * window when both query keys are absent), clamps the span, then floors the
+ * step against what remains. Keys that are present but unparseable are left
+ * alone. A parseable `start`/`end` already on the POST body also skips the
+ * query-string default window.
  *
  * A both-missing fill of exactly `maxRangeMs` is not truncation — do not
  * record `'time-range'` for it. One-bound-missing still records `'time-range'`.
@@ -375,7 +377,8 @@ function applyRangeLimits(
   query: Record<string, string>,
   limits: EffectiveQueryLimits,
   now: number,
-  adjustments: QueryLimitAdjustment[]
+  adjustments: QueryLimitAdjustment[],
+  body?: unknown
 ): Record<string, string> {
   let next = { ...query };
 
@@ -394,9 +397,21 @@ function applyRangeLimits(
       next.start = formatTimestamp(end.epochMs - limits.maxRangeMs, end.format);
       adjustments.push('time-range');
     }
-  } else if (!hasStart && !hasEnd) {
-    next.end = formatTimestamp(now, 'rfc3339');
-    next.start = formatTimestamp(now - limits.maxRangeMs, 'rfc3339');
+  } else if (next.start === undefined && next.end === undefined) {
+    const record =
+      typeof body === 'object' && body !== null && !Array.isArray(body)
+        ? (body as Record<string, unknown>)
+        : undefined;
+    const bodyHasParseableRange =
+      record !== undefined &&
+      typeof record.start === 'string' &&
+      typeof record.end === 'string' &&
+      parseTimestamp(record.start) !== undefined &&
+      parseTimestamp(record.end) !== undefined;
+    if (!bodyHasParseableRange) {
+      next.end = formatTimestamp(now, 'rfc3339');
+      next.start = formatTimestamp(now - limits.maxRangeMs, 'rfc3339');
+    }
   }
 
   const clamped = clampQueryTimeRange(next, limits.maxRangeMs);

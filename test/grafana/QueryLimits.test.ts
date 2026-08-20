@@ -318,6 +318,38 @@ describe('planQueryLimits bypass closures', () => {
     expect(plan.body).toMatchObject({ start: String(endSeconds - 12 * 3600), end: String(endSeconds) });
   });
 
+  it('does not rewrite unparseable relative start/end as a default rfc3339 window', () => {
+    const query = { query: 'up', start: 'now-6h', end: 'now' };
+    const plan = planQueryLimits({
+      path: 'api/v1/query_range',
+      query,
+      limits,
+      now: NOW
+    });
+
+    expect(plan.query?.start).toBe('now-6h');
+    expect(plan.query?.end).toBe('now');
+    expect(plan.adjustments).not.toContain('time-range');
+  });
+
+  it('does not stuff a default query-string window when the POST body already has a parseable range', () => {
+    const endSeconds = NOW / 1000;
+    const startSeconds = endSeconds - 3600; // 1h, under the 12h cap
+
+    const plan = planQueryLimits({
+      path: 'api/v1/query_range',
+      query: {},
+      body: { query: 'up', start: String(startSeconds), end: String(endSeconds) },
+      limits,
+      now: NOW
+    });
+
+    expect(plan.query?.start).toBeUndefined();
+    expect(plan.query?.end).toBeUndefined();
+    expect(plan.body).toMatchObject({ start: String(startSeconds), end: String(endSeconds) });
+    expect(plan.adjustments).not.toContain('time-range');
+  });
+
   it('leaves an unrecognized datasource path entirely alone, preserving the generic pass-through', () => {
     const query = { anything: 'goes', step: '1s', limit: '999999' };
 
