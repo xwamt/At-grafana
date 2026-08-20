@@ -34,6 +34,7 @@ import {
   grafanaGetAlertRuleSchema,
   grafanaGetDashboardSchema,
   grafanaListAlertRulesSchema,
+  grafanaListAnnotationsSchema,
   grafanaListDashboardsSchema,
   grafanaListDatasourcesSchema,
   grafanaListFoldersSchema,
@@ -64,6 +65,7 @@ export type GrafanaApiClientLike = Pick<
   | 'listAlertRuleStates'
   | 'getAlertRuleHistory'
   | 'listDatasources'
+  | 'listAnnotations'
   | 'proxyDatasourceRequest'
 >;
 
@@ -222,6 +224,16 @@ export class GrafanaAgentToolService {
         case 'grafana_get_alert_history':
           return await this.withAuthorizedClient(grafanaGetAlertHistorySchema, args, (client, parsed) =>
             client.getAlertRuleHistory(parsed.uid)
+          );
+        case 'grafana_list_annotations':
+          return await this.withAuthorizedClient(grafanaListAnnotationsSchema, args, (client, parsed) =>
+            client.listAnnotations({
+              from: parsed.from,
+              to: parsed.to,
+              dashboardUid: parsed.dashboardUid,
+              tag: parsed.tag,
+              limit: parsed.limit
+            })
           );
         case 'grafana_list_datasources':
           return await this.withAuthorizedClient(grafanaListDatasourcesSchema, args, (client) => this.listDatasources(client));

@@ -10,6 +10,7 @@
  * - listAlertRuleStates() -> GET /api/prometheus/grafana/api/v1/rules (live *state* only; correlate by `uid`)
  * - getAlertRuleHistory() -> GET /api/v1/rules/history?ruleUID=:uid (best-effort; response shape unverified — see GrafanaAlertsApi.ts)
  * - listDatasources()     -> GET /api/datasources
+ * - listAnnotations()     -> GET /api/annotations
  * - proxyDatasourceRequest() -> GET/POST /api/datasources/proxy/uid/:uid/:path (method allowlist enforced pre-network, ADR-004 MON4)
  *
  * This file only owns wiring + the one endpoint that doesn't belong to any
@@ -18,6 +19,7 @@
  */
 import type { AtGrafanaLog } from '../utils/logger';
 import { GrafanaAlertsApi } from './GrafanaAlertsApi';
+import { GrafanaAnnotationsApi } from './GrafanaAnnotationsApi';
 import { GrafanaDashboardsApi } from './GrafanaDashboardsApi';
 import { GrafanaDatasourcesApi } from './GrafanaDatasourcesApi';
 import { GrafanaApiError, GrafanaHttpClient, type GrafanaCertVerifier } from './GrafanaHttpClient';
@@ -27,6 +29,7 @@ export { GrafanaApiError, verifyCertFingerprint } from './GrafanaHttpClient';
 export type { GrafanaApiErrorKind, GrafanaCertVerifier } from './GrafanaHttpClient';
 export type { GrafanaDashboard, GrafanaDashboardSearchQuery, GrafanaFolder, GrafanaSearchResult } from './GrafanaDashboardsApi';
 export type { GrafanaAlertHistoryEntry, GrafanaAlertRule, GrafanaAlertRuleState } from './GrafanaAlertsApi';
+export type { GrafanaAnnotation, GrafanaAnnotationQuery } from './GrafanaAnnotationsApi';
 export type { GrafanaDatasource } from './GrafanaDatasourcesApi';
 
 export interface GrafanaApiClientOptions {
@@ -50,12 +53,14 @@ export class GrafanaApiClient {
   private readonly http: GrafanaHttpClient;
   private readonly dashboardsApi: GrafanaDashboardsApi;
   private readonly alertsApi: GrafanaAlertsApi;
+  private readonly annotationsApi: GrafanaAnnotationsApi;
   private readonly datasourcesApi: GrafanaDatasourcesApi;
 
   constructor(options: GrafanaApiClientOptions) {
     this.http = new GrafanaHttpClient(options);
     this.dashboardsApi = new GrafanaDashboardsApi(this.http, options.log);
     this.alertsApi = new GrafanaAlertsApi(this.http);
+    this.annotationsApi = new GrafanaAnnotationsApi(this.http);
     this.datasourcesApi = new GrafanaDatasourcesApi(this.http);
   }
 
@@ -107,6 +112,12 @@ export class GrafanaApiClient {
 
   listDatasources(): ReturnType<GrafanaDatasourcesApi['listDatasources']> {
     return this.datasourcesApi.listDatasources();
+  }
+
+  listAnnotations(
+    ...args: Parameters<GrafanaAnnotationsApi['list']>
+  ): ReturnType<GrafanaAnnotationsApi['list']> {
+    return this.annotationsApi.list(...args);
   }
 
   proxyDatasourceRequest(

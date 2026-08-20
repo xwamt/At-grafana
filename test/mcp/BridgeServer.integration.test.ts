@@ -63,6 +63,7 @@ function fakeClient(overrides: Partial<GrafanaApiClientLike> = {}): GrafanaApiCl
     listAlertRuleStates: async () => [],
     getAlertRuleHistory: async () => [],
     listDatasources: async () => [],
+    listAnnotations: async () => [],
     proxyDatasourceRequest: async () => ({}),
     ...overrides
   };
@@ -221,6 +222,17 @@ describe('Bridge integration (real GrafanaAgentToolService, no fake toolService)
       name: 'grafana_list_prometheus_metric_names',
       result: { values: ['up'] }
     });
+  });
+
+  it('management family: POST /invoke grafana_list_annotations returns the fake listAnnotations rows', async () => {
+    const rows = [{ id: 1, time: 1700000000000, text: 'deploy', tags: ['release'] }];
+    const client = fakeClient({ listAnnotations: async () => rows });
+    const handler = await makeHandler({ client });
+
+    const response = await handler(invokeRequest('grafana_list_annotations', { instanceId: 'instance-1' }));
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ ok: true, name: 'grafana_list_annotations', result: rows });
   });
 
   it('rejects a disabled instance for a management tool with a validation-class error produced by the real authorization check', async () => {

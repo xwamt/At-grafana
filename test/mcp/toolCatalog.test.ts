@@ -7,7 +7,8 @@ const MANAGEMENT_TOOL_NAMES = [
   'grafana_list_folders',
   'grafana_list_alert_rules',
   'grafana_get_alert_rule',
-  'grafana_get_alert_history'
+  'grafana_get_alert_history',
+  'grafana_list_annotations'
 ];
 const MONITORING_TOOL_NAMES = [
   'grafana_list_datasources',
@@ -124,6 +125,24 @@ describe('toolCatalog', () => {
     const tool = findTool('grafana_list_datasources');
     expect(tool.inputSchema.required).toEqual(['instanceId']);
     expect(tool.inputSchema.additionalProperties).toBe(false);
+  });
+
+  it('grafana_list_annotations is a read-only management tool with optional from/to/dashboardUid/tag/limit', () => {
+    const tool = findTool('grafana_list_annotations');
+    expect(tool.risk).toBe('read');
+    expect(tool.description.toLowerCase()).toContain('annotation');
+    expect(tool.description.toLowerCase()).toMatch(/read-only|readonly/);
+    expect(tool.inputSchema.required).toEqual(['instanceId']);
+    expect(tool.inputSchema.additionalProperties).toBe(false);
+    expect(tool.inputSchema.properties).toMatchObject({
+      instanceId: { type: 'string' },
+      from: { type: 'integer', minimum: 0 },
+      to: { type: 'integer', minimum: 0 },
+      dashboardUid: { type: 'string' },
+      tag: { type: 'string' },
+      limit: { type: 'integer' }
+    });
+    expect(tool.inputSchema.required).not.toContain('limit');
   });
 
   it('grafana_query_datasource requires instanceId/datasourceUid/method/path, with method restricted to GET/POST', () => {

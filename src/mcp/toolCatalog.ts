@@ -4,6 +4,7 @@ import {
   GRAFANA_GET_ALERT_RULE_INPUT_SCHEMA,
   GRAFANA_GET_DASHBOARD_INPUT_SCHEMA,
   GRAFANA_LIST_ALERT_RULES_INPUT_SCHEMA,
+  GRAFANA_LIST_ANNOTATIONS_INPUT_SCHEMA,
   GRAFANA_LIST_DASHBOARDS_INPUT_SCHEMA,
   GRAFANA_LIST_DATASOURCES_INPUT_SCHEMA,
   GRAFANA_LIST_FOLDERS_INPUT_SCHEMA,
@@ -117,6 +118,17 @@ export const AT_GRAFANA_TOOL_CATALOG: ToolCatalogEntry[] = [
     description: `Get the state-change/event history for one alert rule by uid.${MANAGEMENT_FAMILY_SUFFIX}`,
     risk: 'read',
     inputSchema: GRAFANA_GET_ALERT_HISTORY_INPUT_SCHEMA
+  },
+  {
+    name: 'grafana_list_annotations',
+    title: 'List Grafana annotations',
+    description:
+      'List Grafana annotations (deploy markers and other event comments) in an optional time window. Read-only GET ' +
+      '/api/annotations — optional from/to (epoch ms), dashboardUid, tag, and limit (default 100, max 100). Use to ' +
+      'correlate incidents with a deploy window.' +
+      MANAGEMENT_FAMILY_SUFFIX,
+    risk: 'read',
+    inputSchema: GRAFANA_LIST_ANNOTATIONS_INPUT_SCHEMA
   },
   {
     name: 'grafana_list_datasources',

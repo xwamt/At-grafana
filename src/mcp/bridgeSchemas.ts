@@ -53,6 +53,17 @@ export const grafanaGetAlertHistorySchema = z
   .object({ instanceId: z.string().min(1), uid: z.string().min(1) })
   .strict();
 
+export const grafanaListAnnotationsSchema = z
+  .object({
+    instanceId: z.string().min(1),
+    from: z.number().int().nonnegative().optional(),
+    to: z.number().int().nonnegative().optional(),
+    dashboardUid: z.string().min(1).optional(),
+    tag: z.string().min(1).optional(),
+    limit: z.number().int().positive().max(100).default(100)
+  })
+  .strict();
+
 export const grafanaListDatasourcesSchema = z.object({ instanceId: z.string().min(1) }).strict();
 
 /**
@@ -191,6 +202,7 @@ export type GrafanaListFoldersInput = z.infer<typeof grafanaListFoldersSchema>;
 export type GrafanaListAlertRulesInput = z.infer<typeof grafanaListAlertRulesSchema>;
 export type GrafanaGetAlertRuleInput = z.infer<typeof grafanaGetAlertRuleSchema>;
 export type GrafanaGetAlertHistoryInput = z.infer<typeof grafanaGetAlertHistorySchema>;
+export type GrafanaListAnnotationsInput = z.infer<typeof grafanaListAnnotationsSchema>;
 export type GrafanaListDatasourcesInput = z.infer<typeof grafanaListDatasourcesSchema>;
 export type GrafanaQueryDatasourceInput = z.infer<typeof grafanaQueryDatasourceSchema>;
 export type GrafanaQueryPrometheusInput = z.infer<typeof grafanaQueryPrometheusSchema>;
@@ -208,7 +220,8 @@ export const AT_GRAFANA_MANAGEMENT_TOOL_NAMES = [
   'grafana_list_folders',
   'grafana_list_alert_rules',
   'grafana_get_alert_rule',
-  'grafana_get_alert_history'
+  'grafana_get_alert_history',
+  'grafana_list_annotations'
 ] as const;
 
 export type AtGrafanaManagementToolName = (typeof AT_GRAFANA_MANAGEMENT_TOOL_NAMES)[number];
@@ -244,6 +257,7 @@ export const BRIDGE_SCHEMAS_BY_TOOL_NAME: Record<AtGrafanaToolName, z.ZodTypeAny
   grafana_list_alert_rules: grafanaListAlertRulesSchema,
   grafana_get_alert_rule: grafanaGetAlertRuleSchema,
   grafana_get_alert_history: grafanaGetAlertHistorySchema,
+  grafana_list_annotations: grafanaListAnnotationsSchema,
   grafana_list_datasources: grafanaListDatasourcesSchema,
   grafana_query_prometheus: grafanaQueryPrometheusSchema,
   grafana_query_loki: grafanaQueryLokiSchema,
@@ -321,6 +335,24 @@ export const GRAFANA_LIST_FOLDERS_INPUT_SCHEMA: JsonSchemaObject = instanceIdOnl
 export const GRAFANA_LIST_ALERT_RULES_INPUT_SCHEMA: JsonSchemaObject = instanceIdOnlyInputSchema();
 export const GRAFANA_GET_ALERT_RULE_INPUT_SCHEMA: JsonSchemaObject = instanceIdAndUidInputSchema();
 export const GRAFANA_GET_ALERT_HISTORY_INPUT_SCHEMA: JsonSchemaObject = instanceIdAndUidInputSchema();
+export const GRAFANA_LIST_ANNOTATIONS_INPUT_SCHEMA: JsonSchemaObject = {
+  type: 'object',
+  properties: {
+    instanceId: { type: 'string', minLength: 1 },
+    from: { type: 'integer', minimum: 0, description: 'Start of window as epoch milliseconds.' },
+    to: { type: 'integer', minimum: 0, description: 'End of window as epoch milliseconds.' },
+    dashboardUid: { type: 'string', minLength: 1, description: 'Restrict to this dashboard UID (Grafana dashboardUID).' },
+    tag: { type: 'string', minLength: 1, description: 'Single annotation tag (Grafana tags query).' },
+    limit: {
+      type: 'integer',
+      minimum: 1,
+      maximum: 100,
+      description: 'Max rows to return; defaults to 100.'
+    }
+  },
+  required: ['instanceId'],
+  additionalProperties: false
+};
 export const GRAFANA_LIST_DATASOURCES_INPUT_SCHEMA: JsonSchemaObject = instanceIdOnlyInputSchema();
 
 /** Negative-lookahead twin of DATASOURCE_PROXY_PATH_DENY_PATTERN; derived from its source so the two cannot drift. */

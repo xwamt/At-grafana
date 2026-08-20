@@ -43,6 +43,7 @@ function fakeClient(overrides: Partial<GrafanaApiClientLike> = {}): GrafanaApiCl
     listAlertRuleStates: async () => [],
     getAlertRuleHistory: async () => [],
     listDatasources: async () => [],
+    listAnnotations: async () => [],
     proxyDatasourceRequest: async () => ({}),
     ...overrides
   };
@@ -133,6 +134,7 @@ describe('GrafanaAgentToolService', () => {
         ['grafana_list_alert_rules', { instanceId: 'known' }],
         ['grafana_get_alert_rule', { instanceId: 'known', uid: 'r1' }],
         ['grafana_get_alert_history', { instanceId: 'known', uid: 'r1' }],
+        ['grafana_list_annotations', { instanceId: 'known' }],
         ['grafana_list_datasources', { instanceId: 'known' }],
         ['grafana_query_prometheus', { instanceId: 'known', datasourceUid: 'ds1', expr: 'up' }],
         ['grafana_query_loki', { instanceId: 'known', datasourceUid: 'ds1', expr: '{job="api"}' }],
@@ -378,6 +380,26 @@ describe('GrafanaAgentToolService', () => {
       const result = await service.invoke('grafana_get_alert_history', { instanceId: 'instance-1', uid: 'r1' });
 
       expect(result).toEqual({ ok: true, result: history });
+    });
+
+    it('grafana_list_annotations forwards dashboardUid as dashboardUID via listAnnotations', async () => {
+      const listAnnotations = vi.fn(async () => [{ id: 1, time: 1, text: 'deploy', tags: ['r'] }]);
+      const { service } = await makeService({ client: fakeClient({ listAnnotations }) });
+
+      await service.invoke('grafana_list_annotations', {
+        instanceId: 'instance-1',
+        dashboardUid: 'dash-1',
+        tag: 'r',
+        limit: 50
+      });
+
+      expect(listAnnotations).toHaveBeenCalledWith({
+        from: undefined,
+        to: undefined,
+        dashboardUid: 'dash-1',
+        tag: 'r',
+        limit: 50
+      });
     });
   });
 

@@ -6,6 +6,7 @@ import {
   grafanaListAlertRulesSchema,
   grafanaListDashboardsSchema,
   grafanaListDatasourcesSchema,
+  grafanaListAnnotationsSchema,
   grafanaListFoldersSchema,
   grafanaListInstancesSchema,
   grafanaQueryDatasourceSchema,
@@ -337,6 +338,43 @@ describe('grafanaListLokiLabelNamesSchema', () => {
         end: '1700003600'
       }).success
     ).toBe(true);
+  });
+});
+
+describe('grafanaListAnnotationsSchema', () => {
+  it('accepts instanceId alone and defaults limit to 100', () => {
+    const parsed = grafanaListAnnotationsSchema.safeParse({ instanceId: 'abc' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.limit).toBe(100);
+    }
+  });
+
+  it('accepts optional from, to, dashboardUid, tag, and limit', () => {
+    expect(
+      grafanaListAnnotationsSchema.safeParse({
+        instanceId: 'abc',
+        from: 1700000000000,
+        to: 1700003600000,
+        dashboardUid: 'dash-1',
+        tag: 'release',
+        limit: 50
+      }).success
+    ).toBe(true);
+  });
+
+  it('rejects limit 0 and limit 101', () => {
+    expect(grafanaListAnnotationsSchema.safeParse({ instanceId: 'abc', limit: 0 }).success).toBe(false);
+    expect(grafanaListAnnotationsSchema.safeParse({ instanceId: 'abc', limit: 101 }).success).toBe(false);
+  });
+
+  it('rejects unexpected extra properties', () => {
+    expect(grafanaListAnnotationsSchema.safeParse({ instanceId: 'abc', extra: true }).success).toBe(false);
+  });
+
+  it('rejects negative from and to', () => {
+    expect(grafanaListAnnotationsSchema.safeParse({ instanceId: 'abc', from: -1 }).success).toBe(false);
+    expect(grafanaListAnnotationsSchema.safeParse({ instanceId: 'abc', to: -1 }).success).toBe(false);
   });
 });
 
