@@ -1,7 +1,7 @@
 # ADR-007: Metric/label discovery, annotations, deeplink, and alert-state filters
 
 ## Status
-Proposed
+Accepted
 
 ## Date
 2026-08-20
