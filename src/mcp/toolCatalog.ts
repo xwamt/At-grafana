@@ -99,8 +99,8 @@ export const AT_GRAFANA_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'grafana_list_alert_rules',
     title: 'List Grafana alert rules',
     description:
-      `List every Unified Alerting rule on a Grafana instance with its current state (firing/pending/normal/` +
-      `unknown).${MANAGEMENT_FAMILY_SUFFIX}`,
+      `List Unified Alerting rules on a Grafana instance with current state (firing/pending/normal/unknown). ` +
+      `Optional states filters to those values; omit to list all.${MANAGEMENT_FAMILY_SUFFIX}`,
     risk: 'read',
     inputSchema: GRAFANA_LIST_ALERT_RULES_INPUT_SCHEMA
   },

@@ -228,7 +228,9 @@ export class GrafanaAgentToolService {
         case 'grafana_list_folders':
           return await this.withAuthorizedClient(grafanaListFoldersSchema, args, (client) => client.getFolders());
         case 'grafana_list_alert_rules':
-          return await this.withAuthorizedClient(grafanaListAlertRulesSchema, args, (client) => this.listAlertRules(client));
+          return await this.withAuthorizedClient(grafanaListAlertRulesSchema, args, (client, parsed) =>
+            this.listAlertRules(client, parsed)
+          );
         case 'grafana_get_alert_rule':
           return await this.withAuthorizedClient(grafanaGetAlertRuleSchema, args, (client, parsed) =>
             this.getAlertRule(client, parsed.uid)
@@ -439,10 +441,13 @@ export class GrafanaAgentToolService {
     }));
   }
 
-  private async listAlertRules(client: GrafanaApiClientLike): Promise<unknown> {
+  private async listAlertRules(
+    client: GrafanaApiClientLike,
+    parsed: { states?: Array<'firing' | 'pending' | 'normal' | 'unknown'> }
+  ): Promise<unknown> {
     const [rules, states] = await Promise.all([client.listAlertRules(), client.listAlertRuleStates()]);
     const stateIndex = buildAlertStateIndex(states);
-    return rules.map((rule) => {
+    const mapped = rules.map((rule) => {
       const correlated = correlateAlertState(rule.uid, stateIndex);
       return {
         uid: rule.uid,
@@ -454,6 +459,11 @@ export class GrafanaAgentToolService {
         activeAt: correlated.activeAt
       };
     });
+    if (parsed.states === undefined) {
+      return mapped;
+    }
+    const allowed = new Set(parsed.states);
+    return mapped.filter((rule) => allowed.has(rule.state));
   }
 
   private async getAlertRule(client: GrafanaApiClientLike, uid: string): Promise<unknown> {

@@ -43,7 +43,12 @@ export const grafanaGetDashboardSchema = z
 
 export const grafanaListFoldersSchema = z.object({ instanceId: z.string().min(1) }).strict();
 
-export const grafanaListAlertRulesSchema = z.object({ instanceId: z.string().min(1) }).strict();
+export const grafanaListAlertRulesSchema = z
+  .object({
+    instanceId: z.string().min(1),
+    states: z.array(z.enum(['firing', 'pending', 'normal', 'unknown'])).min(1).optional()
+  })
+  .strict();
 
 export const grafanaGetAlertRuleSchema = z
   .object({ instanceId: z.string().min(1), uid: z.string().min(1) })
@@ -359,7 +364,20 @@ export const GRAFANA_GET_DASHBOARD_INPUT_SCHEMA: JsonSchemaObject = {
   additionalProperties: false
 };
 export const GRAFANA_LIST_FOLDERS_INPUT_SCHEMA: JsonSchemaObject = instanceIdOnlyInputSchema();
-export const GRAFANA_LIST_ALERT_RULES_INPUT_SCHEMA: JsonSchemaObject = instanceIdOnlyInputSchema();
+export const GRAFANA_LIST_ALERT_RULES_INPUT_SCHEMA: JsonSchemaObject = {
+  type: 'object',
+  properties: {
+    instanceId: { type: 'string', minLength: 1 },
+    states: {
+      type: 'array',
+      minItems: 1,
+      items: { type: 'string', enum: ['firing', 'pending', 'normal', 'unknown'] },
+      description: 'Filter by normalized state after correlation. Omit to return every rule.'
+    }
+  },
+  required: ['instanceId'],
+  additionalProperties: false
+};
 export const GRAFANA_GET_ALERT_RULE_INPUT_SCHEMA: JsonSchemaObject = instanceIdAndUidInputSchema();
 export const GRAFANA_GET_ALERT_HISTORY_INPUT_SCHEMA: JsonSchemaObject = instanceIdAndUidInputSchema();
 export const GRAFANA_LIST_ANNOTATIONS_INPUT_SCHEMA: JsonSchemaObject = {

@@ -356,6 +356,59 @@ describe('GrafanaAgentToolService', () => {
       });
     });
 
+    it('grafana_list_alert_rules filters by normalized states after correlation', async () => {
+      const client = fakeClient({
+        listAlertRules: async () => [
+          { uid: 'r1', title: 'A', folderUid: 'f1', ruleGroup: 'g1', condition: 'A', for: '1m' },
+          { uid: 'r2', title: 'B', folderUid: 'f1', ruleGroup: 'g1', condition: 'A', for: '1m' }
+        ],
+        listAlertRuleStates: async () => [
+          { uid: 'r1', name: 'A', state: 'firing', group: 'g1' },
+          { uid: 'r2', name: 'B', state: 'pending', group: 'g1' }
+        ]
+      });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_list_alert_rules', {
+        instanceId: 'instance-1',
+        states: ['firing']
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        result: [{ uid: 'r1', state: 'firing' }]
+      });
+      expect((result as { result: unknown[] }).result).toHaveLength(1);
+    });
+
+    it('grafana_list_alert_rules ORs multiple states and excludes the rest', async () => {
+      const client = fakeClient({
+        listAlertRules: async () => [
+          { uid: 'r1', title: 'A', folderUid: 'f1', ruleGroup: 'g1', condition: 'A', for: '1m' },
+          { uid: 'r2', title: 'B', folderUid: 'f1', ruleGroup: 'g1', condition: 'A', for: '1m' },
+          { uid: 'r3', title: 'C', folderUid: 'f1', ruleGroup: 'g1', condition: 'A', for: '1m' },
+          { uid: 'r4', title: 'D', folderUid: 'f1', ruleGroup: 'g1', condition: 'A', for: '1m' }
+        ],
+        listAlertRuleStates: async () => [
+          { uid: 'r1', name: 'A', state: 'firing', group: 'g1' },
+          { uid: 'r2', name: 'B', state: 'pending', group: 'g1' },
+          { uid: 'r3', name: 'C', state: 'normal', group: 'g1' }
+        ]
+      });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_list_alert_rules', {
+        instanceId: 'instance-1',
+        states: ['firing', 'pending']
+      });
+
+      expect(result).toMatchObject({ ok: true });
+      expect((result as { result: Array<{ uid: string; state: string }> }).result).toEqual([
+        expect.objectContaining({ uid: 'r1', state: 'firing' }),
+        expect.objectContaining({ uid: 'r2', state: 'pending' })
+      ]);
+    });
+
     it('grafana_get_alert_rule finds the matching rule by uid', async () => {
       const rule = { uid: 'r1', title: 'CPU high', folderUid: 'f1', ruleGroup: 'g1', condition: 'B', for: '5m' };
       const client = fakeClient({ listAlertRules: async () => [rule] });

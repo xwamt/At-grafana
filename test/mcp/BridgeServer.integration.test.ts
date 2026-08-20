@@ -224,6 +224,27 @@ describe('Bridge integration (real GrafanaAgentToolService, no fake toolService)
     });
   });
 
+  it('management family: POST /invoke grafana_list_alert_rules honors states=firing', async () => {
+    const client = fakeClient({
+      listAlertRules: async () => [
+        { uid: 'r1', title: 'A', folderUid: 'f1', ruleGroup: 'g1', condition: 'A', for: '1m' },
+        { uid: 'r2', title: 'B', folderUid: 'f1', ruleGroup: 'g1', condition: 'A', for: '1m' }
+      ],
+      listAlertRuleStates: async () => [
+        { uid: 'r1', name: 'A', state: 'firing', group: 'g1' },
+        { uid: 'r2', name: 'B', state: 'pending', group: 'g1' }
+      ]
+    });
+    const handler = await makeHandler({ client });
+
+    const response = await handler(
+      invokeRequest('grafana_list_alert_rules', { instanceId: 'instance-1', states: ['firing'] })
+    );
+
+    expect(response.status).toBe(200);
+    expect((response.body as { result: Array<{ uid: string }> }).result.map((rule) => rule.uid)).toEqual(['r1']);
+  });
+
   it('management family: POST /invoke grafana_list_annotations returns the fake listAnnotations rows', async () => {
     const rows = [{ id: 1, time: 1700000000000, text: 'deploy', tags: ['release'] }];
     const client = fakeClient({ listAnnotations: async () => rows });

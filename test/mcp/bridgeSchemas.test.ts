@@ -32,7 +32,6 @@ describe('grafanaListInstancesSchema', () => {
 describe('instanceId-only schemas', () => {
   const schemas = {
     grafanaListFoldersSchema,
-    grafanaListAlertRulesSchema,
     grafanaListDatasourcesSchema
   };
 
@@ -59,6 +58,23 @@ describe('instanceId-only schemas', () => {
       });
     });
   }
+});
+
+describe('grafanaListAlertRulesSchema', () => {
+  it('accepts instanceId alone', () => {
+    expect(grafanaListAlertRulesSchema.safeParse({ instanceId: 'abc' }).success).toBe(true);
+  });
+
+  it('accepts a non-empty states array', () => {
+    expect(
+      grafanaListAlertRulesSchema.safeParse({ instanceId: 'abc', states: ['firing', 'pending'] }).success
+    ).toBe(true);
+  });
+
+  it('rejects an empty states array and unknown members', () => {
+    expect(grafanaListAlertRulesSchema.safeParse({ instanceId: 'abc', states: [] }).success).toBe(false);
+    expect(grafanaListAlertRulesSchema.safeParse({ instanceId: 'abc', states: ['silenced'] }).success).toBe(false);
+  });
 });
 
 describe('grafanaListDashboardsSchema', () => {

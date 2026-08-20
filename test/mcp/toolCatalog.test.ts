@@ -24,11 +24,7 @@ const MONITORING_TOOL_NAMES = [
 const EXPECTED_TOOL_NAMES = ['grafana_list_instances', ...MANAGEMENT_TOOL_NAMES, ...MONITORING_TOOL_NAMES];
 
 const INSTANCE_ID_AND_UID_TOOLS = new Set(['grafana_get_alert_rule', 'grafana_get_alert_history']);
-const INSTANCE_ID_ONLY_TOOLS = new Set([
-  'grafana_list_folders',
-  'grafana_list_alert_rules',
-  'grafana_list_datasources'
-]);
+const INSTANCE_ID_ONLY_TOOLS = new Set(['grafana_list_folders', 'grafana_list_datasources']);
 
 describe('toolCatalog', () => {
   it('uses a stable reverse-domain pluginId', () => {
@@ -121,6 +117,22 @@ describe('toolCatalog', () => {
     for (const name of MONITORING_TOOL_NAMES) {
       expect(findTool(name).description.toLowerCase()).toContain('monitoring');
     }
+  });
+
+  it('grafana_list_alert_rules requires instanceId and documents optional states', () => {
+    const tool = findTool('grafana_list_alert_rules');
+    expect(tool.inputSchema.required).toEqual(['instanceId']);
+    expect(tool.inputSchema.additionalProperties).toBe(false);
+    expect(tool.inputSchema.properties).toMatchObject({
+      instanceId: { type: 'string' },
+      states: {
+        type: 'array',
+        minItems: 1,
+        items: { type: 'string', enum: ['firing', 'pending', 'normal', 'unknown'] }
+      }
+    });
+    expect(tool.description.toLowerCase()).toContain('states');
+    expect(tool.description.toLowerCase()).toMatch(/omit/);
   });
 
   it('grafana_list_datasources requires exactly instanceId (instanceId-only shape)', () => {
