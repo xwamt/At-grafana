@@ -30,7 +30,7 @@ By default, a newly added instance is **not** reachable by an Agent through MCP,
 1. Run **AT Grafana: Manage Instances**, select the instance, choose **Edit**.
 2. Enable **Allow background Agent access** and save.
 
-Once enabled, all 9 MCP tools become usable against that instance's `instanceId` at any time — the Agent does not need any dashboard/alert Webview panel open first. Disabling the toggle immediately blocks all further tool calls against that instance, and it stops appearing in `grafana_list_instances`.
+Once enabled, all 11 MCP tools become usable against that instance's `instanceId` at any time — the Agent does not need any dashboard/alert Webview panel open first. Disabling the toggle immediately blocks all further tool calls against that instance, and it stops appearing in `grafana_list_instances`.
 
 ## 3. Browse dashboards and alerts
 
@@ -44,7 +44,9 @@ AT Grafana does not run its own MCP server — it registers with the shared **AT
 
 1. Run **AT Grafana: Install/Repair AT Series MCP Config** from the Command Palette.
 2. This writes (or repairs) a single `AT Series` MCP server entry in your IDE's MCP configuration (Cursor `~/.cursor/mcp.json`, Kiro `~/.kiro/settings/mcp.json`, or a workspace-local Continue config) pointing at the shared Hub bundle. If you have other AT-family plugins installed, they share this same entry — you do not get a second, Grafana-specific MCP server.
-3. Reload/reconnect your MCP client if it doesn't pick up the new config automatically. All 9 `grafana_*` tools should now be listed and pre-approved (no manual per-tool approval needed, since every tool is `risk: read`).
+3. Reload/reconnect your MCP client if it doesn't pick up the new config automatically. All 11 `grafana_*` tools should now be listed and pre-approved (no manual per-tool approval needed, since every tool is `risk: read`).
 4. To remove AT Grafana's participation without touching other plugins' entries, run **AT Grafana: Uninstall AT Series MCP Config**. This does not delete the shared `AT Series` entry itself if other AT-family plugins still need it.
+
+The catalog is discovery (`grafana_list_instances`), six management tools, and four monitoring tools. `grafana_list_dashboards` accepts optional `query` / `tag` / `folderUid`. `grafana_get_dashboard` defaults to `fields: "targets"` (complete model requires `fields: "full"`). Prefer `grafana_query_prometheus` / `grafana_query_loki`; keep `grafana_query_datasource` as a `GET`/`POST` escape hatch with path confinement and `truncated: true` on over-cap responses.
 
 See [`skills/at-grafana-mcp/SKILL.md`](../skills/at-grafana-mcp/SKILL.md) for the Agent-facing guide to using the tool catalog effectively once connected.

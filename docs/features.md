@@ -25,13 +25,13 @@ Clicking a dashboard or alert rule opens the **actual, fully interactive native 
 
 ## MCP tool catalog (for Agents)
 
-Nine tools, all `risk: read` and auto-approved once the AT Series MCP config is installed — no per-tool approval prompts. Two families:
+Eleven tools, all `risk: read` and auto-approved once the AT Series MCP config is installed — no per-tool approval prompts. Three families:
 
-- **Management family** — `grafana_list_dashboards`, `grafana_get_dashboard`, `grafana_list_folders`, `grafana_list_alert_rules`, `grafana_get_alert_rule`, `grafana_get_alert_history`. For an Agent that wants to know *what is configured*: which dashboards/folders exist, what a panel actually queries (`grafana_get_dashboard` with `fields: "targets"` recommended), how an alert rule is defined and how it has fired historically.
-- **Monitoring family** — `grafana_list_datasources`, `grafana_query_datasource`. For an Agent that wants to know *what is actually happening*: the real Prometheus/Loki-style data behind a datasource, queried through Grafana's own proxy API.
-- `grafana_list_instances` (discovery) only ever returns instances with background access enabled, and never a token.
+- **Discovery** — `grafana_list_instances` only ever returns instances with background access enabled, and never a token.
+- **Management family** — `grafana_list_dashboards` (optional `query` / `tag` / `folderUid`), `grafana_get_dashboard`, `grafana_list_folders`, `grafana_list_alert_rules`, `grafana_get_alert_rule`, `grafana_get_alert_history`. For an Agent that wants to know *what is configured*: which dashboards/folders exist, what a panel actually queries (`grafana_get_dashboard` defaults to `fields: "targets"`; pass `fields: "full"` for the complete model), how an alert rule is defined and how it has fired historically.
+- **Monitoring family** — `grafana_list_datasources`, `grafana_query_prometheus`, `grafana_query_loki`, and `grafana_query_datasource` as an escape hatch. Prefer the typed Prometheus/Loki tools. For an Agent that wants to know *what is actually happening*: the real PromQL/LogQL data behind a datasource.
 
-`grafana_query_datasource` only allows `GET`/`POST` (never a mutating method), and confines `path` to `/api/datasources/proxy/uid/<datasourceUid>/` — `..`, `\`, and percent-encoded separators are rejected, and the joined path is re-checked after URL normalization, so the tool cannot be steered into Grafana's own APIs by an Agent acting on attacker-authored input. It also enforces configurable time-range and response-size caps — an over-cap request is truncated with a `truncated: true` marker in the result rather than failing, so an Agent can narrow its query and retry.
+`grafana_query_datasource` is the generic proxy for other datasource types or unusual paths. It only allows `GET`/`POST` (never a mutating method), and confines `path` to `/api/datasources/proxy/uid/<datasourceUid>/` — `..`, `\`, and percent-encoded separators are rejected, and the joined path is re-checked after URL normalization, so the tool cannot be steered into Grafana's own APIs by an Agent acting on attacker-authored input. It also enforces configurable time-range and response-size caps — an over-cap request is truncated with a `truncated: true` marker in the result rather than failing, so an Agent can narrow its query and retry.
 
 ## Hub / IDE integration
 

@@ -183,7 +183,7 @@ AT-Grafana 是 **AT 系列**的新成员（同系列已有 `at-terminal-series` 
 2. 点击任意 dashboard 节点，Webview 内可见与浏览器直接打开该 dashboard 一致的完整交互式页面，且开发者工具网络面板中看不到真实 Grafana token
 3. 点击任意告警规则节点，Webview 内可见原生告警详情页
 4. 未开启「允许 Agent 后台访问」的实例，`grafana_list_instances` 不返回该实例，其余工具对该 `instanceId` 调用返回明确的授权错误
-5. 开启后台访问后，无需打开任何面板，Agent 可直接调用全部 7 个管理类工具 + 3 个监控数据类工具（含类型化 Prom/Loki 与通用代理）
+5. 开启后台访问后，无需打开任何面板，Agent 可直接调用全部 7 个管理类工具（含发现类 `grafana_list_instances`）+ 4 个监控数据类工具（共 11 个）
 6. `grafana_get_dashboard` 缺省 `fields=targets`，可见每个 panel 的查询语句与数据源引用；`fields=full` 才返回完整 model
 7. `grafana_query_datasource` 对超出上限的时间范围/返回体积做截断，响应中包含截断提示
 8. `grafana_query_datasource` 对 `PUT`/`DELETE`/`PATCH` 请求返回 `VALIDATION_ERROR`

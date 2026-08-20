@@ -4,7 +4,7 @@
 
 AT Grafana is a VS Code / Cursor extension in the **AT Series** (alongside `at-terminal-series` and `at-jumpserver-series`). It brings Grafana dashboards and Unified Alerting into the IDE, and exposes read-only Grafana metadata plus datasource queries (Prometheus, Loki, …) to Agents through the shared [`@at-series/mcp-hub`](https://www.npmjs.com/package/@at-series/mcp-hub) Protocol v1.
 
-**Current version: `0.1.0`** — V1 feature-complete. Automated suite: typecheck + **292** tests. Live Grafana / real MCP-client smoke checks are still listed as pending in [`docs/releases/0.1.0.md`](docs/releases/0.1.0.md).
+**Current version: `0.1.0`** — V1 feature-complete. Automated suite: typecheck + **506** tests. Live Grafana / real MCP-client smoke checks are still listed as pending in [`docs/releases/0.1.0.md`](docs/releases/0.1.0.md).
 
 ## Features
 
@@ -14,10 +14,10 @@ AT Grafana is a VS Code / Cursor extension in the **AT Series** (alongside `at-t
 - **Alerts sidebar** — Unified Alerting rules with live state, folder grouping, Firing rules sorted first
 - **Native embedded pages** — fully interactive Grafana dashboard / alert detail UI via a local `127.0.0.1` reverse proxy that injects `Authorization` on the extension side (token never visible to the Webview)
 - **Per-instance Agent gate** — “Allow background Agent access” (default off); only enabled instances appear to MCP tools
-- **9 MCP tools** (`risk: read`, auto-approved after AT Series MCP install):
+- **11 MCP tools** (`risk: read`, auto-approved after AT Series MCP install):
   - Discovery: `grafana_list_instances`
-  - Management: `grafana_list_dashboards`, `grafana_get_dashboard`, `grafana_list_folders`, `grafana_list_alert_rules`, `grafana_get_alert_rule`, `grafana_get_alert_history`
-  - Monitoring: `grafana_list_datasources`, `grafana_query_datasource` (`GET`/`POST` only; `path` confined to `/api/datasources/proxy/uid/<uid>/`, so it cannot reach Grafana's own APIs; configurable time-range / response-size caps)
+  - Management: `grafana_list_dashboards` (optional `query` / `tag` / `folderUid`), `grafana_get_dashboard` (defaults to `fields: "targets"`; complete model requires `fields: "full"`), `grafana_list_folders`, `grafana_list_alert_rules`, `grafana_get_alert_rule`, `grafana_get_alert_history`
+  - Monitoring: `grafana_list_datasources`, `grafana_query_prometheus`, `grafana_query_loki`, and `grafana_query_datasource` as an escape hatch. Prefer the typed Prom/Loki tools; the generic proxy is `GET`/`POST` only, with `path` confined to `/api/datasources/proxy/uid/<uid>/` so it cannot reach Grafana's own APIs; over-cap results include `truncated: true`
 - **Shared AT Series Hub** — one `AT Series` MCP entry for Cursor / Kiro / Continue; no plugin-specific MCP server
 
 ## Not in this release

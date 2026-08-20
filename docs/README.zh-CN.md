@@ -4,7 +4,7 @@
 
 AT Grafana 是 **AT 系列** VS Code / Cursor 扩展的一员（同系列还有 `at-terminal-series`、`at-jumpserver-series`）。它把 Grafana 的 dashboard 与 Unified Alerting 原生集成到 IDE，并通过共享的 [`@at-series/mcp-hub`](https://www.npmjs.com/package/@at-series/mcp-hub) Protocol v1，把只读的 Grafana 配置元数据以及数据源查询（Prometheus、Loki 等）提供给 Agent。
 
-**当前版本：`0.1.0`** —— V1 功能已齐。自动化验证：typecheck + **292** 项测试。针对真实 Grafana / 真实 MCP 客户端的冒烟项仍见 [`releases/0.1.0.md`](releases/0.1.0.md)。
+**当前版本：`0.1.0`** —— V1 功能已齐。自动化验证：typecheck + **506** 项测试。针对真实 Grafana / 真实 MCP 客户端的冒烟项仍见 [`releases/0.1.0.md`](releases/0.1.0.md)。
 
 ## 功能
 
@@ -14,10 +14,10 @@ AT Grafana 是 **AT 系列** VS Code / Cursor 扩展的一员（同系列还有 
 - **Alerts 侧边栏** — Unified Alerting 规则与实时状态，按文件夹分组，Firing 置顶
 - **原生嵌入页面** — 通过仅绑定 `127.0.0.1` 的本地反向代理注入 `Authorization`，在 Webview 中打开可交互的原生 Grafana dashboard / 告警详情（Token 不会出现在 Webview 网络层）
 - **按实例的 Agent 开关** — 「允许 Agent 后台访问」（默认关）；仅开启的实例对 MCP 工具可见
-- **9 个 MCP 工具**（全部 `risk: read`，安装 AT Series MCP 配置后自动批准）：
+- **11 个 MCP 工具**（全部 `risk: read`，安装 AT Series MCP 配置后自动批准）：
   - 发现：`grafana_list_instances`
-  - 管理：`grafana_list_dashboards`、`grafana_get_dashboard`、`grafana_list_folders`、`grafana_list_alert_rules`、`grafana_get_alert_rule`、`grafana_get_alert_history`
-  - 监控：`grafana_list_datasources`、`grafana_query_datasource`（仅 `GET`/`POST`；`path` 被限制在 `/api/datasources/proxy/uid/<uid>/` 之内，无法触达 Grafana 自身 API；可配置时间范围 / 响应体积上限）
+  - 管理：`grafana_list_dashboards`（可选 `query` / `tag` / `folderUid`）、`grafana_get_dashboard`（缺省 `fields: "targets"`；完整 model 需传 `fields: "full"`）、`grafana_list_folders`、`grafana_list_alert_rules`、`grafana_get_alert_rule`、`grafana_get_alert_history`
+  - 监控：`grafana_list_datasources`、`grafana_query_prometheus`、`grafana_query_loki`，以及作为兜底的 `grafana_query_datasource`。优先用类型化 Prom/Loki 工具；通用代理仅 `GET`/`POST`，`path` 被限制在 `/api/datasources/proxy/uid/<uid>/` 之内，无法触达 Grafana 自身 API；超限结果带 `truncated: true`
 - **共享 AT Series Hub** — Cursor / Kiro / Continue 共用一条 `AT Series` MCP 入口，不单独再建插件专属 MCP server
 
 ## 当前版本不包含
