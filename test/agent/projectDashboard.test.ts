@@ -70,9 +70,20 @@ function sampleDashboard(): GrafanaDashboard {
 }
 
 describe('projectDashboard', () => {
-  it('defaults to full and returns the dashboard unchanged', () => {
+  it('defaults to targets and strips UI chrome', () => {
     const dashboard = sampleDashboard();
-    expect(projectDashboard(dashboard, {})).toBe(dashboard);
+    const result = projectDashboard(dashboard, {});
+    const cpu = (result.model.panels as Array<Record<string, unknown>>)[0];
+    expect(cpu.targets).toEqual([
+      { refId: 'A', expr: 'rate(cpu[5m])', datasource: { type: 'prometheus', uid: 'prom-1' } }
+    ]);
+    expect(cpu.fieldConfig).toBeUndefined();
+    expect(cpu.gridPos).toBeUndefined();
+    expect(result).not.toBe(dashboard);
+  });
+
+  it('returns the dashboard unchanged when fields is full', () => {
+    const dashboard = sampleDashboard();
     expect(projectDashboard(dashboard, { fields: 'full' })).toBe(dashboard);
   });
 

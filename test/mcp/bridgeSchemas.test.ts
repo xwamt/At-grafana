@@ -82,7 +82,7 @@ describe('instanceId + uid schemas', () => {
 });
 
 describe('grafanaGetDashboardSchema', () => {
-  it('accepts instanceId and uid alone (fields defaults to full at projection time)', () => {
+  it('accepts instanceId and uid alone (fields defaults to targets at projection time)', () => {
     expect(grafanaGetDashboardSchema.safeParse({ instanceId: 'abc', uid: 'dash-1' }).success).toBe(true);
   });
 

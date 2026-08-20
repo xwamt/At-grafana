@@ -11,13 +11,13 @@ export interface ProjectDashboardOptions {
 
 /**
  * Projects a full Grafana dashboard (already fetched) before returning it from
- * `grafana_get_dashboard`. Default `fields: "full"` preserves the legacy shape.
+ * `grafana_get_dashboard`. Default `fields: "targets"` (ADR-006).
  */
 export function projectDashboard(
   dashboard: GrafanaDashboard,
   options: ProjectDashboardOptions = {}
 ): GrafanaDashboard {
-  const fields = options.fields ?? 'full';
+  const fields = options.fields ?? 'targets';
   if (fields === 'full') {
     return dashboard;
   }

@@ -175,12 +175,69 @@ describe('GrafanaAgentToolService', () => {
       });
     });
 
-    it('grafana_get_dashboard returns the full dashboard model', async () => {
-      const dashboard = { uid: 'd1', title: 'CPU', model: { panels: [{ targets: [{ expr: 'up' }] }] } };
-      const client = fakeClient({ getDashboardByUid: async (uid: string) => (uid === 'd1' ? (dashboard as never) : (undefined as never)) });
+    it('grafana_get_dashboard defaults to fields=targets', async () => {
+      const dashboard = {
+        uid: 'd1',
+        title: 'CPU',
+        model: {
+          uid: 'd1',
+          title: 'CPU',
+          panels: [
+            {
+              id: 1,
+              title: 'Up',
+              type: 'timeseries',
+              datasource: { uid: 'prom' },
+              targets: [{ refId: 'A', expr: 'up', datasource: { uid: 'prom' } }],
+              fieldConfig: { defaults: {} },
+              gridPos: { h: 8, w: 12, x: 0, y: 0 }
+            }
+          ]
+        }
+      };
+      const client = fakeClient({ getDashboardByUid: async () => dashboard as never });
       const { service } = await makeService({ client });
 
       const result = await service.invoke('grafana_get_dashboard', { instanceId: 'instance-1', uid: 'd1' });
+
+      expect(result).toMatchObject({
+        ok: true,
+        result: {
+          uid: 'd1',
+          title: 'CPU',
+          model: {
+            uid: 'd1',
+            title: 'CPU',
+            panels: [
+              {
+                id: 1,
+                title: 'Up',
+                type: 'timeseries',
+                datasource: { uid: 'prom' },
+                targets: [{ refId: 'A', expr: 'up', datasource: { uid: 'prom' } }]
+              }
+            ]
+          }
+        }
+      });
+      const panels = (result as { ok: true; result: { model: { panels: Array<Record<string, unknown>> } } }).result.model
+        .panels;
+      expect(panels[0].fieldConfig).toBeUndefined();
+      expect(panels[0].gridPos).toBeUndefined();
+    });
+
+    it('grafana_get_dashboard returns the full dashboard model when fields is full', async () => {
+      const dashboard = { uid: 'd1', title: 'CPU', model: { panels: [{ targets: [{ expr: 'up' }] }] } };
+      const client = fakeClient({
+        getDashboardByUid: async (uid: string) => (uid === 'd1' ? (dashboard as never) : (undefined as never))
+      });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_get_dashboard', {
+        instanceId: 'instance-1',
+        uid: 'd1',
+        fields: 'full'
+      });
 
       expect(result).toEqual({ ok: true, result: dashboard });
     });

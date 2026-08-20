@@ -154,7 +154,9 @@ describe('Bridge integration (real GrafanaAgentToolService, no fake toolService)
     });
     const handler = await makeHandler({ client });
 
-    const response = await handler(invokeRequest('grafana_get_dashboard', { instanceId: 'instance-1', uid: 'd1' }));
+    const response = await handler(
+      invokeRequest('grafana_get_dashboard', { instanceId: 'instance-1', uid: 'd1', fields: 'full' })
+    );
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ ok: true, name: 'grafana_get_dashboard', result: dashboard });
