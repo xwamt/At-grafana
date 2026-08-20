@@ -18,6 +18,13 @@ import {
   type EffectiveQueryLimits
 } from '../grafana/QueryLimits';
 import { QueryRateLimiter, QueryThrottledError } from '../grafana/QueryRateLimiter';
+import {
+  buildLokiLabelNamesCall,
+  buildLokiLabelValuesCall,
+  buildPrometheusLabelValuesCall,
+  buildPrometheusMetricNamesCall,
+  projectDiscoveryValues
+} from '../grafana/typedDatasourceDiscovery';
 import { buildLokiProxyCall, buildPrometheusProxyCall } from '../grafana/typedDatasourceQueries';
 import { formatError } from '../utils/errors';
 import type { AtGrafanaLog } from '../utils/logger';
@@ -31,6 +38,10 @@ import {
   grafanaListDatasourcesSchema,
   grafanaListFoldersSchema,
   grafanaListInstancesSchema,
+  grafanaListLokiLabelNamesSchema,
+  grafanaListLokiLabelValuesSchema,
+  grafanaListPrometheusLabelValuesSchema,
+  grafanaListPrometheusMetricNamesSchema,
   grafanaQueryDatasourceSchema,
   grafanaQueryLokiSchema,
   grafanaQueryPrometheusSchema,
@@ -240,6 +251,54 @@ export class GrafanaAgentToolService {
               query: proxy.query
             });
           });
+        case 'grafana_list_prometheus_metric_names':
+          return await this.withAuthorizedClient(grafanaListPrometheusMetricNamesSchema, args, async (client, parsed) => {
+            const proxy = buildPrometheusMetricNamesCall(parsed);
+            const result = await this.queryDatasource(client, {
+              instanceId: parsed.instanceId,
+              datasourceUid: parsed.datasourceUid,
+              method: proxy.method,
+              path: proxy.path,
+              query: proxy.query
+            });
+            return this.projectProxyDiscovery(result, parsed.regex);
+          });
+        case 'grafana_list_prometheus_label_values':
+          return await this.withAuthorizedClient(grafanaListPrometheusLabelValuesSchema, args, async (client, parsed) => {
+            const proxy = buildPrometheusLabelValuesCall(parsed);
+            const result = await this.queryDatasource(client, {
+              instanceId: parsed.instanceId,
+              datasourceUid: parsed.datasourceUid,
+              method: proxy.method,
+              path: proxy.path,
+              query: proxy.query
+            });
+            return this.projectProxyDiscovery(result, parsed.regex);
+          });
+        case 'grafana_list_loki_label_names':
+          return await this.withAuthorizedClient(grafanaListLokiLabelNamesSchema, args, async (client, parsed) => {
+            const proxy = buildLokiLabelNamesCall(parsed);
+            const result = await this.queryDatasource(client, {
+              instanceId: parsed.instanceId,
+              datasourceUid: parsed.datasourceUid,
+              method: proxy.method,
+              path: proxy.path,
+              query: proxy.query
+            });
+            return this.projectProxyDiscovery(result, parsed.regex);
+          });
+        case 'grafana_list_loki_label_values':
+          return await this.withAuthorizedClient(grafanaListLokiLabelValuesSchema, args, async (client, parsed) => {
+            const proxy = buildLokiLabelValuesCall(parsed);
+            const result = await this.queryDatasource(client, {
+              instanceId: parsed.instanceId,
+              datasourceUid: parsed.datasourceUid,
+              method: proxy.method,
+              path: proxy.path,
+              query: proxy.query
+            });
+            return this.projectProxyDiscovery(result, parsed.regex);
+          });
         default:
           return { ok: false, code: 'NOT_FOUND', message: `Unknown AT Grafana tool: ${name}` };
       }
@@ -402,6 +461,18 @@ export class GrafanaAgentToolService {
    * Whether a tool may be called at all remains `allowBackgroundAccess`'s
    * decision, made before this method is reached.
    */
+  private projectProxyDiscovery(result: unknown, regex?: string): unknown {
+    if (
+      typeof result === 'object' &&
+      result !== null &&
+      'truncated' in result &&
+      (result as { truncated?: unknown }).truncated === true
+    ) {
+      return result;
+    }
+    return projectDiscoveryValues(result, regex);
+  }
+
   private async queryDatasource(client: GrafanaApiClientLike, parsed: GrafanaQueryDatasourceInput): Promise<unknown> {
     const limits = this.effectiveQueryLimits();
     const decision = this.queryRateLimiter.tryAcquire(parsed.instanceId);

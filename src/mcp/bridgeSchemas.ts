@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { JsonSchemaObject } from '@at-series/mcp-hub';
 import { DATASOURCE_PROXY_PATH_DENY_PATTERN } from '../grafana/GrafanaDatasourcesApi';
+import { PROMETHEUS_LABEL_PATTERN } from '../grafana/typedDatasourceDiscovery';
 
 /**
  * Server-side input validation for every AT Grafana MCP tool (Task 5.1,
@@ -122,6 +123,67 @@ export const grafanaQueryLokiSchema = z
   })
   .strict();
 
+const optionalRegexSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (value) => {
+      try {
+        new RegExp(value);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    { message: 'must be a valid JavaScript regular expression' }
+  )
+  .optional();
+
+const prometheusLabelSchema = z.string().regex(PROMETHEUS_LABEL_PATTERN);
+
+export const grafanaListPrometheusMetricNamesSchema = z
+  .object({
+    instanceId: z.string().min(1),
+    datasourceUid: z.string().min(1),
+    regex: optionalRegexSchema,
+    start: z.string().min(1).optional(),
+    end: z.string().min(1).optional()
+  })
+  .strict();
+
+export const grafanaListPrometheusLabelValuesSchema = z
+  .object({
+    instanceId: z.string().min(1),
+    datasourceUid: z.string().min(1),
+    label: prometheusLabelSchema,
+    matcher: z.string().min(1).optional(),
+    regex: optionalRegexSchema,
+    start: z.string().min(1).optional(),
+    end: z.string().min(1).optional()
+  })
+  .strict();
+
+export const grafanaListLokiLabelNamesSchema = z
+  .object({
+    instanceId: z.string().min(1),
+    datasourceUid: z.string().min(1),
+    regex: optionalRegexSchema,
+    start: z.string().min(1).optional(),
+    end: z.string().min(1).optional()
+  })
+  .strict();
+
+export const grafanaListLokiLabelValuesSchema = z
+  .object({
+    instanceId: z.string().min(1),
+    datasourceUid: z.string().min(1),
+    label: prometheusLabelSchema,
+    regex: optionalRegexSchema,
+    start: z.string().min(1).optional(),
+    end: z.string().min(1).optional()
+  })
+  .strict();
+
 export type GrafanaListInstancesInput = z.infer<typeof grafanaListInstancesSchema>;
 export type GrafanaListDashboardsInput = z.infer<typeof grafanaListDashboardsSchema>;
 export type GrafanaGetDashboardInput = z.infer<typeof grafanaGetDashboardSchema>;
@@ -133,6 +195,10 @@ export type GrafanaListDatasourcesInput = z.infer<typeof grafanaListDatasourcesS
 export type GrafanaQueryDatasourceInput = z.infer<typeof grafanaQueryDatasourceSchema>;
 export type GrafanaQueryPrometheusInput = z.infer<typeof grafanaQueryPrometheusSchema>;
 export type GrafanaQueryLokiInput = z.infer<typeof grafanaQueryLokiSchema>;
+export type GrafanaListPrometheusMetricNamesInput = z.infer<typeof grafanaListPrometheusMetricNamesSchema>;
+export type GrafanaListPrometheusLabelValuesInput = z.infer<typeof grafanaListPrometheusLabelValuesSchema>;
+export type GrafanaListLokiLabelNamesInput = z.infer<typeof grafanaListLokiLabelNamesSchema>;
+export type GrafanaListLokiLabelValuesInput = z.infer<typeof grafanaListLokiLabelValuesSchema>;
 
 /** The Grafana management family (Task 5.1) -- see AT_GRAFANA_MONITORING_TOOL_NAMES for the Phase 6 monitoring-data family. */
 export const AT_GRAFANA_MANAGEMENT_TOOL_NAMES = [
@@ -152,6 +218,10 @@ export const AT_GRAFANA_MONITORING_TOOL_NAMES = [
   'grafana_list_datasources',
   'grafana_query_prometheus',
   'grafana_query_loki',
+  'grafana_list_prometheus_metric_names',
+  'grafana_list_prometheus_label_values',
+  'grafana_list_loki_label_names',
+  'grafana_list_loki_label_values',
   'grafana_query_datasource'
 ] as const;
 
@@ -177,6 +247,10 @@ export const BRIDGE_SCHEMAS_BY_TOOL_NAME: Record<AtGrafanaToolName, z.ZodTypeAny
   grafana_list_datasources: grafanaListDatasourcesSchema,
   grafana_query_prometheus: grafanaQueryPrometheusSchema,
   grafana_query_loki: grafanaQueryLokiSchema,
+  grafana_list_prometheus_metric_names: grafanaListPrometheusMetricNamesSchema,
+  grafana_list_prometheus_label_values: grafanaListPrometheusLabelValuesSchema,
+  grafana_list_loki_label_names: grafanaListLokiLabelNamesSchema,
+  grafana_list_loki_label_values: grafanaListLokiLabelValuesSchema,
   grafana_query_datasource: grafanaQueryDatasourceSchema
 };
 
@@ -303,5 +377,68 @@ export const GRAFANA_QUERY_LOKI_INPUT_SCHEMA: JsonSchemaObject = {
     direction: { type: 'string', enum: ['forward', 'backward'] }
   },
   required: ['instanceId', 'datasourceUid', 'expr'],
+  additionalProperties: false
+};
+
+const PROMETHEUS_LABEL_JSON_SCHEMA_PATTERN = '^[a-zA-Z_][a-zA-Z0-9_]*$';
+
+const discoveryTimeAndRegexProperties = {
+  regex: { type: 'string' as const, minLength: 1, description: 'Optional JavaScript regular expression used to filter returned values.' },
+  start: { type: 'string' as const, minLength: 1 },
+  end: { type: 'string' as const, minLength: 1 }
+};
+
+export const GRAFANA_LIST_PROMETHEUS_METRIC_NAMES_INPUT_SCHEMA: JsonSchemaObject = {
+  type: 'object',
+  properties: {
+    instanceId: { type: 'string', minLength: 1 },
+    datasourceUid: { type: 'string', minLength: 1 },
+    ...discoveryTimeAndRegexProperties
+  },
+  required: ['instanceId', 'datasourceUid'],
+  additionalProperties: false
+};
+
+export const GRAFANA_LIST_PROMETHEUS_LABEL_VALUES_INPUT_SCHEMA: JsonSchemaObject = {
+  type: 'object',
+  properties: {
+    instanceId: { type: 'string', minLength: 1 },
+    datasourceUid: { type: 'string', minLength: 1 },
+    label: {
+      type: 'string',
+      pattern: PROMETHEUS_LABEL_JSON_SCHEMA_PATTERN,
+      description: 'Prometheus label name whose values to list.'
+    },
+    matcher: { type: 'string', minLength: 1, description: 'Optional PromQL series selector forwarded as match[].' },
+    ...discoveryTimeAndRegexProperties
+  },
+  required: ['instanceId', 'datasourceUid', 'label'],
+  additionalProperties: false
+};
+
+export const GRAFANA_LIST_LOKI_LABEL_NAMES_INPUT_SCHEMA: JsonSchemaObject = {
+  type: 'object',
+  properties: {
+    instanceId: { type: 'string', minLength: 1 },
+    datasourceUid: { type: 'string', minLength: 1 },
+    ...discoveryTimeAndRegexProperties
+  },
+  required: ['instanceId', 'datasourceUid'],
+  additionalProperties: false
+};
+
+export const GRAFANA_LIST_LOKI_LABEL_VALUES_INPUT_SCHEMA: JsonSchemaObject = {
+  type: 'object',
+  properties: {
+    instanceId: { type: 'string', minLength: 1 },
+    datasourceUid: { type: 'string', minLength: 1 },
+    label: {
+      type: 'string',
+      pattern: PROMETHEUS_LABEL_JSON_SCHEMA_PATTERN,
+      description: 'Loki label name whose values to list.'
+    },
+    ...discoveryTimeAndRegexProperties
+  },
+  required: ['instanceId', 'datasourceUid', 'label'],
   additionalProperties: false
 };

@@ -8,6 +8,10 @@ import {
   GRAFANA_LIST_DATASOURCES_INPUT_SCHEMA,
   GRAFANA_LIST_FOLDERS_INPUT_SCHEMA,
   GRAFANA_LIST_INSTANCES_INPUT_SCHEMA,
+  GRAFANA_LIST_LOKI_LABEL_NAMES_INPUT_SCHEMA,
+  GRAFANA_LIST_LOKI_LABEL_VALUES_INPUT_SCHEMA,
+  GRAFANA_LIST_PROMETHEUS_LABEL_VALUES_INPUT_SCHEMA,
+  GRAFANA_LIST_PROMETHEUS_METRIC_NAMES_INPUT_SCHEMA,
   GRAFANA_QUERY_DATASOURCE_INPUT_SCHEMA,
   GRAFANA_QUERY_LOKI_INPUT_SCHEMA,
   GRAFANA_QUERY_PROMETHEUS_INPUT_SCHEMA
@@ -142,6 +146,48 @@ export const AT_GRAFANA_TOOL_CATALOG: ToolCatalogEntry[] = [
       MONITORING_FAMILY_SUFFIX,
     risk: 'read',
     inputSchema: GRAFANA_QUERY_LOKI_INPUT_SCHEMA
+  },
+  {
+    name: 'grafana_list_prometheus_metric_names',
+    title: 'List Prometheus metric names',
+    description:
+      'Discover Prometheus metric names (PromQL discovery) through Grafana\'s datasource proxy. Optional regex filters ' +
+      'names before they reach the model. Results are capped at 200; over-cap lists include truncated: true so you can ' +
+      'tighten the regex rather than dump an unbounded catalog. ' +
+      MONITORING_FAMILY_SUFFIX,
+    risk: 'read',
+    inputSchema: GRAFANA_LIST_PROMETHEUS_METRIC_NAMES_INPUT_SCHEMA
+  },
+  {
+    name: 'grafana_list_prometheus_label_values',
+    title: 'List Prometheus label values',
+    description:
+      'Discover Prometheus label values (PromQL discovery) for one label through Grafana\'s datasource proxy. Optional ' +
+      'matcher is forwarded as match[]; optional regex filters values. Results are capped at 200 with truncated: true ' +
+      'when the cap is hit. ' +
+      MONITORING_FAMILY_SUFFIX,
+    risk: 'read',
+    inputSchema: GRAFANA_LIST_PROMETHEUS_LABEL_VALUES_INPUT_SCHEMA
+  },
+  {
+    name: 'grafana_list_loki_label_names',
+    title: 'List Loki label names',
+    description:
+      'Discover Loki label names (LogQL discovery) through Grafana\'s datasource proxy. Optional regex filters names ' +
+      'before they reach the model. Results are capped at 200; over-cap lists include truncated: true. ' +
+      MONITORING_FAMILY_SUFFIX,
+    risk: 'read',
+    inputSchema: GRAFANA_LIST_LOKI_LABEL_NAMES_INPUT_SCHEMA
+  },
+  {
+    name: 'grafana_list_loki_label_values',
+    title: 'List Loki label values',
+    description:
+      'Discover Loki label values (LogQL discovery) for one label through Grafana\'s datasource proxy. Optional regex ' +
+      'filters values. Results are capped at 200 with truncated: true when the cap is hit. ' +
+      MONITORING_FAMILY_SUFFIX,
+    risk: 'read',
+    inputSchema: GRAFANA_LIST_LOKI_LABEL_VALUES_INPUT_SCHEMA
   },
   {
     name: 'grafana_query_datasource',

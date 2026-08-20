@@ -10,7 +10,11 @@ import {
   grafanaListInstancesSchema,
   grafanaQueryDatasourceSchema,
   grafanaQueryLokiSchema,
-  grafanaQueryPrometheusSchema
+  grafanaQueryPrometheusSchema,
+  grafanaListPrometheusMetricNamesSchema,
+  grafanaListPrometheusLabelValuesSchema,
+  grafanaListLokiLabelNamesSchema,
+  grafanaListLokiLabelValuesSchema
 } from '../../src/mcp/bridgeSchemas';
 
 describe('grafanaListInstancesSchema', () => {
@@ -270,6 +274,89 @@ describe('grafanaQueryLokiSchema', () => {
         datasourceUid: 'loki',
         expr: '{job="api"}',
         limit: 0
+      }).success
+    ).toBe(false);
+  });
+});
+
+describe('grafanaListPrometheusMetricNamesSchema', () => {
+  it('accepts instanceId and datasourceUid', () => {
+    expect(
+      grafanaListPrometheusMetricNamesSchema.safeParse({ instanceId: 'abc', datasourceUid: 'prom' }).success
+    ).toBe(true);
+  });
+
+  it('rejects an invalid regex', () => {
+    expect(
+      grafanaListPrometheusMetricNamesSchema.safeParse({
+        instanceId: 'abc',
+        datasourceUid: 'prom',
+        regex: '('
+      }).success
+    ).toBe(false);
+  });
+});
+
+describe('grafanaListPrometheusLabelValuesSchema', () => {
+  it('rejects a path-like label', () => {
+    expect(
+      grafanaListPrometheusLabelValuesSchema.safeParse({
+        instanceId: 'abc',
+        datasourceUid: 'prom',
+        label: 'job/name'
+      }).success
+    ).toBe(false);
+  });
+
+  it('accepts job and matcher', () => {
+    expect(
+      grafanaListPrometheusLabelValuesSchema.safeParse({
+        instanceId: 'abc',
+        datasourceUid: 'prom',
+        label: 'job',
+        matcher: '{__name__="up"}'
+      }).success
+    ).toBe(true);
+  });
+});
+
+describe('grafanaListLokiLabelNamesSchema', () => {
+  it('accepts instanceId and datasourceUid', () => {
+    expect(
+      grafanaListLokiLabelNamesSchema.safeParse({ instanceId: 'abc', datasourceUid: 'loki' }).success
+    ).toBe(true);
+  });
+
+  it('accepts optional regex, start, and end', () => {
+    expect(
+      grafanaListLokiLabelNamesSchema.safeParse({
+        instanceId: 'abc',
+        datasourceUid: 'loki',
+        regex: '^job',
+        start: '1700000000',
+        end: '1700003600'
+      }).success
+    ).toBe(true);
+  });
+});
+
+describe('grafanaListLokiLabelValuesSchema', () => {
+  it('accepts instanceId, datasourceUid, and a valid label', () => {
+    expect(
+      grafanaListLokiLabelValuesSchema.safeParse({
+        instanceId: 'abc',
+        datasourceUid: 'loki',
+        label: 'job'
+      }).success
+    ).toBe(true);
+  });
+
+  it('rejects a path-like label', () => {
+    expect(
+      grafanaListLokiLabelValuesSchema.safeParse({
+        instanceId: 'abc',
+        datasourceUid: 'loki',
+        label: 'job/name'
       }).success
     ).toBe(false);
   });

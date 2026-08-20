@@ -136,6 +136,10 @@ describe('GrafanaAgentToolService', () => {
         ['grafana_list_datasources', { instanceId: 'known' }],
         ['grafana_query_prometheus', { instanceId: 'known', datasourceUid: 'ds1', expr: 'up' }],
         ['grafana_query_loki', { instanceId: 'known', datasourceUid: 'ds1', expr: '{job="api"}' }],
+        ['grafana_list_prometheus_metric_names', { instanceId: 'known', datasourceUid: 'ds1' }],
+        ['grafana_list_prometheus_label_values', { instanceId: 'known', datasourceUid: 'ds1', label: 'job' }],
+        ['grafana_list_loki_label_names', { instanceId: 'known', datasourceUid: 'ds1' }],
+        ['grafana_list_loki_label_values', { instanceId: 'known', datasourceUid: 'ds1', label: 'job' }],
         ['grafana_query_datasource', { instanceId: 'known', datasourceUid: 'ds1', method: 'GET', path: 'api/v1/query' }]
       ];
 
@@ -511,6 +515,111 @@ describe('GrafanaAgentToolService', () => {
       expect(Number.isNaN(end)).toBe(false);
       expect(end - start).toBe(DEFAULT_MAX_RANGE_MS);
       expect(result).not.toMatchObject({ result: { truncated: true, reason: 'time-range' } });
+    });
+
+    it('grafana_list_prometheus_metric_names forwards GET api/v1/label/__name__/values and projects values', async () => {
+      const proxyDatasourceRequest = vi.fn(async () => ({ status: 'success', data: ['up', 'go_goroutines'] }));
+      const client = fakeClient({ proxyDatasourceRequest });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_list_prometheus_metric_names', {
+        instanceId: 'instance-1',
+        datasourceUid: 'prom',
+        regex: '^go_'
+      });
+
+      expect(result).toEqual({ ok: true, result: { values: ['go_goroutines'] } });
+      expect(proxyDatasourceRequest).toHaveBeenCalledWith(
+        'prom',
+        'GET',
+        'api/v1/label/__name__/values',
+        expect.any(Object),
+        undefined,
+        expect.any(Number)
+      );
+    });
+
+    it('grafana_list_prometheus_label_values forwards GET api/v1/label/<label>/values with match[]', async () => {
+      const proxyDatasourceRequest = vi.fn(async () => ({ status: 'success', data: ['api', 'web'] }));
+      const client = fakeClient({ proxyDatasourceRequest });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_list_prometheus_label_values', {
+        instanceId: 'instance-1',
+        datasourceUid: 'prom',
+        label: 'job',
+        matcher: '{__name__="up"}'
+      });
+
+      expect(result).toEqual({ ok: true, result: { values: ['api', 'web'] } });
+      expect(proxyDatasourceRequest).toHaveBeenCalledWith(
+        'prom',
+        'GET',
+        'api/v1/label/job/values',
+        expect.objectContaining({ 'match[]': '{__name__="up"}' }),
+        undefined,
+        expect.any(Number)
+      );
+    });
+
+    it('grafana_list_loki_label_names forwards GET loki/api/v1/labels and projects values', async () => {
+      const proxyDatasourceRequest = vi.fn(async () => ({ status: 'success', data: ['job', 'level'] }));
+      const client = fakeClient({ proxyDatasourceRequest });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_list_loki_label_names', {
+        instanceId: 'instance-1',
+        datasourceUid: 'loki',
+        regex: '^j'
+      });
+
+      expect(result).toEqual({ ok: true, result: { values: ['job'] } });
+      expect(proxyDatasourceRequest).toHaveBeenCalledWith(
+        'loki',
+        'GET',
+        'loki/api/v1/labels',
+        expect.any(Object),
+        undefined,
+        expect.any(Number)
+      );
+    });
+
+    it('grafana_list_loki_label_values forwards GET loki/api/v1/label/<label>/values and projects values', async () => {
+      const proxyDatasourceRequest = vi.fn(async () => ({ status: 'success', data: ['api', 'web'] }));
+      const client = fakeClient({ proxyDatasourceRequest });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_list_loki_label_values', {
+        instanceId: 'instance-1',
+        datasourceUid: 'loki',
+        label: 'job'
+      });
+
+      expect(result).toEqual({ ok: true, result: { values: ['api', 'web'] } });
+      expect(proxyDatasourceRequest).toHaveBeenCalledWith(
+        'loki',
+        'GET',
+        'loki/api/v1/label/job/values',
+        expect.any(Object),
+        undefined,
+        expect.any(Number)
+      );
+    });
+
+    it('returns a truncated proxy payload as-is without re-projecting discovery values', async () => {
+      const proxyDatasourceRequest = vi.fn(async () => {
+        throw new GrafanaApiError('response-too-large', 'Grafana response exceeded the configured maximum of 100 bytes.');
+      });
+      const client = fakeClient({ proxyDatasourceRequest });
+      const { service } = await makeService({ client, queryLimitsConfig: { maxResponseBytes: 100 } });
+
+      const result = await service.invoke('grafana_list_prometheus_metric_names', {
+        instanceId: 'instance-1',
+        datasourceUid: 'prom'
+      });
+
+      expect(result).toMatchObject({ ok: true, result: { truncated: true, reason: 'response-size', maxBytes: 100 } });
+      expect((result as { ok: true; result: { values?: unknown } }).result.values).toBeUndefined();
     });
 
     it('grafana_query_datasource clamps an over-max-range query and marks the result truncated: true, reason: time-range', async () => {

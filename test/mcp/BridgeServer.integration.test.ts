@@ -201,6 +201,28 @@ describe('Bridge integration (real GrafanaAgentToolService, no fake toolService)
     expect(response.body).toEqual({ ok: true, name: 'grafana_query_prometheus', result: upstreamResult });
   });
 
+  it('monitoring family: POST /invoke grafana_list_prometheus_metric_names projects label values', async () => {
+    const client = fakeClient({
+      proxyDatasourceRequest: async () => ({ status: 'success', data: ['up', 'go_goroutines'] })
+    });
+    const handler = await makeHandler({ client });
+
+    const response = await handler(
+      invokeRequest('grafana_list_prometheus_metric_names', {
+        instanceId: 'instance-1',
+        datasourceUid: 'prom',
+        regex: '^up$'
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      ok: true,
+      name: 'grafana_list_prometheus_metric_names',
+      result: { values: ['up'] }
+    });
+  });
+
   it('rejects a disabled instance for a management tool with a validation-class error produced by the real authorization check', async () => {
     const handler = await makeHandler({ instances: [instance({ id: 'instance-1', allowBackgroundAccess: false })] });
 

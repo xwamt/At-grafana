@@ -13,6 +13,10 @@ const MONITORING_TOOL_NAMES = [
   'grafana_list_datasources',
   'grafana_query_prometheus',
   'grafana_query_loki',
+  'grafana_list_prometheus_metric_names',
+  'grafana_list_prometheus_label_values',
+  'grafana_list_loki_label_names',
+  'grafana_list_loki_label_values',
   'grafana_query_datasource'
 ];
 const EXPECTED_TOOL_NAMES = ['grafana_list_instances', ...MANAGEMENT_TOOL_NAMES, ...MONITORING_TOOL_NAMES];
@@ -29,7 +33,7 @@ describe('toolCatalog', () => {
     expect(AT_GRAFANA_PLUGIN_ID).toBe('at.grafana');
   });
 
-  it('declares exactly the 11 tools from Task 5.1 (management) + Task 6.1 (monitoring data), in any order', () => {
+  it('declares the current catalog names, in any order', () => {
     expect(AT_GRAFANA_TOOL_CATALOG.map((tool) => tool.name).sort()).toEqual([...EXPECTED_TOOL_NAMES].sort());
   });
 
@@ -149,6 +153,25 @@ describe('toolCatalog', () => {
     expect(tool.risk).toBe('read');
     expect(tool.inputSchema.required).toEqual(['instanceId', 'datasourceUid', 'expr']);
     expect(tool.description.toLowerCase()).toContain('logql');
+  });
+
+  it('grafana_list_prometheus_metric_names requires instanceId and datasourceUid', () => {
+    const tool = findTool('grafana_list_prometheus_metric_names');
+    expect(tool.risk).toBe('read');
+    expect(tool.inputSchema.required).toEqual(['instanceId', 'datasourceUid']);
+  });
+
+  it('label-values tools require label in inputSchema.required', () => {
+    expect(findTool('grafana_list_prometheus_label_values').inputSchema.required).toEqual([
+      'instanceId',
+      'datasourceUid',
+      'label'
+    ]);
+    expect(findTool('grafana_list_loki_label_values').inputSchema.required).toEqual([
+      'instanceId',
+      'datasourceUid',
+      'label'
+    ]);
   });
 });
 
