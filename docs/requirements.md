@@ -58,9 +58,9 @@ AT-Grafana 是 **AT 系列**的新成员（同系列已有 `at-terminal-series` 
 | D5 | Dashboard 展示粒度 | 只做 **dashboard 级别**：侧边栏按 Grafana 文件夹结构展示 dashboard 树（可搜索过滤），点击后 Webview 嵌入**完整**原生 dashboard 页面；V1 **不做**单 panel 下钻 |
 | D6 | Alert 展示范围 | 基于 **Unified Alerting**（不做 legacy alerting 兼容），展示**全部规则**及状态（Normal/Pending/Firing），按文件夹/命名空间分组，**默认 Firing 置顶**；点击后 Webview 嵌入原生告警详情页；V1 **不做**任何写操作（silence/pause/ack） |
 | D7 | iframe 鉴权注入 | 扩展宿主起**本地反向代理**（`127.0.0.1`，复用/扩展现有 Bridge 基础设施），Webview iframe 请求本地代理地址，由代理注入 `Authorization: Bearer <token>` 转发给真实 Grafana；token **不进入** Webview/网络前端（详见 [ADR-003](decisions/ADR-003-panel-alert-embedding-via-local-proxy.md)） |
-| D8 | 数据源聚合 API 范围 | **通用透传代理**，不区分数据源类型（Prometheus/Loki/未来其他类型统一走 `/api/datasources/proxy/uid/<uid>/...`），Agent 自行拼接 PromQL/LogQL 等查询语句与路径 |
+| D8 | 数据源聚合 API 范围 | **传输层仍是通用透传代理**（`/api/datasources/proxy/uid/<uid>/...`，GET/POST + path 禁锢）。Agent 面对 Prometheus/Loki 时走类型化工具 `grafana_query_prometheus` / `grafana_query_loki`；其它数据源或不寻常路径仍用 `grafana_query_datasource` 自拼 path。详见 [ADR-006](decisions/ADR-006-typed-query-tools-and-context-defaults.md) |
 | D9 | 数据源查询安全边界 | 通用代理工具只放行 **`GET`/`POST`**，阻止 `PUT`/`DELETE`/`PATCH`；工具整体标记 `risk=read`；内置**默认时间范围/返回体积硬上限**，Agent 可传参覆盖但不能超过插件设定的绝对上限，超限自动截断并提示缩小范围 |
-| D10 | MCP 工具族划分 | 明确拆成两组，都在 V1 提供，都是 `risk=read`：**Grafana 管理类**（`grafana_list_dashboards`、`grafana_get_dashboard`、`grafana_list_folders`、`grafana_list_alert_rules`、`grafana_get_alert_rule`、`grafana_get_alert_history`）服务于「理解/巡检 Grafana 配置」场景；**监控数据类**（`grafana_list_datasources`、`grafana_query_datasource`）服务于「查询实际监控数据」场景 |
+| D10 | MCP 工具族划分 | 明确拆成两组，都在 V1 提供，都是 `risk=read`：**Grafana 管理类**（`grafana_list_dashboards`、`grafana_get_dashboard`、`grafana_list_folders`、`grafana_list_alert_rules`、`grafana_get_alert_rule`、`grafana_get_alert_history`）服务于「理解/巡检 Grafana 配置」场景；**监控数据类**（`grafana_list_datasources`、`grafana_query_prometheus`、`grafana_query_loki`、`grafana_query_datasource`）服务于「查询实际监控数据」场景 |
 | D11 | 写操作范围 | **V1 全部只读**。Dashboard/告警规则/数据源的创建、修改、删除、静默、暂停/恢复等写操作**全部推迟到 V2**，不在本期范围内 |
 | D12 | Hub 协议接入方式 | 全新插件，**无历史包袱**，直接以 `@at-series/mcp-hub` **Protocol v1** 接入：`pluginId = at.grafana`，工具前缀 `grafana_`（详见 [ADR-005](decisions/ADR-005-at-series-hub-protocol-v1-adoption.md)） |
 | D13 | 仓库脚手架 | 以 `at-terminal-series` 为脚手架新建**独立仓库** `at-grafana-series`（独立 git 历史），复用 ConfigManager/SecretStorage 存储模式、TreeProvider 模式、BridgeServer、esbuild 打包脚本、Hub 集成代码、测试基建；**删除**全部 SSH/SFTP/终端/资产导入导出相关代码（详见 [ADR-001](decisions/ADR-001-scaffold-from-at-terminal-series.md)） |
@@ -104,8 +104,8 @@ AT-Grafana 是 **AT 系列**的新成员（同系列已有 `at-terminal-series` 
 | ID | 需求 | 优先级 |
 |----|------|--------|
 | MGT1 | `grafana_list_instances` — 列出已开启后台访问的实例（不含凭据） | P0 |
-| MGT2 | `grafana_list_dashboards` — 按文件夹列出 dashboard（uid/标题/标签/所属文件夹） | P0 |
-| MGT3 | `grafana_get_dashboard` — 按 uid 获取 dashboard；可选 `fields=full\|summary\|targets`（缺省 `full` 兼容）及 `panelIds`/`titleContains` 服务端过滤；排障推荐 `targets` | P0 |
+| MGT2 | `grafana_list_dashboards` — 列出 dashboard（uid/title/tags/folder）；可选 `query` / `tag` / `folderUid` 下推到 Grafana `/api/search` | P0 |
+| MGT3 | `grafana_get_dashboard` — 按 uid 获取 dashboard；可选 `fields=full\|summary\|targets`（缺省 `targets`）及 `panelIds`/`titleContains` 服务端过滤；完整 model 需传 `fields=full` | P0 |
 | MGT4 | `grafana_list_folders` — 列出文件夹结构 | P0 |
 | MGT5 | `grafana_list_alert_rules` — 列出所有告警规则及当前状态 | P0 |
 | MGT6 | `grafana_get_alert_rule` — 获取单条规则完整定义（condition/for/labels/annotations/通知策略） | P0 |
@@ -117,6 +117,8 @@ AT-Grafana 是 **AT 系列**的新成员（同系列已有 `at-terminal-series` 
 |----|------|--------|
 | MON1 | `grafana_list_datasources` — 列出数据源（uid/name/type/url，不含凭据） | P0 |
 | MON2 | `grafana_query_datasource` — 通用透传代理：`instanceId` + `datasourceUid` + `method`(GET/POST) + `path` + `query`/`body`，转发到 `/api/datasources/proxy/uid/<uid>/<path>` | P0 |
+| MON2a | `grafana_query_prometheus` — `instanceId` + `datasourceUid` + `expr` + `queryType` (`instant`\|`range`，缺省 `range`) + 可选 `start`/`end`/`step`/`time`；内部只构造 `api/v1/query` 或 `api/v1/query_range` 再走与 MON2 同一套计量 | P0 |
+| MON2b | `grafana_query_loki` — `instanceId` + `datasourceUid` + `expr` + `queryType`（缺省 `range`）+ 可选 `start`/`end`/`time`/`limit`/`direction`；内部只构造 `loki/api/v1/query` 或 `loki/api/v1/query_range` | P0 |
 | MON3 | MON2 内置默认时间范围/返回体积硬上限，超限自动截断并在结果中提示 | P0 |
 | MON4 | MON2 仅放行 `GET`/`POST`，其余 method 直接拒绝（`VALIDATION_ERROR`） | P0 |
 
@@ -181,8 +183,8 @@ AT-Grafana 是 **AT 系列**的新成员（同系列已有 `at-terminal-series` 
 2. 点击任意 dashboard 节点，Webview 内可见与浏览器直接打开该 dashboard 一致的完整交互式页面，且开发者工具网络面板中看不到真实 Grafana token
 3. 点击任意告警规则节点，Webview 内可见原生告警详情页
 4. 未开启「允许 Agent 后台访问」的实例，`grafana_list_instances` 不返回该实例，其余工具对该 `instanceId` 调用返回明确的授权错误
-5. 开启后台访问后，无需打开任何面板，Agent 可直接调用全部 7 个管理类工具 + 2 个监控数据类工具
-6. `grafana_get_dashboard` 在 `fields=full`（缺省）下返回完整 model；`fields=targets`（推荐排障）下可见每个 panel 的查询语句与数据源引用，且体积明显小于 full
+5. 开启后台访问后，无需打开任何面板，Agent 可直接调用全部 7 个管理类工具 + 3 个监控数据类工具（含类型化 Prom/Loki 与通用代理）
+6. `grafana_get_dashboard` 缺省 `fields=targets`，可见每个 panel 的查询语句与数据源引用；`fields=full` 才返回完整 model
 7. `grafana_query_datasource` 对超出上限的时间范围/返回体积做截断，响应中包含截断提示
 8. `grafana_query_datasource` 对 `PUT`/`DELETE`/`PATCH` 请求返回 `VALIDATION_ERROR`
 9. 通过 `AT Series: Install/Repair MCP Config` 后，IDE MCP 配置中只有一条 `AT Series` 入口，本插件工具全部出现在 `tools/list` 且默认 autoApprove
@@ -226,4 +228,5 @@ AT-Grafana 是 **AT 系列**的新成员（同系列已有 `at-terminal-series` 
 | `decisions/ADR-003-*.md` | 为什么用本地反向代理做 iframe 鉴权注入 |
 | `decisions/ADR-004-*.md` | MCP 工具目录与权限模型细节 |
 | `decisions/ADR-005-*.md` | 为什么直接采用 Hub Protocol v1（无迁移历史包袱） |
+| `decisions/ADR-006-*.md` | 类型化 Prom/Loki 查询工具与 dashboard 缺省投影 / 可搜索列表 |
 | `plans/2026-07-29-at-grafana-v1-implementation-plan.md` | 分阶段实施计划 |

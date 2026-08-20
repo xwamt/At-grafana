@@ -38,8 +38,8 @@ This is a deliberate, explicit divergence from the "front-end connected OR backg
 
 | Tool | Purpose |
 |---|---|
-| `grafana_list_dashboards` | List dashboards grouped by folder (uid/title/tags/folder) |
-| `grafana_get_dashboard` | Dashboard by uid. Optional `fields`: `full` (default) / `summary` / `targets`; optional `panelIds` / `titleContains` filter. Prefer `targets` when reading panel queries. |
+| `grafana_list_dashboards` | List dashboards grouped by folder (uid/title/tags/folder). Optional `query` / `tag` / `folderUid` mapped to Grafana `/api/search`. |
+| `grafana_get_dashboard` | Dashboard by uid. Optional `fields`: `targets` (default) / `summary` / `full`; optional `panelIds` / `titleContains` filter. Pass `fields: "full"` for the complete model (see ADR-006). |
 | `grafana_list_folders` | Folder tree |
 | `grafana_list_alert_rules` | All alert rules + current state |
 | `grafana_get_alert_rule` | Full rule definition (condition, for, labels, annotations, notification policy refs) |
@@ -50,7 +50,11 @@ This is a deliberate, explicit divergence from the "front-end connected OR backg
 | Tool | Purpose |
 |---|---|
 | `grafana_list_datasources` | uid/name/type/url only, never credentials |
-| `grafana_query_datasource` | Generic pass-through to `/api/datasources/proxy/uid/<uid>/<path>`. Inputs: `instanceId`, `datasourceUid`, `method` (`GET`\|`POST` only), `path`, `query`/`body`. |
+| `grafana_query_prometheus` | Typed PromQL: `instanceId` + `datasourceUid` + `expr` + `queryType` (`instant`\|`range`, default `range`) + optional `start`/`end`/`step`/`time`. Builds a confined proxy call to `api/v1/query` or `api/v1/query_range`, then uses the existing `queryDatasource` pipeline. |
+| `grafana_query_loki` | Typed LogQL: `instanceId` + `datasourceUid` + `expr` + `queryType` (default `range`) + optional `start`/`end`/`time`/`limit`/`direction`. Builds a confined proxy call to `loki/api/v1/query` or `loki/api/v1/query_range`, then uses the existing `queryDatasource` pipeline. |
+| `grafana_query_datasource` | Escape hatch for other datasources and unusual Prom/Loki endpoints (metadata, labels, custom paths). Generic pass-through to `/api/datasources/proxy/uid/<uid>/<path>`. Inputs: `instanceId`, `datasourceUid`, `method` (`GET`\|`POST` only), `path`, `query`/`body`. |
+
+Typed Prom/Loki tools and the default dashboard projection are specified in [ADR-006](ADR-006-typed-query-tools-and-context-defaults.md); this ADR still owns authorization, path confinement, and `risk=read`.
 
 ### Safety constraints on `grafana_query_datasource`
 
