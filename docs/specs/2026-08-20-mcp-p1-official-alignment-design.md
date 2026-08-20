@@ -35,7 +35,7 @@ Catalog after this change: **17 tools**, all `risk: read` / autoApprove.
 ### 3.1 `grafana_list_prometheus_metric_names`
 
 - Required: `instanceId`, `datasourceUid`
-- Optional: `regex` (JS `RegExp` source; invalid pattern → `VALIDATION_ERROR`), `start`, `end`
+- Optional: `regex` (JS `RegExp` source, no flags; invalid pattern → `VALIDATION_ERROR`), `start`, `end` (strings, same as typed query tools; omitted if unset)
 - Builder path: `GET api/v1/label/__name__/values`
 - Result: `{ values: string[], truncated?: true }` after optional regex filter, capped at **200**
 
