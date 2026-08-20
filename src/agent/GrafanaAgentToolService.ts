@@ -436,6 +436,18 @@ export class GrafanaAgentToolService {
     }));
   }
 
+  private projectProxyDiscovery(result: unknown, regex?: string): unknown {
+    if (
+      typeof result === 'object' &&
+      result !== null &&
+      'truncated' in result &&
+      (result as { truncated?: unknown }).truncated === true
+    ) {
+      return result;
+    }
+    return projectDiscoveryValues(result, regex);
+  }
+
   /**
    * MON2/D8/D9: generic pass-through to `GrafanaApiClient.proxyDatasourceRequest`,
    * with the Task 6.1 query-limits caps applied around it -- see
@@ -461,18 +473,6 @@ export class GrafanaAgentToolService {
    * Whether a tool may be called at all remains `allowBackgroundAccess`'s
    * decision, made before this method is reached.
    */
-  private projectProxyDiscovery(result: unknown, regex?: string): unknown {
-    if (
-      typeof result === 'object' &&
-      result !== null &&
-      'truncated' in result &&
-      (result as { truncated?: unknown }).truncated === true
-    ) {
-      return result;
-    }
-    return projectDiscoveryValues(result, regex);
-  }
-
   private async queryDatasource(client: GrafanaApiClientLike, parsed: GrafanaQueryDatasourceInput): Promise<unknown> {
     const limits = this.effectiveQueryLimits();
     const decision = this.queryRateLimiter.tryAcquire(parsed.instanceId);
