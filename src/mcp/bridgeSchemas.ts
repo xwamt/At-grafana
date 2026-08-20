@@ -95,6 +95,33 @@ export const grafanaQueryDatasourceSchema = z
   })
   .strict();
 
+export const grafanaQueryPrometheusSchema = z
+  .object({
+    instanceId: z.string().min(1),
+    datasourceUid: z.string().min(1),
+    expr: z.string().min(1),
+    queryType: z.enum(['instant', 'range']).default('range'),
+    start: z.string().min(1).optional(),
+    end: z.string().min(1).optional(),
+    step: z.string().min(1).optional(),
+    time: z.string().min(1).optional()
+  })
+  .strict();
+
+export const grafanaQueryLokiSchema = z
+  .object({
+    instanceId: z.string().min(1),
+    datasourceUid: z.string().min(1),
+    expr: z.string().min(1),
+    queryType: z.enum(['instant', 'range']).default('range'),
+    start: z.string().min(1).optional(),
+    end: z.string().min(1).optional(),
+    time: z.string().min(1).optional(),
+    limit: z.number().int().positive().optional(),
+    direction: z.enum(['forward', 'backward']).optional()
+  })
+  .strict();
+
 export type GrafanaListInstancesInput = z.infer<typeof grafanaListInstancesSchema>;
 export type GrafanaListDashboardsInput = z.infer<typeof grafanaListDashboardsSchema>;
 export type GrafanaGetDashboardInput = z.infer<typeof grafanaGetDashboardSchema>;
@@ -104,6 +131,8 @@ export type GrafanaGetAlertRuleInput = z.infer<typeof grafanaGetAlertRuleSchema>
 export type GrafanaGetAlertHistoryInput = z.infer<typeof grafanaGetAlertHistorySchema>;
 export type GrafanaListDatasourcesInput = z.infer<typeof grafanaListDatasourcesSchema>;
 export type GrafanaQueryDatasourceInput = z.infer<typeof grafanaQueryDatasourceSchema>;
+export type GrafanaQueryPrometheusInput = z.infer<typeof grafanaQueryPrometheusSchema>;
+export type GrafanaQueryLokiInput = z.infer<typeof grafanaQueryLokiSchema>;
 
 /** The Grafana management family (Task 5.1) -- see AT_GRAFANA_MONITORING_TOOL_NAMES for the Phase 6 monitoring-data family. */
 export const AT_GRAFANA_MANAGEMENT_TOOL_NAMES = [
@@ -119,7 +148,12 @@ export const AT_GRAFANA_MANAGEMENT_TOOL_NAMES = [
 export type AtGrafanaManagementToolName = (typeof AT_GRAFANA_MANAGEMENT_TOOL_NAMES)[number];
 
 /** The monitoring-data family (Task 6.1) -- serves an agent analyzing actual Prometheus/Loki data, not Grafana's own configuration. */
-export const AT_GRAFANA_MONITORING_TOOL_NAMES = ['grafana_list_datasources', 'grafana_query_datasource'] as const;
+export const AT_GRAFANA_MONITORING_TOOL_NAMES = [
+  'grafana_list_datasources',
+  'grafana_query_prometheus',
+  'grafana_query_loki',
+  'grafana_query_datasource'
+] as const;
 
 export type AtGrafanaMonitoringToolName = (typeof AT_GRAFANA_MONITORING_TOOL_NAMES)[number];
 
@@ -141,6 +175,8 @@ export const BRIDGE_SCHEMAS_BY_TOOL_NAME: Record<AtGrafanaToolName, z.ZodTypeAny
   grafana_get_alert_rule: grafanaGetAlertRuleSchema,
   grafana_get_alert_history: grafanaGetAlertHistorySchema,
   grafana_list_datasources: grafanaListDatasourcesSchema,
+  grafana_query_prometheus: grafanaQueryPrometheusSchema,
+  grafana_query_loki: grafanaQueryLokiSchema,
   grafana_query_datasource: grafanaQueryDatasourceSchema
 };
 
@@ -234,5 +270,38 @@ export const GRAFANA_QUERY_DATASOURCE_INPUT_SCHEMA: JsonSchemaObject = {
     body: {}
   },
   required: ['instanceId', 'datasourceUid', 'method', 'path'],
+  additionalProperties: false
+};
+
+export const GRAFANA_QUERY_PROMETHEUS_INPUT_SCHEMA: JsonSchemaObject = {
+  type: 'object',
+  properties: {
+    instanceId: { type: 'string', minLength: 1 },
+    datasourceUid: { type: 'string', minLength: 1 },
+    expr: { type: 'string', minLength: 1, description: 'PromQL expression.' },
+    queryType: { type: 'string', enum: ['instant', 'range'], description: 'Defaults to range.' },
+    start: { type: 'string', minLength: 1 },
+    end: { type: 'string', minLength: 1 },
+    step: { type: 'string', minLength: 1 },
+    time: { type: 'string', minLength: 1, description: 'Evaluation time for instant queries.' }
+  },
+  required: ['instanceId', 'datasourceUid', 'expr'],
+  additionalProperties: false
+};
+
+export const GRAFANA_QUERY_LOKI_INPUT_SCHEMA: JsonSchemaObject = {
+  type: 'object',
+  properties: {
+    instanceId: { type: 'string', minLength: 1 },
+    datasourceUid: { type: 'string', minLength: 1 },
+    expr: { type: 'string', minLength: 1, description: 'LogQL expression.' },
+    queryType: { type: 'string', enum: ['instant', 'range'], description: 'Defaults to range.' },
+    start: { type: 'string', minLength: 1 },
+    end: { type: 'string', minLength: 1 },
+    time: { type: 'string', minLength: 1 },
+    limit: { type: 'integer', exclusiveMinimum: 0 },
+    direction: { type: 'string', enum: ['forward', 'backward'] }
+  },
+  required: ['instanceId', 'datasourceUid', 'expr'],
   additionalProperties: false
 };

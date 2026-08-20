@@ -171,6 +171,41 @@ describe('planQueryLimits bypass closures', () => {
     expect(plan.query?.start).toBe(String(endSeconds - 12 * 3600));
   });
 
+  it('materializes both missing bounds on a recognized range endpoint as now..now-maxRangeMs', () => {
+    const plan = planQueryLimits({
+      path: 'api/v1/query_range',
+      query: { query: 'up' },
+      limits,
+      now: NOW
+    });
+
+    expect(plan.query?.end).toBeDefined();
+    expect(plan.query?.start).toBeDefined();
+    const start = Date.parse(plan.query?.start ?? '');
+    const end = Date.parse(plan.query?.end ?? '');
+    expect(end).toBe(NOW);
+    expect(end - start).toBe(limits.maxRangeMs);
+    // Filling a default window of exactly maxRangeMs is not truncation.
+    expect(plan.adjustments).not.toContain('time-range');
+  });
+
+  it('materializes both missing bounds on a Loki range endpoint as rfc3339 now..now-maxRangeMs', () => {
+    const plan = planQueryLimits({
+      path: 'loki/api/v1/query_range',
+      query: { query: '{app="x"}' },
+      limits,
+      now: NOW
+    });
+
+    expect(plan.query?.end).toBeDefined();
+    expect(plan.query?.start).toBeDefined();
+    const start = Date.parse(plan.query?.start ?? '');
+    const end = Date.parse(plan.query?.end ?? '');
+    expect(end).toBe(NOW);
+    expect(end - start).toBe(limits.maxRangeMs);
+    expect(plan.adjustments).not.toContain('time-range');
+  });
+
   it('raises a step that would evaluate more points than the budget allows', () => {
     const end = NOW / 1000;
     const start = end - 12 * 3600; // exactly at the cap, so the range itself is legal

@@ -9,7 +9,12 @@ const MANAGEMENT_TOOL_NAMES = [
   'grafana_get_alert_rule',
   'grafana_get_alert_history'
 ];
-const MONITORING_TOOL_NAMES = ['grafana_list_datasources', 'grafana_query_datasource'];
+const MONITORING_TOOL_NAMES = [
+  'grafana_list_datasources',
+  'grafana_query_prometheus',
+  'grafana_query_loki',
+  'grafana_query_datasource'
+];
 const EXPECTED_TOOL_NAMES = ['grafana_list_instances', ...MANAGEMENT_TOOL_NAMES, ...MONITORING_TOOL_NAMES];
 
 const INSTANCE_ID_AND_UID_TOOLS = new Set(['grafana_get_alert_rule', 'grafana_get_alert_history']);
@@ -24,7 +29,7 @@ describe('toolCatalog', () => {
     expect(AT_GRAFANA_PLUGIN_ID).toBe('at.grafana');
   });
 
-  it('declares exactly the 9 tools from Task 5.1 (management) + Task 6.1 (monitoring data), in any order', () => {
+  it('declares exactly the 11 tools from Task 5.1 (management) + Task 6.1 (monitoring data), in any order', () => {
     expect(AT_GRAFANA_TOOL_CATALOG.map((tool) => tool.name).sort()).toEqual([...EXPECTED_TOOL_NAMES].sort());
   });
 
@@ -127,6 +132,23 @@ describe('toolCatalog', () => {
       method: { type: 'string', enum: ['GET', 'POST'] },
       path: { type: 'string' }
     });
+    expect(tool.description.toLowerCase()).toContain('escape hatch');
+    expect(tool.description).toMatch(/grafana_query_prometheus/);
+    expect(tool.description).toMatch(/grafana_query_loki/);
+  });
+
+  it('grafana_query_prometheus requires instanceId, datasourceUid, expr', () => {
+    const tool = findTool('grafana_query_prometheus');
+    expect(tool.risk).toBe('read');
+    expect(tool.inputSchema.required).toEqual(['instanceId', 'datasourceUid', 'expr']);
+    expect(tool.description.toLowerCase()).toContain('promql');
+  });
+
+  it('grafana_query_loki requires instanceId, datasourceUid, expr', () => {
+    const tool = findTool('grafana_query_loki');
+    expect(tool.risk).toBe('read');
+    expect(tool.inputSchema.required).toEqual(['instanceId', 'datasourceUid', 'expr']);
+    expect(tool.description.toLowerCase()).toContain('logql');
   });
 });
 

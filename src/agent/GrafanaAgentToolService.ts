@@ -18,6 +18,7 @@ import {
   type EffectiveQueryLimits
 } from '../grafana/QueryLimits';
 import { QueryRateLimiter, QueryThrottledError } from '../grafana/QueryRateLimiter';
+import { buildLokiProxyCall, buildPrometheusProxyCall } from '../grafana/typedDatasourceQueries';
 import { formatError } from '../utils/errors';
 import type { AtGrafanaLog } from '../utils/logger';
 import {
@@ -31,6 +32,8 @@ import {
   grafanaListFoldersSchema,
   grafanaListInstancesSchema,
   grafanaQueryDatasourceSchema,
+  grafanaQueryLokiSchema,
+  grafanaQueryPrometheusSchema,
   type GrafanaQueryDatasourceInput
 } from '../mcp/bridgeSchemas';
 import { projectDashboard } from './projectDashboard';
@@ -215,6 +218,28 @@ export class GrafanaAgentToolService {
           return await this.withAuthorizedClient(grafanaQueryDatasourceSchema, args, (client, parsed) =>
             this.queryDatasource(client, parsed)
           );
+        case 'grafana_query_prometheus':
+          return await this.withAuthorizedClient(grafanaQueryPrometheusSchema, args, (client, parsed) => {
+            const proxy = buildPrometheusProxyCall(parsed);
+            return this.queryDatasource(client, {
+              instanceId: parsed.instanceId,
+              datasourceUid: parsed.datasourceUid,
+              method: proxy.method,
+              path: proxy.path,
+              query: proxy.query
+            });
+          });
+        case 'grafana_query_loki':
+          return await this.withAuthorizedClient(grafanaQueryLokiSchema, args, (client, parsed) => {
+            const proxy = buildLokiProxyCall(parsed);
+            return this.queryDatasource(client, {
+              instanceId: parsed.instanceId,
+              datasourceUid: parsed.datasourceUid,
+              method: proxy.method,
+              path: proxy.path,
+              query: proxy.query
+            });
+          });
         default:
           return { ok: false, code: 'NOT_FOUND', message: `Unknown AT Grafana tool: ${name}` };
       }

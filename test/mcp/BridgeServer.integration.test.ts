@@ -113,14 +113,14 @@ describe('Bridge integration (real GrafanaAgentToolService, no fake toolService)
     expect(response.body).toMatchObject({ ok: true, toolCount: AT_GRAFANA_TOOL_CATALOG.length });
   });
 
-  it('GET /tools round-trips the exact 9-tool catalog, all risk: read, prefixed grafana_', async () => {
+  it('GET /tools round-trips the full catalog, all risk: read, prefixed grafana_', async () => {
     const handler = await makeHandler();
 
     const response = await handler({ method: 'GET', path: '/tools', headers: { [AT_SERIES_TOKEN_HEADER]: TOKEN } });
 
     expect(response.status).toBe(200);
     const tools = (response.body as { tools: Array<{ name: string; risk: string }> }).tools;
-    expect(tools).toHaveLength(9);
+    expect(tools).toHaveLength(AT_GRAFANA_TOOL_CATALOG.length);
     for (const tool of tools) {
       expect(tool.name.startsWith('grafana_')).toBe(true);
       expect(tool.risk).toBe('read');
@@ -179,6 +179,26 @@ describe('Bridge integration (real GrafanaAgentToolService, no fake toolService)
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ ok: true, name: 'grafana_query_datasource', result: upstreamResult });
+  });
+
+  it('monitoring family: POST /invoke grafana_query_prometheus validates, authorizes, and forwards the proxied query', async () => {
+    const upstreamResult = { status: 'success', data: { resultType: 'matrix', result: [] } };
+    const client = fakeClient({ proxyDatasourceRequest: async () => upstreamResult });
+    const handler = await makeHandler({ client });
+
+    const response = await handler(
+      invokeRequest('grafana_query_prometheus', {
+        instanceId: 'instance-1',
+        datasourceUid: 'prom',
+        expr: 'up',
+        start: '1700000000',
+        end: '1700003600',
+        step: '15s'
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ ok: true, name: 'grafana_query_prometheus', result: upstreamResult });
   });
 
   it('rejects a disabled instance for a management tool with a validation-class error produced by the real authorization check', async () => {

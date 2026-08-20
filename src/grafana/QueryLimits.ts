@@ -363,7 +363,14 @@ export function planQueryLimits(input: QueryLimitPlanInput): QueryLimitPlan {
   return { query, body, adjustments };
 }
 
-/** Materializes whichever bound is missing, clamps the span, then floors the step against what remains. */
+/**
+ * Materializes whichever bound is missing (or a rfc3339 `now-maxRangeMs`..`now`
+ * window when both are missing), clamps the span, then floors the step against
+ * what remains.
+ *
+ * A both-missing fill of exactly `maxRangeMs` is not truncation — do not
+ * record `'time-range'` for it. One-bound-missing still records `'time-range'`.
+ */
 function applyRangeLimits(
   query: Record<string, string>,
   limits: EffectiveQueryLimits,
@@ -387,6 +394,9 @@ function applyRangeLimits(
       next.start = formatTimestamp(end.epochMs - limits.maxRangeMs, end.format);
       adjustments.push('time-range');
     }
+  } else if (!hasStart && !hasEnd) {
+    next.end = formatTimestamp(now, 'rfc3339');
+    next.start = formatTimestamp(now - limits.maxRangeMs, 'rfc3339');
   }
 
   const clamped = clampQueryTimeRange(next, limits.maxRangeMs);

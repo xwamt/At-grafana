@@ -133,6 +133,8 @@ describe('GrafanaAgentToolService', () => {
         ['grafana_get_alert_rule', { instanceId: 'known', uid: 'r1' }],
         ['grafana_get_alert_history', { instanceId: 'known', uid: 'r1' }],
         ['grafana_list_datasources', { instanceId: 'known' }],
+        ['grafana_query_prometheus', { instanceId: 'known', datasourceUid: 'ds1', expr: 'up' }],
+        ['grafana_query_loki', { instanceId: 'known', datasourceUid: 'ds1', expr: '{job="api"}' }],
         ['grafana_query_datasource', { instanceId: 'known', datasourceUid: 'ds1', method: 'GET', path: 'api/v1/query' }]
       ];
 
@@ -413,6 +415,86 @@ describe('GrafanaAgentToolService', () => {
         'GET',
         'api/v1/query',
         { query: 'up', timeout: '10s' },
+        undefined,
+        expect.any(Number)
+      );
+    });
+
+    it('grafana_query_prometheus range forwards GET api/v1/query_range through queryDatasource metering', async () => {
+      const proxyDatasourceRequest = vi.fn(async () => ({ status: 'success', data: { resultType: 'matrix', result: [] } }));
+      const client = fakeClient({ proxyDatasourceRequest });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_query_prometheus', {
+        instanceId: 'instance-1',
+        datasourceUid: 'prom',
+        expr: 'up',
+        start: '1700000000',
+        end: '1700003600',
+        step: '15s'
+      });
+
+      expect(result).toMatchObject({ ok: true });
+      expect(proxyDatasourceRequest).toHaveBeenCalledWith(
+        'prom',
+        'GET',
+        'api/v1/query_range',
+        expect.objectContaining({ query: 'up', start: '1700000000', end: '1700003600', step: '15s' }),
+        undefined,
+        expect.any(Number)
+      );
+    });
+
+    it('grafana_query_prometheus instant forwards GET api/v1/query and ignores start/end', async () => {
+      const proxyDatasourceRequest = vi.fn(async () => ({ status: 'success', data: { resultType: 'vector', result: [] } }));
+      const client = fakeClient({ proxyDatasourceRequest });
+      const { service } = await makeService({ client });
+
+      await service.invoke('grafana_query_prometheus', {
+        instanceId: 'instance-1',
+        datasourceUid: 'prom',
+        expr: 'up',
+        queryType: 'instant',
+        start: '1700000000',
+        end: '1700003600',
+        time: '1700001800'
+      });
+
+      expect(proxyDatasourceRequest).toHaveBeenCalledWith(
+        'prom',
+        'GET',
+        'api/v1/query',
+        expect.objectContaining({ query: 'up', time: '1700001800' }),
+        undefined,
+        expect.any(Number)
+      );
+      const [, , , forwardedQuery] = proxyDatasourceRequest.mock.calls[0] as unknown as [
+        string,
+        string,
+        string,
+        Record<string, string>
+      ];
+      expect(forwardedQuery.start).toBeUndefined();
+      expect(forwardedQuery.end).toBeUndefined();
+    });
+
+    it('grafana_query_loki range forwards GET loki/api/v1/query_range', async () => {
+      const proxyDatasourceRequest = vi.fn(async () => ({ status: 'success' }));
+      const client = fakeClient({ proxyDatasourceRequest });
+      const { service } = await makeService({ client });
+
+      await service.invoke('grafana_query_loki', {
+        instanceId: 'instance-1',
+        datasourceUid: 'loki',
+        expr: '{job="api"}',
+        limit: 50
+      });
+
+      expect(proxyDatasourceRequest).toHaveBeenCalledWith(
+        'loki',
+        'GET',
+        'loki/api/v1/query_range',
+        expect.objectContaining({ query: '{job="api"}', limit: '50' }),
         undefined,
         expect.any(Number)
       );

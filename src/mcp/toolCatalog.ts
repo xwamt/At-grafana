@@ -8,7 +8,9 @@ import {
   GRAFANA_LIST_DATASOURCES_INPUT_SCHEMA,
   GRAFANA_LIST_FOLDERS_INPUT_SCHEMA,
   GRAFANA_LIST_INSTANCES_INPUT_SCHEMA,
-  GRAFANA_QUERY_DATASOURCE_INPUT_SCHEMA
+  GRAFANA_QUERY_DATASOURCE_INPUT_SCHEMA,
+  GRAFANA_QUERY_LOKI_INPUT_SCHEMA,
+  GRAFANA_QUERY_PROMETHEUS_INPUT_SCHEMA
 } from './bridgeSchemas';
 
 /**
@@ -117,18 +119,39 @@ export const AT_GRAFANA_TOOL_CATALOG: ToolCatalogEntry[] = [
     title: 'List Grafana datasources',
     description:
       'List the datasources configured on a Grafana instance as {uid, name, type, url} (never credentials). Call this ' +
-      `to discover which datasourceUid values grafana_query_datasource will accept.${MONITORING_FAMILY_SUFFIX}`,
+      `to discover which datasourceUid values grafana_query_prometheus, grafana_query_loki, and grafana_query_datasource will accept.${MONITORING_FAMILY_SUFFIX}`,
     risk: 'read',
     inputSchema: GRAFANA_LIST_DATASOURCES_INPUT_SCHEMA
+  },
+  {
+    name: 'grafana_query_prometheus',
+    title: 'Query Prometheus via Grafana',
+    description:
+      'Run a PromQL instant or range query through Grafana\'s datasource proxy. Pass expr plus optional start/end/step ' +
+      '(range, default) or time (instant). Prefer this over grafana_query_datasource for Prometheus. ' +
+      MONITORING_FAMILY_SUFFIX,
+    risk: 'read',
+    inputSchema: GRAFANA_QUERY_PROMETHEUS_INPUT_SCHEMA
+  },
+  {
+    name: 'grafana_query_loki',
+    title: 'Query Loki via Grafana',
+    description:
+      'Run a LogQL query through Grafana\'s datasource proxy. Pass expr plus optional start/end/limit/direction ' +
+      '(range, default) or time (instant). Prefer this over grafana_query_datasource for Loki. Prefer limit 50–100. ' +
+      MONITORING_FAMILY_SUFFIX,
+    risk: 'read',
+    inputSchema: GRAFANA_QUERY_LOKI_INPUT_SCHEMA
   },
   {
     name: 'grafana_query_datasource',
     title: 'Query Grafana datasource',
     description:
-      'Pass-through to a datasource\'s own query API via Grafana\'s datasource proxy (e.g. Prometheus ' +
-      '`/api/v1/query_range`, Loki `/loki/api/v1/query_range`). You construct the path/query/body yourself, ' +
-      'including whatever time-range params the target datasource API expects. `path` is resolved strictly under ' +
-      '`/api/datasources/proxy/uid/<datasourceUid>/` -- it may not contain `..`, `\\`, or percent-encoded ' +
+      'Use grafana_query_prometheus / grafana_query_loki for Prom/Loki; this tool is the escape hatch for other ' +
+      'datasource types and unusual paths. Pass-through to a datasource\'s own query API via Grafana\'s datasource ' +
+      'proxy (e.g. Prometheus `/api/v1/query_range`, Loki `/loki/api/v1/query_range`). You construct the path/query/body ' +
+      'yourself, including whatever time-range params the target datasource API expects. `path` is resolved strictly ' +
+      'under `/api/datasources/proxy/uid/<datasourceUid>/` -- it may not contain `..`, `\\`, or percent-encoded ' +
       'separators, so this tool cannot reach Grafana\'s own APIs. Only GET/POST are allowed -- any other method is ' +
       'rejected before reaching Grafana. Time range and response size are capped by plugin settings; an over-cap ' +
       'request is truncated with `truncated: true` in the result (with an explanatory message) rather than failing ' +

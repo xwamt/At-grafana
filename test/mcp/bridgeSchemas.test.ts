@@ -8,7 +8,9 @@ import {
   grafanaListDatasourcesSchema,
   grafanaListFoldersSchema,
   grafanaListInstancesSchema,
-  grafanaQueryDatasourceSchema
+  grafanaQueryDatasourceSchema,
+  grafanaQueryLokiSchema,
+  grafanaQueryPrometheusSchema
 } from '../../src/mcp/bridgeSchemas';
 
 describe('grafanaListInstancesSchema', () => {
@@ -205,5 +207,70 @@ describe('grafanaQueryDatasourceSchema', () => {
     for (const path of ['api/v1/query_range', '/api/v1/query', 'loki/api/v1/query_range', 'api/v1/labels']) {
       expect(grafanaQueryDatasourceSchema.safeParse({ ...validBase, path }).success).toBe(true);
     }
+  });
+});
+
+describe('grafanaQueryPrometheusSchema', () => {
+  it('accepts instanceId, datasourceUid, expr and defaults queryType to range at parse time', () => {
+    const parsed = grafanaQueryPrometheusSchema.safeParse({
+      instanceId: 'abc',
+      datasourceUid: 'prom',
+      expr: 'up'
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.queryType).toBe('range');
+    }
+  });
+
+  it('accepts instant with time', () => {
+    expect(
+      grafanaQueryPrometheusSchema.safeParse({
+        instanceId: 'abc',
+        datasourceUid: 'prom',
+        expr: 'up',
+        queryType: 'instant',
+        time: '1700000000'
+      }).success
+    ).toBe(true);
+  });
+
+  it('rejects extra properties and empty expr', () => {
+    expect(
+      grafanaQueryPrometheusSchema.safeParse({
+        instanceId: 'abc',
+        datasourceUid: 'prom',
+        expr: 'up',
+        path: 'api/v1/query'
+      }).success
+    ).toBe(false);
+    expect(
+      grafanaQueryPrometheusSchema.safeParse({ instanceId: 'abc', datasourceUid: 'prom', expr: '' }).success
+    ).toBe(false);
+  });
+});
+
+describe('grafanaQueryLokiSchema', () => {
+  it('accepts expr and optional limit/direction', () => {
+    expect(
+      grafanaQueryLokiSchema.safeParse({
+        instanceId: 'abc',
+        datasourceUid: 'loki',
+        expr: '{job="api"}',
+        limit: 50,
+        direction: 'backward'
+      }).success
+    ).toBe(true);
+  });
+
+  it('rejects a non-positive limit', () => {
+    expect(
+      grafanaQueryLokiSchema.safeParse({
+        instanceId: 'abc',
+        datasourceUid: 'loki',
+        expr: '{job="api"}',
+        limit: 0
+      }).success
+    ).toBe(false);
   });
 });
