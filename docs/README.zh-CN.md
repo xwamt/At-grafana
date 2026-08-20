@@ -14,10 +14,10 @@ AT Grafana 是 **AT 系列** VS Code / Cursor 扩展的一员（同系列还有 
 - **Alerts 侧边栏** — Unified Alerting 规则与实时状态，按文件夹分组，Firing 置顶
 - **原生嵌入页面** — 通过仅绑定 `127.0.0.1` 的本地反向代理注入 `Authorization`，在 Webview 中打开可交互的原生 Grafana dashboard / 告警详情（Token 不会出现在 Webview 网络层）
 - **按实例的 Agent 开关** — 「允许 Agent 后台访问」（默认关）；仅开启的实例对 MCP 工具可见
-- **11 个 MCP 工具**（全部 `risk: read`，安装 AT Series MCP 配置后自动批准）：
+- **17 个 MCP 工具**（全部 `risk: read`，安装 AT Series MCP 配置后自动批准）：
   - 发现：`grafana_list_instances`
-  - 管理：`grafana_list_dashboards`（可选 `query` / `tag` / `folderUid`）、`grafana_get_dashboard`（缺省 `fields: "targets"`；完整 model 需传 `fields: "full"`）、`grafana_list_folders`、`grafana_list_alert_rules`、`grafana_get_alert_rule`、`grafana_get_alert_history`
-  - 监控：`grafana_list_datasources`、`grafana_query_prometheus`、`grafana_query_loki`，以及作为兜底的 `grafana_query_datasource`。优先用类型化 Prom/Loki 工具；通用代理仅 `GET`/`POST`，`path` 被限制在 `/api/datasources/proxy/uid/<uid>/` 之内，无法触达 Grafana 自身 API；超限结果带 `truncated: true`
+  - 管理：`grafana_list_dashboards`（可选 `query` / `tag` / `folderUid`）、`grafana_get_dashboard`（缺省 `fields: "targets"`；完整 model 需传 `fields: "full"`）、`grafana_list_folders`、`grafana_list_alert_rules`（可选 `states`）、`grafana_get_alert_rule`、`grafana_get_alert_history`、`grafana_list_annotations`、`grafana_generate_deeplink`（`openInIde` 缺省 false）
+  - 监控：`grafana_list_datasources`、`grafana_query_prometheus`、`grafana_query_loki`、`grafana_list_prometheus_metric_names`、`grafana_list_prometheus_label_values`、`grafana_list_loki_label_names`、`grafana_list_loki_label_values`，以及作为兜底的 `grafana_query_datasource`。优先用类型化 Prom/Loki 工具；通用代理仅 `GET`/`POST`，`path` 被限制在 `/api/datasources/proxy/uid/<uid>/` 之内，无法触达 Grafana 自身 API；超限结果带 `truncated: true`
 - **共享 AT Series Hub** — Cursor / Kiro / Continue 共用一条 `AT Series` MCP 入口，不单独再建插件专属 MCP server
 
 ## 当前版本不包含
