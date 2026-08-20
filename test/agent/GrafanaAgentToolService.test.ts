@@ -422,6 +422,24 @@ describe('GrafanaAgentToolService', () => {
       expect(openDashboardInIde).not.toHaveBeenCalled();
     });
 
+    it('grafana_generate_deeplink openInIde returns openedInIde true when the callback resolves', async () => {
+      const openDashboardInIde = vi.fn(async () => undefined);
+      const { service } = await makeService({ openDashboardInIde });
+
+      const result = await service.invoke('grafana_generate_deeplink', {
+        instanceId: 'instance-1',
+        kind: 'dashboard',
+        uid: 'dash-1',
+        openInIde: true
+      });
+
+      expect(openDashboardInIde).toHaveBeenCalled();
+      expect(result).toEqual({
+        ok: true,
+        result: { grafanaUrl: 'https://grafana.example.com/d/dash-1', openedInIde: true }
+      });
+    });
+
     it('grafana_generate_deeplink openInIde calls the callback with matching search and survives callback failure', async () => {
       const openDashboardInIde = vi.fn(async () => {
         throw new Error('panel failed');
