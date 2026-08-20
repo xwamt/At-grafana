@@ -64,6 +64,30 @@ export const grafanaListAnnotationsSchema = z
   })
   .strict();
 
+export const grafanaGenerateDeeplinkSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      instanceId: z.string().min(1),
+      kind: z.literal('dashboard'),
+      uid: z.string().min(1),
+      panelId: z.number().int().positive().optional(),
+      from: z.string().min(1).optional(),
+      to: z.string().min(1).optional(),
+      openInIde: z.boolean().default(false),
+      title: z.string().min(1).optional()
+    })
+    .strict(),
+  z
+    .object({
+      instanceId: z.string().min(1),
+      kind: z.literal('explore'),
+      datasourceUid: z.string().min(1),
+      from: z.string().min(1).optional(),
+      to: z.string().min(1).optional()
+    })
+    .strict()
+]);
+
 export const grafanaListDatasourcesSchema = z.object({ instanceId: z.string().min(1) }).strict();
 
 /**
@@ -203,6 +227,7 @@ export type GrafanaListAlertRulesInput = z.infer<typeof grafanaListAlertRulesSch
 export type GrafanaGetAlertRuleInput = z.infer<typeof grafanaGetAlertRuleSchema>;
 export type GrafanaGetAlertHistoryInput = z.infer<typeof grafanaGetAlertHistorySchema>;
 export type GrafanaListAnnotationsInput = z.infer<typeof grafanaListAnnotationsSchema>;
+export type GrafanaGenerateDeeplinkInput = z.infer<typeof grafanaGenerateDeeplinkSchema>;
 export type GrafanaListDatasourcesInput = z.infer<typeof grafanaListDatasourcesSchema>;
 export type GrafanaQueryDatasourceInput = z.infer<typeof grafanaQueryDatasourceSchema>;
 export type GrafanaQueryPrometheusInput = z.infer<typeof grafanaQueryPrometheusSchema>;
@@ -221,7 +246,8 @@ export const AT_GRAFANA_MANAGEMENT_TOOL_NAMES = [
   'grafana_list_alert_rules',
   'grafana_get_alert_rule',
   'grafana_get_alert_history',
-  'grafana_list_annotations'
+  'grafana_list_annotations',
+  'grafana_generate_deeplink'
 ] as const;
 
 export type AtGrafanaManagementToolName = (typeof AT_GRAFANA_MANAGEMENT_TOOL_NAMES)[number];
@@ -258,6 +284,7 @@ export const BRIDGE_SCHEMAS_BY_TOOL_NAME: Record<AtGrafanaToolName, z.ZodTypeAny
   grafana_get_alert_rule: grafanaGetAlertRuleSchema,
   grafana_get_alert_history: grafanaGetAlertHistorySchema,
   grafana_list_annotations: grafanaListAnnotationsSchema,
+  grafana_generate_deeplink: grafanaGenerateDeeplinkSchema,
   grafana_list_datasources: grafanaListDatasourcesSchema,
   grafana_query_prometheus: grafanaQueryPrometheusSchema,
   grafana_query_loki: grafanaQueryLokiSchema,
@@ -351,6 +378,25 @@ export const GRAFANA_LIST_ANNOTATIONS_INPUT_SCHEMA: JsonSchemaObject = {
     }
   },
   required: ['instanceId'],
+  additionalProperties: false
+};
+export const GRAFANA_GENERATE_DEEPLINK_INPUT_SCHEMA: JsonSchemaObject = {
+  type: 'object',
+  properties: {
+    instanceId: { type: 'string', minLength: 1 },
+    kind: { type: 'string', enum: ['dashboard', 'explore'] },
+    uid: { type: 'string', minLength: 1, description: 'Required when kind is dashboard.' },
+    datasourceUid: { type: 'string', minLength: 1, description: 'Required when kind is explore.' },
+    panelId: { type: 'integer', exclusiveMinimum: 0 },
+    from: { type: 'string', minLength: 1 },
+    to: { type: 'string', minLength: 1 },
+    openInIde: {
+      type: 'boolean',
+      description: 'Dashboard only. Default false. Opens the AT Grafana Webview.'
+    },
+    title: { type: 'string', minLength: 1 }
+  },
+  required: ['instanceId', 'kind'],
   additionalProperties: false
 };
 export const GRAFANA_LIST_DATASOURCES_INPUT_SCHEMA: JsonSchemaObject = instanceIdOnlyInputSchema();

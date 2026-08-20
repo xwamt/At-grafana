@@ -28,6 +28,7 @@ import {
 import { buildLokiProxyCall, buildPrometheusProxyCall } from '../grafana/typedDatasourceQueries';
 import { formatError } from '../utils/errors';
 import type { AtGrafanaLog } from '../utils/logger';
+import { buildGrafanaDeeplink, buildOpenInIdeSearch } from '../grafana/grafanaDeeplink';
 import {
   describeZodError,
   grafanaGetAlertHistorySchema,
@@ -35,6 +36,7 @@ import {
   grafanaGetDashboardSchema,
   grafanaListAlertRulesSchema,
   grafanaListAnnotationsSchema,
+  grafanaGenerateDeeplinkSchema,
   grafanaListDashboardsSchema,
   grafanaListDatasourcesSchema,
   grafanaListFoldersSchema,
@@ -126,6 +128,16 @@ export interface GrafanaAgentToolServiceDependencies {
    * `queryRateLimiter` is supplied -- that limiter carries its own.
    */
   log?: AtGrafanaLog;
+  /**
+   * Optional IDE opener for `grafana_generate_deeplink` with `openInIde: true`.
+   * Injected by `src/extension.ts` so this class stays vscode-free.
+   */
+  openDashboardInIde?: (args: {
+    instanceId: string;
+    uid: string;
+    title?: string;
+    search?: string;
+  }) => Promise<void>;
 }
 
 /** Raw, unresolved `atGrafana.queryLimits.*` values; `undefined` means "not configured," resolved via QueryLimits.ts. */
@@ -235,6 +247,29 @@ export class GrafanaAgentToolService {
               limit: parsed.limit
             })
           );
+        case 'grafana_generate_deeplink':
+          return await this.withAuthorizedClient(grafanaGenerateDeeplinkSchema, args, async (_client, parsed) => {
+            const instance = await this.deps.configManager.getInstance(parsed.instanceId);
+            const grafanaUrl = buildGrafanaDeeplink(instance!.url, parsed);
+            if (parsed.kind !== 'dashboard' || parsed.openInIde !== true) {
+              return { grafanaUrl, openedInIde: false };
+            }
+            const opener = this.deps.openDashboardInIde;
+            if (!opener) {
+              return { grafanaUrl, openedInIde: false, message: 'IDE opener is not available.' };
+            }
+            try {
+              await opener({
+                instanceId: parsed.instanceId,
+                uid: parsed.uid,
+                title: parsed.title,
+                search: buildOpenInIdeSearch(parsed) || undefined
+              });
+              return { grafanaUrl, openedInIde: true };
+            } catch (error) {
+              return { grafanaUrl, openedInIde: false, message: formatError(error) };
+            }
+          });
         case 'grafana_list_datasources':
           return await this.withAuthorizedClient(grafanaListDatasourcesSchema, args, (client) => this.listDatasources(client));
         case 'grafana_query_datasource':

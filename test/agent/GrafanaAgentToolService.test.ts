@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { GrafanaAgentToolService, type GrafanaApiClientLike, type RawQueryLimitsConfig } from '../../src/agent/GrafanaAgentToolService';
+import { GrafanaAgentToolService, type GrafanaAgentToolServiceDependencies, type GrafanaApiClientLike, type RawQueryLimitsConfig } from '../../src/agent/GrafanaAgentToolService';
 import { DEFAULT_MAX_RANGE_MS } from '../../src/grafana/QueryLimits';
 import type { GrafanaInstanceConfig } from '../../src/config/schema';
 import { GrafanaApiClient } from '../../src/grafana/GrafanaApiClient';
@@ -56,6 +56,7 @@ interface ServiceOptions {
   trustedHost?: { host: string; port: number; fingerprint: string };
   queryLimitsConfig?: RawQueryLimitsConfig;
   queryRateLimiter?: QueryRateLimiter;
+  openDashboardInIde?: GrafanaAgentToolServiceDependencies['openDashboardInIde'];
 }
 
 async function makeService(options: ServiceOptions = {}) {
@@ -81,7 +82,8 @@ async function makeService(options: ServiceOptions = {}) {
     certTrustStore,
     createClient,
     getQueryLimitsConfig: options.queryLimitsConfig ? () => options.queryLimitsConfig! : undefined,
-    queryRateLimiter: options.queryRateLimiter
+    queryRateLimiter: options.queryRateLimiter,
+    openDashboardInIde: options.openDashboardInIde
   });
   return { service, createClient, certTrustStore, configManager };
 }
@@ -135,6 +137,7 @@ describe('GrafanaAgentToolService', () => {
         ['grafana_get_alert_rule', { instanceId: 'known', uid: 'r1' }],
         ['grafana_get_alert_history', { instanceId: 'known', uid: 'r1' }],
         ['grafana_list_annotations', { instanceId: 'known' }],
+        ['grafana_generate_deeplink', { instanceId: 'known', kind: 'dashboard', uid: 'd1' }],
         ['grafana_list_datasources', { instanceId: 'known' }],
         ['grafana_query_prometheus', { instanceId: 'known', datasourceUid: 'ds1', expr: 'up' }],
         ['grafana_query_loki', { instanceId: 'known', datasourceUid: 'ds1', expr: '{job="api"}' }],
@@ -399,6 +402,92 @@ describe('GrafanaAgentToolService', () => {
         dashboardUid: 'dash-1',
         tag: 'r',
         limit: 50
+      });
+    });
+
+    it('grafana_generate_deeplink returns a dashboard URL and does not open the IDE by default', async () => {
+      const openDashboardInIde = vi.fn(async () => undefined);
+      const { service } = await makeService({ openDashboardInIde });
+
+      const result = await service.invoke('grafana_generate_deeplink', {
+        instanceId: 'instance-1',
+        kind: 'dashboard',
+        uid: 'dash-1'
+      });
+
+      expect(result).toEqual({
+        ok: true,
+        result: { grafanaUrl: 'https://grafana.example.com/d/dash-1', openedInIde: false }
+      });
+      expect(openDashboardInIde).not.toHaveBeenCalled();
+    });
+
+    it('grafana_generate_deeplink openInIde calls the callback with matching search and survives callback failure', async () => {
+      const openDashboardInIde = vi.fn(async () => {
+        throw new Error('panel failed');
+      });
+      const { service } = await makeService({ openDashboardInIde });
+
+      const result = await service.invoke('grafana_generate_deeplink', {
+        instanceId: 'instance-1',
+        kind: 'dashboard',
+        uid: 'dash-1',
+        panelId: 5,
+        from: 'now-1h',
+        to: 'now',
+        openInIde: true,
+        title: 'CPU'
+      });
+
+      expect(openDashboardInIde).toHaveBeenCalledWith({
+        instanceId: 'instance-1',
+        uid: 'dash-1',
+        title: 'CPU',
+        search: 'viewPanel=5&from=now-1h&to=now'
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        result: {
+          grafanaUrl: 'https://grafana.example.com/d/dash-1?viewPanel=5&from=now-1h&to=now',
+          openedInIde: false
+        }
+      });
+      expect((result as { result: { message: string } }).result.message.length).toBeGreaterThan(0);
+    });
+
+    it('grafana_generate_deeplink explore returns a left-pane URL and never calls the opener', async () => {
+      const openDashboardInIde = vi.fn(async () => undefined);
+      const { service } = await makeService({ openDashboardInIde });
+
+      const result = await service.invoke('grafana_generate_deeplink', {
+        instanceId: 'instance-1',
+        kind: 'explore',
+        datasourceUid: 'prom'
+      });
+
+      expect(result).toMatchObject({ ok: true });
+      const grafanaUrl = (result as { result: { grafanaUrl: string } }).result.grafanaUrl;
+      expect(grafanaUrl).toContain('/explore?left=');
+      expect(openDashboardInIde).not.toHaveBeenCalled();
+    });
+
+    it('grafana_generate_deeplink openInIde with no callback still returns the URL', async () => {
+      const { service } = await makeService();
+
+      const result = await service.invoke('grafana_generate_deeplink', {
+        instanceId: 'instance-1',
+        kind: 'dashboard',
+        uid: 'dash-1',
+        openInIde: true
+      });
+
+      expect(result).toEqual({
+        ok: true,
+        result: {
+          grafanaUrl: 'https://grafana.example.com/d/dash-1',
+          openedInIde: false,
+          message: 'IDE opener is not available.'
+        }
       });
     });
   });

@@ -235,6 +235,25 @@ describe('Bridge integration (real GrafanaAgentToolService, no fake toolService)
     expect(response.body).toEqual({ ok: true, name: 'grafana_list_annotations', result: rows });
   });
 
+  it('management family: POST /invoke grafana_generate_deeplink returns a dashboard grafanaUrl', async () => {
+    const handler = await makeHandler();
+
+    const response = await handler(
+      invokeRequest('grafana_generate_deeplink', {
+        instanceId: 'instance-1',
+        kind: 'dashboard',
+        uid: 'dash-1'
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      ok: true,
+      name: 'grafana_generate_deeplink',
+      result: { grafanaUrl: 'https://grafana.example.com/d/dash-1', openedInIde: false }
+    });
+  });
+
   it('rejects a disabled instance for a management tool with a validation-class error produced by the real authorization check', async () => {
     const handler = await makeHandler({ instances: [instance({ id: 'instance-1', allowBackgroundAccess: false })] });
 

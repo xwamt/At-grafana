@@ -5,6 +5,7 @@ import {
   GRAFANA_GET_DASHBOARD_INPUT_SCHEMA,
   GRAFANA_LIST_ALERT_RULES_INPUT_SCHEMA,
   GRAFANA_LIST_ANNOTATIONS_INPUT_SCHEMA,
+  GRAFANA_GENERATE_DEEPLINK_INPUT_SCHEMA,
   GRAFANA_LIST_DASHBOARDS_INPUT_SCHEMA,
   GRAFANA_LIST_DATASOURCES_INPUT_SCHEMA,
   GRAFANA_LIST_FOLDERS_INPUT_SCHEMA,
@@ -129,6 +130,16 @@ export const AT_GRAFANA_TOOL_CATALOG: ToolCatalogEntry[] = [
       MANAGEMENT_FAMILY_SUFFIX,
     risk: 'read',
     inputSchema: GRAFANA_LIST_ANNOTATIONS_INPUT_SCHEMA
+  },
+  {
+    name: 'grafana_generate_deeplink',
+    title: 'Generate Grafana deeplink',
+    description:
+      'Build a Grafana dashboard or Explore URL from the instance base URL. Always returns grafanaUrl. Optional ' +
+      'openInIde (default false) opens the AT Grafana Webview for dashboards only; Explore is URL-only.' +
+      MANAGEMENT_FAMILY_SUFFIX,
+    risk: 'read',
+    inputSchema: GRAFANA_GENERATE_DEEPLINK_INPUT_SCHEMA
   },
   {
     name: 'grafana_list_datasources',

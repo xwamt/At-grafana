@@ -8,7 +8,8 @@ const MANAGEMENT_TOOL_NAMES = [
   'grafana_list_alert_rules',
   'grafana_get_alert_rule',
   'grafana_get_alert_history',
-  'grafana_list_annotations'
+  'grafana_list_annotations',
+  'grafana_generate_deeplink'
 ];
 const MONITORING_TOOL_NAMES = [
   'grafana_list_datasources',
@@ -35,6 +36,7 @@ describe('toolCatalog', () => {
   });
 
   it('declares the current catalog names, in any order', () => {
+    expect(AT_GRAFANA_TOOL_CATALOG).toHaveLength(17);
     expect(AT_GRAFANA_TOOL_CATALOG.map((tool) => tool.name).sort()).toEqual([...EXPECTED_TOOL_NAMES].sort());
   });
 
@@ -143,6 +145,24 @@ describe('toolCatalog', () => {
       limit: { type: 'integer' }
     });
     expect(tool.inputSchema.required).not.toContain('limit');
+  });
+
+  it('grafana_generate_deeplink is a read-only management tool that returns grafanaUrl and defaults openInIde to false', () => {
+    const tool = findTool('grafana_generate_deeplink');
+    expect(tool.risk).toBe('read');
+    expect(tool.description).toMatch(/grafanaUrl/);
+    expect(tool.description.toLowerCase()).toMatch(/openinide/);
+    expect(tool.description.toLowerCase()).toMatch(/default(?:s)? false|false by default/);
+    expect(tool.inputSchema.required).toEqual(['instanceId', 'kind']);
+    expect(tool.inputSchema.additionalProperties).toBe(false);
+    expect(tool.inputSchema.properties).toMatchObject({
+      instanceId: { type: 'string' },
+      kind: { type: 'string', enum: ['dashboard', 'explore'] },
+      uid: { type: 'string' },
+      datasourceUid: { type: 'string' },
+      panelId: { type: 'integer', exclusiveMinimum: 0 },
+      openInIde: { type: 'boolean' }
+    });
   });
 
   it('grafana_query_datasource requires instanceId/datasourceUid/method/path, with method restricted to GET/POST', () => {

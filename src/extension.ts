@@ -142,6 +142,14 @@ export function activate(context: vscode.ExtensionContext): void {
         maxRangeMs: config.get<number>('queryLimits.maxRangeMs'),
         maxResponseBytes: config.get<number>('queryLimits.maxResponseBytes')
       };
+    },
+    openDashboardInIde: async ({ instanceId, uid, title, search }) => {
+      await vscode.commands.executeCommand('atGrafana.openDashboard', {
+        instanceId,
+        uid,
+        title,
+        search
+      });
     }
   });
 

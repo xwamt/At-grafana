@@ -15,7 +15,8 @@ import {
   grafanaListPrometheusMetricNamesSchema,
   grafanaListPrometheusLabelValuesSchema,
   grafanaListLokiLabelNamesSchema,
-  grafanaListLokiLabelValuesSchema
+  grafanaListLokiLabelValuesSchema,
+  grafanaGenerateDeeplinkSchema
 } from '../../src/mcp/bridgeSchemas';
 
 describe('grafanaListInstancesSchema', () => {
@@ -375,6 +376,70 @@ describe('grafanaListAnnotationsSchema', () => {
   it('rejects negative from and to', () => {
     expect(grafanaListAnnotationsSchema.safeParse({ instanceId: 'abc', from: -1 }).success).toBe(false);
     expect(grafanaListAnnotationsSchema.safeParse({ instanceId: 'abc', to: -1 }).success).toBe(false);
+  });
+});
+
+describe('grafanaGenerateDeeplinkSchema', () => {
+  it('accepts explore with instanceId, kind, and datasourceUid', () => {
+    expect(
+      grafanaGenerateDeeplinkSchema.safeParse({
+        instanceId: 'abc',
+        kind: 'explore',
+        datasourceUid: 'prom'
+      }).success
+    ).toBe(true);
+  });
+
+  it('rejects explore with openInIde true', () => {
+    expect(
+      grafanaGenerateDeeplinkSchema.safeParse({
+        instanceId: 'abc',
+        kind: 'explore',
+        datasourceUid: 'prom',
+        openInIde: true
+      }).success
+    ).toBe(false);
+  });
+
+  it('rejects extra properties on dashboard and explore', () => {
+    expect(
+      grafanaGenerateDeeplinkSchema.safeParse({
+        instanceId: 'abc',
+        kind: 'dashboard',
+        uid: 'dash-1',
+        extra: true
+      }).success
+    ).toBe(false);
+    expect(
+      grafanaGenerateDeeplinkSchema.safeParse({
+        instanceId: 'abc',
+        kind: 'explore',
+        datasourceUid: 'prom',
+        extra: true
+      }).success
+    ).toBe(false);
+  });
+
+  it('accepts dashboard with instanceId, kind, and uid', () => {
+    expect(
+      grafanaGenerateDeeplinkSchema.safeParse({
+        instanceId: 'abc',
+        kind: 'dashboard',
+        uid: 'dash-1'
+      }).success
+    ).toBe(true);
+  });
+
+  it('parses omitted openInIde as false on dashboard', () => {
+    const parsed = grafanaGenerateDeeplinkSchema.safeParse({
+      instanceId: 'abc',
+      kind: 'dashboard',
+      uid: 'dash-1'
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data).toMatchObject({ kind: 'dashboard', openInIde: false });
+    }
   });
 });
 
