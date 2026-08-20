@@ -14,13 +14,20 @@ import { DATASOURCE_PROXY_PATH_DENY_PATTERN } from '../grafana/GrafanaDatasource
  */
 export const grafanaListInstancesSchema = z.object({}).strict();
 
-export const grafanaListDashboardsSchema = z.object({ instanceId: z.string().min(1) }).strict();
+export const grafanaListDashboardsSchema = z
+  .object({
+    instanceId: z.string().min(1),
+    query: z.string().min(1).optional(),
+    tag: z.string().min(1).optional(),
+    folderUid: z.string().min(1).optional()
+  })
+  .strict();
 
 /**
  * Optional projection for `grafana_get_dashboard` (OPTIMIZE-P1):
- * - `full` (default): unchanged dashboard model
+ * - `targets` (default): panel expr/datasource only (strip fieldConfig/options/gridPos); recurse rows
  * - `summary`: uid/title/time + panel id/title/type/datasource
- * - `targets`: panel expr/datasource only (strip fieldConfig/options/gridPos); recurse rows
+ * - `full`: unchanged dashboard model (pass explicitly)
  * Optional `panelIds` / `titleContains` filter panels server-side before projection.
  */
 export const grafanaGetDashboardSchema = z
@@ -177,7 +184,17 @@ export const GRAFANA_LIST_INSTANCES_INPUT_SCHEMA: JsonSchemaObject = {
   properties: {},
   additionalProperties: false
 };
-export const GRAFANA_LIST_DASHBOARDS_INPUT_SCHEMA: JsonSchemaObject = instanceIdOnlyInputSchema();
+export const GRAFANA_LIST_DASHBOARDS_INPUT_SCHEMA: JsonSchemaObject = {
+  type: 'object',
+  properties: {
+    instanceId: { type: 'string', minLength: 1 },
+    query: { type: 'string', minLength: 1, description: 'Grafana /api/search query string (title/metadata).' },
+    tag: { type: 'string', minLength: 1, description: 'Single Grafana dashboard tag to filter on.' },
+    folderUid: { type: 'string', minLength: 1, description: 'Restrict results to this folder UID (Grafana folderUIDs).' }
+  },
+  required: ['instanceId'],
+  additionalProperties: false
+};
 export const GRAFANA_GET_DASHBOARD_INPUT_SCHEMA: JsonSchemaObject = {
   type: 'object',
   properties: {

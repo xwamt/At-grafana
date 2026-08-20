@@ -175,6 +175,24 @@ describe('GrafanaAgentToolService', () => {
       });
     });
 
+    it('grafana_list_dashboards forwards query, tag, and folderUid to search and keeps type dash-db', async () => {
+      const search = vi.fn(async () => [{ uid: 'd1', title: 'CPU', type: 'dash-db', folderUid: 'f1', tags: ['infra'] }]);
+      const client = fakeClient({
+        search,
+        getFolders: async () => [{ uid: 'f1', title: 'Infra' }]
+      });
+      const { service } = await makeService({ client });
+
+      await service.invoke('grafana_list_dashboards', {
+        instanceId: 'instance-1',
+        query: 'cpu',
+        tag: 'infra',
+        folderUid: 'f1'
+      });
+
+      expect(search).toHaveBeenCalledWith({ type: 'dash-db', query: 'cpu', tag: 'infra', folderUid: 'f1' });
+    });
+
     it('grafana_get_dashboard defaults to fields=targets', async () => {
       const dashboard = {
         uid: 'd1',

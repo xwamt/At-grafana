@@ -23,7 +23,6 @@ describe('grafanaListInstancesSchema', () => {
 
 describe('instanceId-only schemas', () => {
   const schemas = {
-    grafanaListDashboardsSchema,
     grafanaListFoldersSchema,
     grafanaListAlertRulesSchema,
     grafanaListDatasourcesSchema
@@ -52,6 +51,45 @@ describe('instanceId-only schemas', () => {
       });
     });
   }
+});
+
+describe('grafanaListDashboardsSchema', () => {
+  it('accepts instanceId alone', () => {
+    expect(grafanaListDashboardsSchema.safeParse({ instanceId: 'abc' }).success).toBe(true);
+  });
+
+  it('accepts optional query, tag, and folderUid', () => {
+    expect(
+      grafanaListDashboardsSchema.safeParse({
+        instanceId: 'abc',
+        query: 'cpu',
+        tag: 'infra',
+        folderUid: 'folder-1'
+      }).success
+    ).toBe(true);
+  });
+
+  it('rejects empty optional strings', () => {
+    expect(grafanaListDashboardsSchema.safeParse({ instanceId: 'abc', query: '' }).success).toBe(false);
+    expect(grafanaListDashboardsSchema.safeParse({ instanceId: 'abc', tag: '' }).success).toBe(false);
+    expect(grafanaListDashboardsSchema.safeParse({ instanceId: 'abc', folderUid: '' }).success).toBe(false);
+  });
+
+  it('rejects unexpected extra properties', () => {
+    expect(grafanaListDashboardsSchema.safeParse({ instanceId: 'abc', extra: true }).success).toBe(false);
+  });
+
+  it('rejects a missing instanceId', () => {
+    expect(grafanaListDashboardsSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('rejects a non-string instanceId', () => {
+    expect(grafanaListDashboardsSchema.safeParse({ instanceId: 42 }).success).toBe(false);
+  });
+
+  it('rejects an empty instanceId', () => {
+    expect(grafanaListDashboardsSchema.safeParse({ instanceId: '' }).success).toBe(false);
+  });
 });
 
 describe('instanceId + uid schemas', () => {

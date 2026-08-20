@@ -14,7 +14,6 @@ const EXPECTED_TOOL_NAMES = ['grafana_list_instances', ...MANAGEMENT_TOOL_NAMES,
 
 const INSTANCE_ID_AND_UID_TOOLS = new Set(['grafana_get_alert_rule', 'grafana_get_alert_history']);
 const INSTANCE_ID_ONLY_TOOLS = new Set([
-  'grafana_list_dashboards',
   'grafana_list_folders',
   'grafana_list_alert_rules',
   'grafana_list_datasources'
@@ -69,6 +68,21 @@ describe('toolCatalog', () => {
         uid: { type: 'string' }
       });
     }
+  });
+
+  it('grafana_list_dashboards requires instanceId and documents optional query/tag/folderUid', () => {
+    const tool = findTool('grafana_list_dashboards');
+    expect(tool.inputSchema.required).toEqual(['instanceId']);
+    expect(tool.inputSchema.additionalProperties).toBe(false);
+    expect(tool.inputSchema.properties).toMatchObject({
+      instanceId: { type: 'string' },
+      query: { type: 'string', minLength: 1 },
+      tag: { type: 'string', minLength: 1 },
+      folderUid: { type: 'string', minLength: 1 }
+    });
+    expect(tool.description.toLowerCase()).toContain('query');
+    expect(tool.description.toLowerCase()).toMatch(/\btag\b/);
+    expect(tool.description.toLowerCase()).toContain('folderuid');
   });
 
   it('grafana_get_dashboard requires instanceId/uid and documents optional fields projection', () => {

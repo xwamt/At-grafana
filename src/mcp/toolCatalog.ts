@@ -63,7 +63,10 @@ export const AT_GRAFANA_TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     name: 'grafana_list_dashboards',
     title: 'List Grafana dashboards',
-    description: `List dashboards on a Grafana instance, grouped by folder (uid, title, tags, folder).${MANAGEMENT_FAMILY_SUFFIX}`,
+    description:
+      'List dashboards on a Grafana instance (uid, title, tags, folder). Optional query, tag, and folderUid ' +
+      'narrow Grafana /api/search -- prefer a query over listing everything on a large instance.' +
+      MANAGEMENT_FAMILY_SUFFIX,
     risk: 'read',
     inputSchema: GRAFANA_LIST_DASHBOARDS_INPUT_SCHEMA
   },

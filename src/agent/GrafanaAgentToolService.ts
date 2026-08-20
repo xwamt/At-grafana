@@ -185,7 +185,9 @@ export class GrafanaAgentToolService {
         case 'grafana_list_instances':
           return await this.listInstances(args);
         case 'grafana_list_dashboards':
-          return await this.withAuthorizedClient(grafanaListDashboardsSchema, args, (client) => this.listDashboards(client));
+          return await this.withAuthorizedClient(grafanaListDashboardsSchema, args, (client, parsed) =>
+            this.listDashboards(client, parsed)
+          );
         case 'grafana_get_dashboard':
           return await this.withAuthorizedClient(grafanaGetDashboardSchema, args, async (client, parsed) => {
             const dashboard = await client.getDashboardByUid(parsed.uid);
@@ -277,14 +279,25 @@ export class GrafanaAgentToolService {
     };
   }
 
-  private async listDashboards(client: GrafanaApiClientLike): Promise<unknown> {
+  private async listDashboards(
+    client: GrafanaApiClientLike,
+    parsed: { query?: string; tag?: string; folderUid?: string }
+  ): Promise<unknown> {
     // Near-duplicate of DashboardTreeProvider's folder grouping by design:
     // the tree provider groups into a UI-tree shape (folder nodes with
     // dashboard children, "General" bucket for folderless dashboards); this
     // needs a flat, JSON-serializable list instead, so sharing code would
     // mean threading a shape parameter through the tree provider's cache
     // just to satisfy this one other caller. See docs/plans Task 5.1.
-    const [dashboards, folders] = await Promise.all([client.search({ type: 'dash-db' }), client.getFolders()]);
+    const [dashboards, folders] = await Promise.all([
+      client.search({
+        type: 'dash-db',
+        query: parsed.query,
+        tag: parsed.tag,
+        folderUid: parsed.folderUid
+      }),
+      client.getFolders()
+    ]);
     const folderTitleByUid = new Map(folders.map((folder) => [folder.uid, folder.title]));
     return dashboards.map((dashboard) => ({
       uid: dashboard.uid,

@@ -33,6 +33,10 @@ export interface GrafanaDashboard {
 export interface GrafanaDashboardSearchQuery {
   query?: string;
   type?: 'dash-db' | 'dash-folder';
+  /** Single Grafana search `tag` parameter. */
+  tag?: string;
+  /** Mapped to Grafana `/api/search` `folderUIDs`. */
+  folderUid?: string;
 }
 
 /**
@@ -82,7 +86,12 @@ export class GrafanaDashboardsApi {
    */
   async search(query: GrafanaDashboardSearchQuery = {}): Promise<GrafanaSearchResult[]> {
     const raw = await this.http.requestJson<unknown>('GET', '/api/search', {
-      query: { query: query.query, type: query.type }
+      query: {
+        query: query.query,
+        type: query.type,
+        tag: query.tag,
+        folderUIDs: query.folderUid
+      }
     });
     if (!Array.isArray(raw)) {
       throw new GrafanaApiError('invalid-response', 'Grafana /api/search did not return an array.');
@@ -119,12 +128,17 @@ export class GrafanaDashboardsApi {
     query: GrafanaDashboardSearchQuery = {},
     options: GrafanaListingPageOptions = {}
   ): Promise<GrafanaSearchResult[]> {
-    return this.collectPages('/api/search', { query: query.query, type: query.type }, options, (raw) => {
-      if (!Array.isArray(raw)) {
-        throw new GrafanaApiError('invalid-response', 'Grafana /api/search did not return an array.');
+    return this.collectPages(
+      '/api/search',
+      { query: query.query, type: query.type, tag: query.tag, folderUIDs: query.folderUid },
+      options,
+      (raw) => {
+        if (!Array.isArray(raw)) {
+          throw new GrafanaApiError('invalid-response', 'Grafana /api/search did not return an array.');
+        }
+        return raw.map(toSearchResult);
       }
-      return raw.map(toSearchResult);
-    });
+    );
   }
 
   /** One page of `/api/folders`; the Agent-facing counterpart of `search`. See its doc for why this stays unpaged. */

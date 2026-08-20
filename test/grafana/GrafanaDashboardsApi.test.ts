@@ -62,6 +62,24 @@ describe('GrafanaApiClient dashboards', () => {
     ]);
   });
 
+  it('search() forwards query, tag, type, and folderUIDs to /api/search', async () => {
+    let seen: string | undefined;
+    server = await listen((req, res) => {
+      seen = req.url;
+      res.writeHead(200, { 'content-type': 'application/json' }).end('[]');
+    });
+    const client = new GrafanaApiClient({ baseUrl: server.url, token: 'tok' });
+
+    await client.search({ query: 'cpu', type: 'dash-db', tag: 'infra', folderUid: 'folder-1' });
+
+    const parsed = new URL(seen ?? '/', 'http://grafana.invalid');
+    expect(parsed.pathname).toBe('/api/search');
+    expect(parsed.searchParams.get('query')).toBe('cpu');
+    expect(parsed.searchParams.get('type')).toBe('dash-db');
+    expect(parsed.searchParams.get('tag')).toBe('infra');
+    expect(parsed.searchParams.get('folderUIDs')).toBe('folder-1');
+  });
+
   it('search() classifies a 401 as auth', async () => {
     server = await listen((_req, res) => res.writeHead(401).end());
     const client = new GrafanaApiClient({ baseUrl: server.url, token: 'tok' });
@@ -195,6 +213,23 @@ describe('GrafanaApiClient folder-uid version compatibility', () => {
 });
 
 describe('GrafanaApiClient paginated listings', () => {
+  it('searchAll() first page includes tag and folderUIDs', async () => {
+    let seen: string | undefined;
+    server = await listen((req, res) => {
+      seen = req.url;
+      res.writeHead(200, { 'content-type': 'application/json' }).end('[]');
+    });
+    const client = new GrafanaApiClient({ baseUrl: server.url, token: 'tok' });
+
+    await client.searchAll({ type: 'dash-db', tag: 'infra', folderUid: 'folder-1' }, { pageSize: 2 });
+
+    const parsed = new URL(seen ?? '/', 'http://grafana.invalid');
+    expect(parsed.pathname).toBe('/api/search');
+    expect(parsed.searchParams.get('type')).toBe('dash-db');
+    expect(parsed.searchParams.get('tag')).toBe('infra');
+    expect(parsed.searchParams.get('folderUIDs')).toBe('folder-1');
+  });
+
   it('searchAll() keeps paging until a short page ends the walk', async () => {
     const seen: { page: string | null; limit: string | null }[] = [];
     server = await listen((req, res) => {
