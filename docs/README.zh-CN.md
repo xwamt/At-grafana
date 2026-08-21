@@ -4,7 +4,7 @@
 
 AT Grafana 是 **AT 系列** VS Code / Cursor 扩展的一员（同系列还有 `at-terminal-series`、`at-jumpserver-series`）。它把 Grafana 的 dashboard 与 Unified Alerting 原生集成到 IDE，并通过共享的 [`@at-series/mcp-hub`](https://www.npmjs.com/package/@at-series/mcp-hub) Protocol v1，把只读的 Grafana 配置元数据以及数据源查询（Prometheus、Loki 等）提供给 Agent。
 
-**当前版本：`0.1.0`** —— V1 功能已齐。自动化验证：typecheck + **506** 项测试。针对真实 Grafana / 真实 MCP 客户端的冒烟项仍见 [`releases/0.1.0.md`](releases/0.1.0.md)。
+**当前版本：`0.1.3`** —— MCP 目录对齐为 17 个只读工具（类型化 Prom/Loki、discovery、annotations、deeplink）。自动化验证：typecheck + **559** 项测试。见 [`releases/0.1.3.md`](releases/0.1.3.md)。针对真实 Grafana / 真实 MCP 客户端的冒烟项仍见 [`releases/0.1.0.md`](releases/0.1.0.md)。
 
 ## 功能
 
@@ -34,7 +34,7 @@ AT Grafana 是 **AT 系列** VS Code / Cursor 扩展的一员（同系列还有 
 
    ```bash
    npm install
-   npm run package   # 生成 at-grafana-0.1.0.vsix
+   npm run package   # 生成 at-grafana-0.1.3.vsix
    ```
 
 2. 在 VS Code / Cursor：**扩展 → ⋯ → 从 VSIX 安装…**，选择生成的文件。
@@ -83,10 +83,11 @@ npm run package
 | --- | --- |
 | [`features.zh-CN.md`](features.zh-CN.md)（[English](features.md)） | 功能概览 |
 | [`usage.zh-CN.md`](usage.zh-CN.md)（[English](usage.md)） | 配置实例、开启 Agent、连接 MCP |
-| [`releases/0.1.0.md`](releases/0.1.0.md) | 发布说明与验收记录 |
+| [`releases/0.1.3.md`](releases/0.1.3.md) | 当前版本发布说明（17 工具 MCP 目录） |
+| [`releases/0.1.0.md`](releases/0.1.0.md) | V1 验收记录（Definition of Done） |
 | [`requirements.md`](requirements.md) | 完整需求规格（中文） |
 | [`skills/at-grafana-mcp/SKILL.md`](../skills/at-grafana-mcp/SKILL.md) | 面向 Agent 的 MCP 工具指南（英文） |
-| [`decisions/`](decisions) | ADR-001 … ADR-005 |
+| [`decisions/`](decisions) | ADR-001 … ADR-007 |
 | [`plans/2026-07-29-at-grafana-v1-implementation-plan.md`](plans/2026-07-29-at-grafana-v1-implementation-plan.md) | 分阶段实施记录 |
 
 以 `at-terminal-series` 为脚手架新建（独立 git 历史，已删除 SSH/SFTP/终端相关代码），见 [ADR-001](decisions/ADR-001-scaffold-from-at-terminal-series.md)。
