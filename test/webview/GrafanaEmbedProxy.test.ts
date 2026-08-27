@@ -1,7 +1,8 @@
 import * as http from 'node:http';
 import * as net from 'node:net';
 import type { AddressInfo } from 'node:net';
-import { afterEach, describe, expect, it } from 'vitest';
+import * as zlib from 'node:zlib';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GrafanaInstanceConfig } from '../../src/config/schema';
 import { GrafanaCertTrustStore, type CertTrustMemento } from '../../src/grafana/GrafanaCertTrustStore';
 import type { GrafanaCertVerifier } from '../../src/grafana/GrafanaHttpClient';
@@ -12,6 +13,7 @@ import {
   injectGrafanaEmbedShim,
   injectProxyBaseTag,
   isGrafanaNativePath,
+  isLikelyRewritableRequest,
   parseEmbedReferrer,
   parseInstancePath,
   parseProxyRoute,
@@ -20,6 +22,12 @@ import {
   type GrafanaEmbedProxyDependencies
 } from '../../src/webview/GrafanaEmbedProxy';
 import { renderEmbedWebviewHtml } from '../../src/webview/html';
+import {
+  EMBED_PROXY_IDLE_DISPOSE_DELAY_MS,
+  disposeOpenPanels,
+  setEmbedProxyIdleDisposeTarget,
+  trackOpenPanel
+} from '../../src/webview/openPanels';
 import { listen, type TestHttpServer } from '../grafana/testHttpServer';
 
 const TOKEN = 'glsa_super_secret_proxy_token_do_not_leak';
@@ -39,6 +47,9 @@ class MemoryMemento implements CertTrustMemento {
 class FakeConfigManager {
   private readonly instances = new Map<string, GrafanaInstanceConfig>();
   private readonly tokens = new Map<string, string>();
+  /** Call counters so the PERF-02 tests can prove the proxy caches instead of re-reading per sub-resource. */
+  getInstanceCalls = 0;
+  getTokenCalls = 0;
 
   addInstance(instance: GrafanaInstanceConfig, token: string | undefined): void {
     this.instances.set(instance.id, instance);
@@ -48,10 +59,12 @@ class FakeConfigManager {
   }
 
   async getInstance(id: string): Promise<GrafanaInstanceConfig | undefined> {
+    this.getInstanceCalls++;
     return this.instances.get(id);
   }
 
   async getToken(id: string): Promise<string | undefined> {
+    this.getTokenCalls++;
     return this.tokens.get(id);
   }
 }
@@ -1200,6 +1213,389 @@ describe('GrafanaEmbedProxy upstream timeouts and concurrency', () => {
   });
 });
 
+/**
+ * PERF-02: a dashboard load issues hundreds of sub-resource requests, and
+ * every one used to pay a full config parse (`getInstance`) plus a
+ * SecretStorage IPC round-trip (`getToken`). The proxy now reads once per
+ * instance and holds the pair until something invalidates it.
+ */
+describe('GrafanaEmbedProxy credential caching (PERF-02)', () => {
+  it('reads the instance and token once across multiple requests to the same instance', async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' }).end('ok');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-cache', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+    const path = embedPath(embedProxy, `/instances/${instance.id}/api/health`);
+
+    await requestProxy(proxyPort(embedProxy), path);
+    await requestProxy(proxyPort(embedProxy), path);
+    await requestProxy(proxyPort(embedProxy), path);
+
+    expect(upstream.requestCount).toBe(3);
+    expect(configManager.getInstanceCalls).toBe(1);
+    expect(configManager.getTokenCalls).toBe(1);
+  });
+
+  it('re-reads the token after invalidateInstance', async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' }).end('ok');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-invalidate', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+    const path = embedPath(embedProxy, `/instances/${instance.id}/api/health`);
+
+    await requestProxy(proxyPort(embedProxy), path);
+    expect(configManager.getTokenCalls).toBe(1);
+
+    embedProxy.invalidateInstance(instance.id);
+    await requestProxy(proxyPort(embedProxy), path);
+
+    expect(configManager.getTokenCalls).toBe(2);
+  });
+
+  it('re-reads every instance after invalidateAll', async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' }).end('ok');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-invalidate-all', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+    const path = embedPath(embedProxy, `/instances/${instance.id}/api/health`);
+
+    await requestProxy(proxyPort(embedProxy), path);
+    embedProxy.invalidateAll();
+    await requestProxy(proxyPort(embedProxy), path);
+
+    expect(configManager.getInstanceCalls).toBe(2);
+    expect(configManager.getTokenCalls).toBe(2);
+  });
+
+  it('drops the cached credential when the upstream answers 401, so a rotated token is re-read', async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(401, { 'content-type': 'text/plain' }).end('invalid token');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-rotated', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+    const path = embedPath(embedProxy, `/instances/${instance.id}/api/health`);
+
+    await requestProxy(proxyPort(embedProxy), path);
+    await requestProxy(proxyPort(embedProxy), path);
+
+    expect(configManager.getTokenCalls).toBe(2);
+  });
+
+  it('start() drops cached credentials so a panel reopen sees an edited instance', async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' }).end('ok');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-reopen', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+    const path = embedPath(embedProxy, `/instances/${instance.id}/api/health`);
+
+    await requestProxy(proxyPort(embedProxy), path);
+    await embedProxy.start();
+    await requestProxy(proxyPort(embedProxy), path);
+
+    expect(configManager.getTokenCalls).toBe(2);
+  });
+
+  it('does not cache a missing token: adding one later is picked up without an explicit invalidation', async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' }).end('ok');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-late-token', upstream.url);
+    configManager.addInstance(instance, undefined);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+    const path = embedPath(embedProxy, `/instances/${instance.id}/api/health`);
+
+    const before = await requestProxy(proxyPort(embedProxy), path);
+    configManager.addInstance(instance, TOKEN);
+    const after = await requestProxy(proxyPort(embedProxy), path);
+
+    expect(before.status).toBe(502);
+    expect(after.status).toBe(200);
+  });
+});
+
+/**
+ * PERF-03 (encoding half): only requests likely to yield a rewritable
+ * response (HTML/JS/CSS) force `Accept-Encoding: identity`; everything else
+ * keeps the client's own header so Grafana may compress the responses the
+ * proxy pipes through verbatim.
+ */
+describe('GrafanaEmbedProxy upstream compression (PERF-03)', () => {
+  it('passes the client Accept-Encoding through for a JSON API request', async () => {
+    const seen: Array<string | undefined> = [];
+    upstream = await listen((req, res) => {
+      seen.push(req.headers['accept-encoding']);
+      res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-json', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/api/search`), {
+      headers: { accept: 'application/json', 'accept-encoding': 'gzip, br' }
+    });
+
+    expect(seen).toEqual(['gzip, br']);
+  });
+
+  it('sends no Accept-Encoding at all for a non-rewritable request whose client sent none', async () => {
+    const seen: Array<string | undefined> = [];
+    upstream = await listen((req, res) => {
+      seen.push(req.headers['accept-encoding']);
+      res.writeHead(200, { 'content-type': 'image/png' }).end('png-bytes');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-image', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/public/img/icon.png`));
+
+    expect(seen).toEqual([undefined]);
+  });
+
+  it('forces identity for the main dashboard document', async () => {
+    const seen: Array<string | undefined> = [];
+    upstream = await listen((req, res) => {
+      seen.push(req.headers['accept-encoding']);
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end('<html><head></head><body></body></html>');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-doc', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`), {
+      headers: { 'accept-encoding': 'gzip, br' }
+    });
+
+    expect(seen).toEqual(['identity']);
+  });
+
+  it('forces identity for JS bundle paths', async () => {
+    const seen: Array<string | undefined> = [];
+    upstream = await listen((req, res) => {
+      seen.push(req.headers['accept-encoding']);
+      res.writeHead(200, { 'content-type': 'application/javascript' }).end('console.log(1)');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-js', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/public/build/app.js`), {
+      headers: { 'accept-encoding': 'gzip, br' }
+    });
+
+    expect(seen).toEqual(['identity']);
+  });
+
+  it('gunzips a gzip-encoded rewritable response before rewriting it', async () => {
+    upstream = await listen((_req, res) => {
+      const html = `<html><head></head><body><a href="${upstream!.url}/d/other">link</a></body></html>`;
+      res
+        .writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-encoding': 'gzip' })
+        .end(zlib.gzipSync(html));
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-gzip', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`));
+
+    expect(result.status).toBe(200);
+    expect(result.headers['content-encoding']).toBeUndefined();
+    expect(result.body).toContain('<base href=');
+    expect(result.body).not.toContain(upstream.url);
+    expect(result.body).toContain(`${embedProxy.origin}${embedPath(embedProxy, `/instances/${instance.id}`)}/d/other`);
+  });
+});
+
+describe('isLikelyRewritableRequest', () => {
+  it('recognizes document, script, and style requests by header or path', () => {
+    expect(isLikelyRewritableRequest({ accept: 'text/html,application/xhtml+xml' }, '/d/abc/dash')).toBe(true);
+    expect(isLikelyRewritableRequest({ 'sec-fetch-dest': 'script' }, '/anything')).toBe(true);
+    expect(isLikelyRewritableRequest({}, '/public/build/app.js')).toBe(true);
+    expect(isLikelyRewritableRequest({}, '/public/build/theme.css')).toBe(true);
+    expect(isLikelyRewritableRequest({}, '/d/abc/dash')).toBe(true);
+    expect(isLikelyRewritableRequest({}, '/alerting/grafana/rule/view')).toBe(true);
+    expect(isLikelyRewritableRequest({}, '/')).toBe(true);
+  });
+
+  it('leaves API, image, and font requests alone', () => {
+    expect(isLikelyRewritableRequest({ accept: 'application/json' }, '/api/search')).toBe(false);
+    expect(isLikelyRewritableRequest({}, '/public/img/grafana_icon.svg')).toBe(false);
+    expect(isLikelyRewritableRequest({}, '/public/fonts/roboto.woff2')).toBe(false);
+    expect(isLikelyRewritableRequest({ 'sec-fetch-dest': 'image' }, '/avatar/abc')).toBe(false);
+  });
+});
+
+/**
+ * PERF-03 (cache half): rewritten HTML/JS/CSS is retained keyed by instance +
+ * path and revalidated upstream via `If-None-Match`. A 304 replays the cached
+ * rewrite (no body transfer, no re-rewrite); a 200 with a new ETag — what a
+ * Grafana upgrade produces — replaces the entry, so nothing stale can ship.
+ */
+describe('GrafanaEmbedProxy rewrite cache (PERF-03)', () => {
+  it('revalidates with If-None-Match and replays the cached rewrite on 304 without a second body transfer', async () => {
+    let bodyServes = 0;
+    const validators: Array<string | undefined> = [];
+    upstream = await listen((req, res) => {
+      validators.push(req.headers['if-none-match']);
+      if (req.headers['if-none-match'] === '"v1"') {
+        res.writeHead(304, { etag: '"v1"' }).end();
+        return;
+      }
+      bodyServes++;
+      res
+        .writeHead(200, { 'content-type': 'text/html; charset=utf-8', etag: '"v1"' })
+        .end('<html><head></head><body>version-one</body></html>');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-rewrite-cache', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+    const path = embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`);
+
+    const first = await requestProxy(proxyPort(embedProxy), path);
+    const second = await requestProxy(proxyPort(embedProxy), path);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(second.body).toBe(first.body);
+    expect(second.body).toContain('version-one');
+    expect(second.body).toContain('<base href=');
+    expect(validators).toEqual([undefined, '"v1"']);
+    expect(bodyServes).toBe(1);
+    expect(upstream.requestCount).toBe(2);
+  });
+
+  it('answers 304 to a client that already holds the cached version', async () => {
+    upstream = await listen((req, res) => {
+      if (req.headers['if-none-match'] === '"v1"') {
+        res.writeHead(304, { etag: '"v1"' }).end();
+        return;
+      }
+      res
+        .writeHead(200, { 'content-type': 'text/html; charset=utf-8', etag: '"v1"' })
+        .end('<html><head></head><body>version-one</body></html>');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-client-304', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+    const path = embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`);
+
+    await requestProxy(proxyPort(embedProxy), path);
+    const revalidation = await requestProxy(proxyPort(embedProxy), path, {
+      headers: { 'if-none-match': '"v1"' }
+    });
+
+    expect(revalidation.status).toBe(304);
+    expect(revalidation.body).toBe('');
+  });
+
+  it('serves the fresh body when the upstream ETag changes (a Grafana upgrade never reads stale)', async () => {
+    let version = 1;
+    upstream = await listen((req, res) => {
+      // Version changed: the stored validator no longer matches, so the
+      // upstream ignores the conditional and answers 200 with new content.
+      if (req.headers['if-none-match'] === `"v${version}"`) {
+        res.writeHead(304, { etag: `"v${version}"` }).end();
+        return;
+      }
+      res
+        .writeHead(200, { 'content-type': 'text/html; charset=utf-8', etag: `"v${version}"` })
+        .end(`<html><head></head><body>version-${version}</body></html>`);
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-upgrade', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+    const path = embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`);
+
+    const before = await requestProxy(proxyPort(embedProxy), path);
+    version = 2;
+    const after = await requestProxy(proxyPort(embedProxy), path);
+
+    expect(before.body).toContain('version-1');
+    expect(after.body).toContain('version-2');
+  });
+
+  it('never caches an error response', async () => {
+    const validators: Array<string | undefined> = [];
+    upstream = await listen((req, res) => {
+      validators.push(req.headers['if-none-match']);
+      res
+        .writeHead(500, { 'content-type': 'text/html; charset=utf-8', etag: '"err"' })
+        .end('<html><head></head><body>boom</body></html>');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-error', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+    const path = embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`);
+
+    await requestProxy(proxyPort(embedProxy), path);
+    await requestProxy(proxyPort(embedProxy), path);
+
+    expect(validators).toEqual([undefined, undefined]);
+  });
+
+  it('drops cached rewrites for an instance on invalidateInstance', async () => {
+    const validators: Array<string | undefined> = [];
+    upstream = await listen((req, res) => {
+      validators.push(req.headers['if-none-match']);
+      res
+        .writeHead(200, { 'content-type': 'text/html; charset=utf-8', etag: '"v1"' })
+        .end('<html><head></head><body>fresh</body></html>');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-drop', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+    const path = embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`);
+
+    await requestProxy(proxyPort(embedProxy), path);
+    embedProxy.invalidateInstance(instance.id);
+    await requestProxy(proxyPort(embedProxy), path);
+
+    expect(validators).toEqual([undefined, undefined]);
+  });
+});
+
 describe('GrafanaEmbedProxy start/dispose lifecycle', () => {
   it('dispose() stops the server so subsequent requests fail', async () => {
     const configManager = new FakeConfigManager();
@@ -1245,6 +1641,77 @@ describe('GrafanaEmbedProxy start/dispose lifecycle', () => {
     const configManager = new FakeConfigManager();
     const embedProxy = new GrafanaEmbedProxy({ configManager, certTrustStore: new GrafanaCertTrustStore(new MemoryMemento()) });
     expect(embedProxy.origin).toBeUndefined();
+  });
+});
+
+/**
+ * PERF-11 end to end: start() registers the proxy with the openPanels idle
+ * tracker, so once the last embed panel has been closed for the idle delay
+ * the proxy's server is shut down, and the next panel-open's start() call
+ * brings it back.
+ */
+describe('GrafanaEmbedProxy idle shutdown (PERF-11)', () => {
+  function stubPanel(): { panel: never; close(): void } {
+    const disposeListeners: Array<() => void> = [];
+    const panel = {
+      reveal: () => undefined,
+      dispose: () => {
+        for (const listener of [...disposeListeners]) {
+          listener();
+        }
+      },
+      onDidDispose: (listener: () => void) => {
+        disposeListeners.push(listener);
+        return { dispose: () => undefined };
+      }
+    };
+    return { panel: panel as never, close: () => panel.dispose() };
+  }
+
+  afterEach(() => {
+    disposeOpenPanels();
+    setEmbedProxyIdleDisposeTarget(undefined);
+    vi.useRealTimers();
+  });
+
+  it('shuts down after the last panel closes and revives on the next start()', async () => {
+    const configManager = new FakeConfigManager();
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+    expect(embedProxy.origin).toBeDefined();
+
+    vi.useFakeTimers();
+    const tracked = stubPanel();
+    trackOpenPanel('dashboard:idle-proxy', tracked.panel);
+    tracked.close();
+
+    vi.advanceTimersByTime(EMBED_PROXY_IDLE_DISPOSE_DELAY_MS - 1);
+    expect(embedProxy.origin).toBeDefined();
+    vi.advanceTimersByTime(1);
+    // dispose() clears the origin synchronously; the socket teardown it then
+    // awaits is irrelevant to what this test asserts.
+    expect(embedProxy.origin).toBeUndefined();
+
+    vi.useRealTimers();
+    await embedProxy.start();
+    expect(embedProxy.origin).toBeDefined();
+  });
+
+  it('keeps running while a panel is still open', async () => {
+    const configManager = new FakeConfigManager();
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    vi.useFakeTimers();
+    const first = stubPanel();
+    const second = stubPanel();
+    trackOpenPanel('dashboard:still-open', first.panel);
+    trackOpenPanel('alert:still-open', second.panel);
+    first.close();
+
+    vi.advanceTimersByTime(EMBED_PROXY_IDLE_DISPOSE_DELAY_MS * 2);
+
+    expect(embedProxy.origin).toBeDefined();
   });
 });
 

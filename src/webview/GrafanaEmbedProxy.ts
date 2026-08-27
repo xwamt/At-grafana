@@ -1,13 +1,16 @@
 import * as http from 'node:http';
 import * as https from 'node:https';
 import type { Socket } from 'node:net';
+import * as zlib from 'node:zlib';
 import { createBridgeToken, timingSafeEqualToken } from '@at-series/mcp-hub';
+import type { GrafanaInstanceConfig } from '../config/schema';
 import type { GrafanaInstanceConfigManager } from '../config/GrafanaInstanceConfigManager';
 import type { GrafanaCertTrustStore } from '../grafana/GrafanaCertTrustStore';
 import { attachCertVerification, type GrafanaCertVerifier } from '../grafana/GrafanaHttpClient';
 import { formatError } from '../utils/errors';
 import { asRedactedLog, type AtGrafanaLog } from '../utils/logger';
 import { redactSensitiveText } from '../utils/redaction';
+import { setEmbedProxyIdleDisposeTarget } from './openPanels';
 
 /**
  * Task 4.1 (docs/plans/2026-07-29-at-grafana-v1-implementation-plan.md,
@@ -127,6 +130,8 @@ export interface GrafanaEmbedProxyLimits {
   maxRewriteBufferBytes: number;
   /** Cap on buffered rewrite bodies across all in-flight responses combined. */
   maxTotalRewriteBufferBytes: number;
+  /** Cap on total bytes retained in the rewritten-response LRU cache (see `rewriteCache`). */
+  maxRewriteCacheBytes: number;
 }
 
 /**
@@ -152,7 +157,13 @@ export const DEFAULT_EMBED_PROXY_LIMITS: GrafanaEmbedProxyLimits = {
   maxConnections: 64,
   maxConcurrentRequests: 32,
   maxRewriteBufferBytes: 25 * 1024 * 1024,
-  maxTotalRewriteBufferBytes: 64 * 1024 * 1024
+  maxTotalRewriteBufferBytes: 64 * 1024 * 1024,
+  // Sibling budget to maxTotalRewriteBufferBytes: in-flight rewrite buffers
+  // and retained rewrite-cache entries are two separate pools, each with its
+  // own ceiling. 32 MiB comfortably holds a Grafana build's rewritable
+  // assets (index document + the JS/CSS bundles are single-digit MiB total)
+  // without letting a long session hoard the extension host's heap.
+  maxRewriteCacheBytes: 32 * 1024 * 1024
 };
 
 const HOP_BY_HOP_HEADERS = new Set([
@@ -191,6 +202,18 @@ const SAFE_INSTANCE_ID_PATTERN = /^[a-zA-Z0-9-]+$/;
 /** Why `checkAdmission` refused, for the log only -- every value but `ok` produces the same bare 404. */
 type AdmissionResult = 'ok' | 'not-started' | 'no-token' | 'token-mismatch' | 'host-mismatch' | 'origin-mismatch';
 
+/**
+ * One retained rewritten response (PERF-03). `etag` is the *upstream's* own
+ * validator for the original body; the stored `body` is the rewritten form of
+ * exactly that upstream version, so revalidating the etag against Grafana
+ * (`If-None-Match` → 304) proves the rewritten copy is still current too.
+ */
+interface RewriteCacheEntry {
+  etag: string;
+  body: Buffer;
+  contentType: string;
+}
+
 export class GrafanaEmbedProxy {
   private server: http.Server | undefined;
   private port: number | undefined;
@@ -200,6 +223,31 @@ export class GrafanaEmbedProxy {
   private inFlightRequests = 0;
   private rewriteBufferBytesInFlight = 0;
   private readonly log: AtGrafanaLog;
+  /**
+   * PERF-02: `handleRequest` used to hit `configManager.getInstance` (a zod
+   * parse over the full instance list) plus `configManager.getToken` (a
+   * SecretStorage IPC round-trip) for *every* proxied sub-resource — a
+   * dashboard load issues hundreds. Entries leave via `invalidateInstance`/
+   * `invalidateAll` (which `start()` calls, so every fresh panel-open batch
+   * re-reads config once), when the config manager stops knowing the
+   * instance, when its token becomes empty, or when the upstream answers 401
+   * (a rotated token: the stale credential must not be pinned).
+   */
+  private readonly credentialCache = new Map<string, { instance: GrafanaInstanceConfig; token: string }>();
+  /**
+   * PERF-03: rewritten HTML/JS/CSS bodies, keyed by `instanceId + path` with
+   * the upstream ETag stored per entry. A hit never serves the entry
+   * outright — the request still goes upstream with `If-None-Match`, and only
+   * an upstream `304 Not Modified` licenses replaying the cached rewrite.
+   * That is strictly fresher than embedding the validator in the lookup key:
+   * a Grafana upgrade answers 200 with a new ETag and the entry is replaced,
+   * so a stale rewrite can never be served. What the cache saves is the body
+   * transfer and the full-text rewrite, which for Grafana's multi-MiB JS
+   * bundles is the expensive half. Map insertion order doubles as the LRU
+   * order; total retained bytes are capped by `limits.maxRewriteCacheBytes`.
+   */
+  private readonly rewriteCache = new Map<string, RewriteCacheEntry>();
+  private rewriteCacheBytes = 0;
 
   constructor(private readonly deps: GrafanaEmbedProxyDependencies) {
     this.limits = { ...DEFAULT_EMBED_PROXY_LIMITS, ...deps.limits };
@@ -210,10 +258,42 @@ export class GrafanaEmbedProxy {
     return this.port === undefined ? undefined : `http://127.0.0.1:${this.port}`;
   }
 
+  /**
+   * Drops every cached credential and rewrite for `instanceId`. Exported for
+   * the instance-form save path (and anything else that edits an instance):
+   * the cache has no TTL, so an explicit invalidation is what keeps an
+   * edited URL or rotated token from being served stale.
+   */
+  invalidateInstance(instanceId: string): void {
+    this.credentialCache.delete(instanceId);
+    for (const key of [...this.rewriteCache.keys()]) {
+      if (key.startsWith(`${instanceId}\n`)) {
+        this.evictRewriteCacheEntry(key);
+      }
+    }
+  }
+
+  invalidateAll(): void {
+    this.credentialCache.clear();
+    this.rewriteCache.clear();
+    this.rewriteCacheBytes = 0;
+  }
+
   async start(): Promise<void> {
+    // Even a no-op restart (server already up) drops cached credentials:
+    // start() runs on every panel open, so this is the hook that keeps the
+    // TTL-less credential cache honest without requiring config-change
+    // events to be wired up. The hundreds of sub-resource requests that
+    // follow one open still share a single config read. The rewrite cache
+    // survives no-op restarts on purpose — every hit is revalidated against
+    // the upstream ETag, so it cannot go stale — and is dropped below only
+    // when a real restart mints a new embed token (the cached bodies were
+    // rewritten against the old token's URL prefix).
+    this.credentialCache.clear();
     if (this.server) {
       return;
     }
+    this.invalidateAll();
     this.embedToken = createBridgeToken();
     const server = http.createServer(
       {
@@ -262,6 +342,12 @@ export class GrafanaEmbedProxy {
       throw new Error('Failed to start AT Grafana embed proxy.');
     }
     this.port = address.port;
+    // PERF-11: once the last embed panel has been closed for a while there
+    // is no legitimate client left, so openPanels shuts this server down.
+    // Registered from start() (not the constructor) because start() is what
+    // every panel-open path already calls, and it is idempotent — the next
+    // open after an idle shutdown simply starts the proxy again.
+    setEmbedProxyIdleDisposeTarget(this);
     // The origin, not the token-prefixed base: the base is a credential.
     this.log.info(`embed-proxy: listening on ${this.origin ?? ''}`);
   }
@@ -354,19 +440,18 @@ export class GrafanaEmbedProxy {
         return;
       }
 
-      const instance = await this.deps.configManager.getInstance(parsedPath.instanceId);
-      if (!instance) {
+      const credentials = await this.resolveCredentials(parsedPath.instanceId);
+      if (credentials.kind === 'unknown-instance') {
         this.log.warn(`embed-proxy: request named an unknown instance ${parsedPath.instanceId}`);
         respondError(response, 404, `Unknown Grafana instance: ${parsedPath.instanceId}.`);
         return;
       }
-
-      const token = await this.deps.configManager.getToken(instance.id);
-      if (!token) {
-        this.log.error(`embed-proxy: instance ${instance.id} has no Service Account Token configured`);
+      if (credentials.kind === 'no-token') {
+        this.log.error(`embed-proxy: instance ${parsedPath.instanceId} has no Service Account Token configured`);
         respondError(response, 502, 'No Service Account Token is configured for this Grafana instance.');
         return;
       }
+      const { instance, token } = credentials;
 
       let realOrigin: URL;
       try {
@@ -492,6 +577,72 @@ export class GrafanaEmbedProxy {
   }
 
   /**
+   * PERF-02: one config/SecretStorage read per instance per `start()`, not
+   * per sub-resource. Negative outcomes are never cached — an instance the
+   * config manager does not know, or an empty token, invalidates instead, so
+   * the next request re-asks rather than pinning the failure.
+   */
+  private async resolveCredentials(
+    instanceId: string
+  ): Promise<
+    | { kind: 'ok'; instance: GrafanaInstanceConfig; token: string }
+    | { kind: 'unknown-instance' }
+    | { kind: 'no-token' }
+  > {
+    const cached = this.credentialCache.get(instanceId);
+    if (cached) {
+      return { kind: 'ok', instance: cached.instance, token: cached.token };
+    }
+    const instance = await this.deps.configManager.getInstance(instanceId);
+    if (!instance) {
+      this.invalidateInstance(instanceId);
+      return { kind: 'unknown-instance' };
+    }
+    const token = await this.deps.configManager.getToken(instance.id);
+    if (!token) {
+      this.invalidateInstance(instanceId);
+      return { kind: 'no-token' };
+    }
+    this.credentialCache.set(instanceId, { instance, token });
+    return { kind: 'ok', instance, token };
+  }
+
+  private evictRewriteCacheEntry(key: string): void {
+    const entry = this.rewriteCache.get(key);
+    if (!entry) {
+      return;
+    }
+    this.rewriteCache.delete(key);
+    this.rewriteCacheBytes -= entry.body.length;
+  }
+
+  /** Refreshes the entry's LRU position on every hit (Map insertion order is the eviction order). */
+  private getRewriteCacheEntry(key: string): RewriteCacheEntry | undefined {
+    const entry = this.rewriteCache.get(key);
+    if (!entry) {
+      return undefined;
+    }
+    this.rewriteCache.delete(key);
+    this.rewriteCache.set(key, entry);
+    return entry;
+  }
+
+  private storeRewriteCacheEntry(key: string, entry: RewriteCacheEntry): void {
+    if (entry.body.length > this.limits.maxRewriteCacheBytes) {
+      return;
+    }
+    this.evictRewriteCacheEntry(key);
+    this.rewriteCache.set(key, entry);
+    this.rewriteCacheBytes += entry.body.length;
+    for (const oldestKey of this.rewriteCache.keys()) {
+      if (this.rewriteCacheBytes <= this.limits.maxRewriteCacheBytes) {
+        break;
+      }
+      this.evictRewriteCacheEntry(oldestKey);
+    }
+  }
+
+  /**
    * Pre-flight TLS trust gate, checked *before* any socket is opened to the
    * real Grafana origin (satisfies ADR-003's "refused at the proxy layer,
    * not just the tree UI layer" — the refusal happens even if no webview or
@@ -538,10 +689,27 @@ export class GrafanaEmbedProxy {
     // Never forward a client-supplied Authorization header (it can't be
     // trusted/spoofed-in from the Webview side); always inject our own.
     outgoingHeaders.authorization = `Bearer ${token}`;
-    // Force uncompressed responses so the HTML/JS/CSS rewrite step (see
-    // relayResponse) can safely treat the response body as UTF-8 text
-    // without first implementing gzip/br decompression.
-    outgoingHeaders['accept-encoding'] = 'identity';
+    // PERF-03: only responses this proxy will rewrite (HTML/JS/CSS — see
+    // relayResponse) need to arrive as plain UTF-8 text. Everything else —
+    // images, fonts, JSON API payloads — is piped through verbatim, so the
+    // client's own Accept-Encoding passes upstream untouched and Grafana may
+    // compress. If the heuristic under-predicts and a compressed rewritable
+    // body arrives anyway, relayResponse gunzips before rewriting.
+    if (isLikelyRewritableRequest(clientRequest.headers, targetUrl.pathname)) {
+      outgoingHeaders['accept-encoding'] = 'identity';
+    }
+
+    // PERF-03 rewrite cache: on a GET with a retained rewrite of this exact
+    // path, ask Grafana to revalidate. A 304 below replays the cached
+    // rewritten body without transferring or rewriting anything; any 200
+    // (new ETag — e.g. a Grafana upgrade) flows through the normal rewrite
+    // path and replaces the entry.
+    const method = (clientRequest.method ?? 'GET').toUpperCase();
+    const rewriteCacheKey = `${instanceId}\n${targetUrl.pathname}${targetUrl.search}`;
+    const cachedRewrite = method === 'GET' ? this.getRewriteCacheEntry(rewriteCacheKey) : undefined;
+    if (cachedRewrite) {
+      outgoingHeaders['if-none-match'] = cachedRewrite.etag;
+    }
 
     let clientErrorHandled = false;
     const proxyRequest = client.request(
@@ -554,7 +722,21 @@ export class GrafanaEmbedProxy {
         rejectUnauthorized: isHttps ? false : undefined
       },
       (proxyResponse) => {
-        this.relayResponse(proxyResponse, clientResponse, realOrigin, instanceId);
+        if (proxyResponse.statusCode === 401) {
+          // A token Grafana rejects must not stay pinned in the credential
+          // cache: the user may have just rotated it, and the next request
+          // should re-read SecretStorage rather than replay the stale one.
+          this.invalidateInstance(instanceId);
+        }
+        if (cachedRewrite && proxyResponse.statusCode === 304) {
+          proxyResponse.resume();
+          this.respondFromRewriteCache(clientRequest, clientResponse, cachedRewrite);
+          return;
+        }
+        this.relayResponse(proxyResponse, clientResponse, realOrigin, instanceId, {
+          method,
+          rewriteCacheKey
+        });
       }
     );
 
@@ -624,11 +806,46 @@ export class GrafanaEmbedProxy {
     }
   }
 
+  /**
+   * Serves a cached rewritten body after the upstream confirmed (304) that
+   * the ETag it was built from is still current. A client that itself sent
+   * the same validator gets the 304 passed along (it holds the identical
+   * rewritten body in its own cache); everyone else gets the full 200.
+   */
+  private respondFromRewriteCache(
+    clientRequest: http.IncomingMessage,
+    clientResponse: http.ServerResponse,
+    entry: RewriteCacheEntry
+  ): void {
+    if (clientResponse.headersSent) {
+      clientResponse.destroy();
+      return;
+    }
+    const baseHeaders: http.OutgoingHttpHeaders = {
+      etag: entry.etag,
+      'content-security-policy': buildProxiedDocumentCsp(),
+      'referrer-policy': 'same-origin'
+    };
+    const clientValidator = firstHeaderValue(clientRequest.headers['if-none-match']);
+    if (clientValidator !== undefined && clientValidator.includes(entry.etag)) {
+      clientResponse.writeHead(304, baseHeaders);
+      clientResponse.end();
+      return;
+    }
+    clientResponse.writeHead(200, {
+      ...baseHeaders,
+      'content-type': entry.contentType,
+      'content-length': entry.body.length.toString()
+    });
+    clientResponse.end(entry.body);
+  }
+
   private relayResponse(
     proxyResponse: http.IncomingMessage,
     clientResponse: http.ServerResponse,
     realOrigin: URL,
-    instanceId: string
+    instanceId: string,
+    cacheContext: { method: string; rewriteCacheKey: string }
   ): void {
     // Both carry the token prefix so Grafana's own `<base>`/appSubUrl-relative
     // requests stay on an authorized route instead of 404ing at the gate.
@@ -669,14 +886,37 @@ export class GrafanaEmbedProxy {
 
     const contentType = firstHeaderValue(proxyResponse.headers['content-type']);
     if (REWRITABLE_CONTENT_TYPE_PATTERN.test(contentType ?? '')) {
+      const contentEncoding = (firstHeaderValue(proxyResponse.headers['content-encoding']) ?? 'identity').toLowerCase();
+      let bodySource: NodeJS.ReadableStream = proxyResponse;
+      if (contentEncoding === 'gzip' || contentEncoding === 'x-gzip') {
+        // The likely-rewritable heuristic in forward() under-predicted (it
+        // forces identity precisely so this stays rare); decompress so the
+        // rewrite still sees plain text. The client always receives the
+        // rewritten body uncompressed.
+        delete headersOut['content-encoding'];
+        bodySource = proxyResponse.pipe(zlib.createGunzip());
+      } else if (contentEncoding !== 'identity') {
+        // br/zstd/deflate: no decompressor wired up. Piping the compressed
+        // body through unrewritten beats corrupting it with a text rewrite;
+        // absolute-origin references inside it stay unrewritten, which the
+        // Webview CSP then blocks rather than leaks.
+        this.log.warn(
+          `embed-proxy: passing through a ${contentEncoding}-encoded rewritable response unrewritten (instance ${instanceId})`
+        );
+        clientResponse.writeHead(proxyResponse.statusCode ?? 502, headersOut);
+        proxyResponse.pipe(clientResponse);
+        return;
+      }
       this.relayRewritableBody(
+        bodySource,
         proxyResponse,
         clientResponse,
         headersOut,
         realOrigin,
         proxyBase,
         instancePathPrefix,
-        contentType ?? ''
+        contentType ?? '',
+        cacheContext
       );
       return;
     }
@@ -695,14 +935,20 @@ export class GrafanaEmbedProxy {
    * fragility this trades in for.
    */
   private relayRewritableBody(
+    bodySource: NodeJS.ReadableStream,
     proxyResponse: http.IncomingMessage,
     clientResponse: http.ServerResponse,
     headersOut: http.OutgoingHttpHeaders,
     realOrigin: URL,
     proxyBase: string,
     instancePathPrefix: string,
-    contentType: string
+    contentType: string,
+    cacheContext: { method: string; rewriteCacheKey: string }
   ): void {
+    // The rewritten body's length differs from the upstream's, and if the
+    // body arrived gzipped its transfer framing is meaningless once
+    // decompressed — a fresh content-length is set from the rewritten buffer
+    // on the way out.
     delete headersOut['content-length'];
     delete headersOut['transfer-encoding'];
 
@@ -711,15 +957,20 @@ export class GrafanaEmbedProxy {
     let aborted = false;
 
     // What this response has added to the process-wide budget, refunded on
-    // 'close' (which fires on every outcome, including a client that walked
-    // away mid-body) so the shared counter cannot drift upward.
+    // the *client* response's 'close' (which fires exactly once on every
+    // outcome, including a client that walked away mid-body) so the shared
+    // counter cannot drift upward. Keyed to the client rather than the
+    // upstream response because `bodySource` may be a gunzip stream that
+    // emits buffered chunks after the upstream stream already closed;
+    // flipping `aborted` here makes those late chunks charge-free no-ops.
     let charged = 0;
-    proxyResponse.on('close', () => {
+    clientResponse.on('close', () => {
       this.rewriteBufferBytesInFlight -= charged;
       charged = 0;
+      aborted = true;
     });
 
-    proxyResponse.on('data', (chunk: Buffer | string) => {
+    bodySource.on('data', (chunk: Buffer | string) => {
       if (aborted) {
         return;
       }
@@ -745,7 +996,7 @@ export class GrafanaEmbedProxy {
       chunks.push(buf);
     });
 
-    proxyResponse.on('end', () => {
+    bodySource.on('end', () => {
       if (aborted) {
         return;
       }
@@ -754,15 +1005,31 @@ export class GrafanaEmbedProxy {
         body = injectGrafanaEmbedShim(body, proxyBase, instancePathPrefix);
       }
       const rewritten = Buffer.from(body, 'utf8');
+      const statusCode = proxyResponse.statusCode ?? 502;
+
+      // Only a complete, successful GET is worth retaining, and only when the
+      // upstream supplied an ETag to revalidate it with later — an entry that
+      // can never produce a 304 would be dead weight. Error responses are
+      // deliberately never cached.
+      const etag = firstHeaderValue(proxyResponse.headers.etag);
+      if (cacheContext.method === 'GET' && statusCode === 200 && etag) {
+        this.storeRewriteCacheEntry(cacheContext.rewriteCacheKey, {
+          etag,
+          body: rewritten,
+          contentType
+        });
+      }
+
       headersOut['content-length'] = rewritten.length.toString();
-      clientResponse.writeHead(proxyResponse.statusCode ?? 502, headersOut);
+      clientResponse.writeHead(statusCode, headersOut);
       clientResponse.end(rewritten);
     });
 
-    proxyResponse.on('error', (error) => {
+    bodySource.on('error', (error: Error) => {
       if (aborted) {
         return;
       }
+      aborted = true;
       this.log.error(`embed-proxy: upstream response stream failed mid-body: ${formatError(error)}`);
       if (!clientResponse.headersSent) {
         respondError(clientResponse, 502, 'Grafana upstream response error.');
@@ -770,6 +1037,24 @@ export class GrafanaEmbedProxy {
         clientResponse.destroy();
       }
     });
+
+    if (bodySource !== proxyResponse) {
+      // pipe() does not propagate errors: a failure on the raw upstream
+      // stream (e.g. connection reset mid-gzip-body) must still answer the
+      // client instead of leaving the gunzip stream waiting forever.
+      proxyResponse.on('error', (error) => {
+        if (aborted) {
+          return;
+        }
+        aborted = true;
+        this.log.error(`embed-proxy: upstream response stream failed mid-body: ${formatError(error)}`);
+        if (!clientResponse.headersSent) {
+          respondError(clientResponse, 502, 'Grafana upstream response error.');
+        } else {
+          clientResponse.destroy();
+        }
+      });
+    }
   }
 }
 
@@ -1038,6 +1323,46 @@ export function buildTargetUrl(origin: URL, remainingPath: string, search: strin
     throw new Error('Resolved proxy target escaped the configured instance origin.');
   }
   return target;
+}
+
+/** File extensions whose responses carry the rewritable content types (HTML/JS/CSS). */
+const REWRITABLE_PATH_EXTENSION_PATTERN = /\.(?:m?js|css|html?)$/i;
+
+/**
+ * Grafana SPA document routes: the paths whose responses are the HTML shell
+ * that `injectGrafanaEmbedShim` must rewrite. Kept in sync with the routes
+ * the proxy's own URL builders mint (`/d/...`, `/alerting/.../view`) plus the
+ * root/dashboards landing pages Grafana may redirect between.
+ */
+const REWRITABLE_DOCUMENT_PATH_PATTERN = /^\/(?:$|d\/|alerting(?:\/|$)|dashboards(?:\/|$)|explore(?:\/|$))/;
+
+/**
+ * PERF-03: whether a request is likely to produce a response the proxy will
+ * rewrite (HTML document, JS bundle, CSS). Only these force
+ * `Accept-Encoding: identity` upstream — everything else (images, fonts,
+ * JSON API traffic, which dominate a dashboard's request count) keeps the
+ * client's own header so Grafana may compress, since those responses are
+ * piped through verbatim anyway.
+ *
+ * Deliberately over-inclusive on the signals a real Webview sends
+ * (`Accept: text/html`, `Sec-Fetch-Dest`): a false positive merely costs one
+ * uncompressed transfer, while a false negative would hand the rewrite step
+ * a compressed body — recoverable (relayResponse gunzips gzip), but the
+ * slow path.
+ */
+export function isLikelyRewritableRequest(headers: http.IncomingHttpHeaders, pathname: string): boolean {
+  const accept = firstHeaderValue(headers.accept) ?? '';
+  if (/\btext\/(?:html|css)\b/i.test(accept)) {
+    return true;
+  }
+  const fetchDest = firstHeaderValue(headers['sec-fetch-dest']) ?? '';
+  if (/^(?:document|iframe|frame|script|style)$/i.test(fetchDest)) {
+    return true;
+  }
+  if (REWRITABLE_PATH_EXTENSION_PATTERN.test(pathname)) {
+    return true;
+  }
+  return REWRITABLE_DOCUMENT_PATH_PATTERN.test(pathname);
 }
 
 /**

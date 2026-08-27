@@ -1,6 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as vscode from 'vscode';
-import { disposeOpenPanels, revealOpenPanel, trackOpenPanel } from '../../src/webview/openPanels';
+import {
+  EMBED_PROXY_IDLE_DISPOSE_DELAY_MS,
+  disposeOpenPanels,
+  revealOpenPanel,
+  setEmbedProxyIdleDisposeTarget,
+  trackOpenPanel
+} from '../../src/webview/openPanels';
 
 interface FakePanel {
   panel: vscode.WebviewPanel;
@@ -102,5 +108,89 @@ describe('open panel registry', () => {
 
     expect(tracked.disposeCalls()).toBe(1);
     expect(revealOpenPanel('dashboard:f')).toBe(false);
+  });
+});
+
+/**
+ * PERF-11: once the last embed panel closes, the registered proxy is shut
+ * down after EMBED_PROXY_IDLE_DISPOSE_DELAY_MS. `GrafanaEmbedProxy.start()`
+ * is idempotent, so the next panel open simply restarts it.
+ */
+describe('embed proxy idle dispose', () => {
+  let proxyDisposeCalls = 0;
+
+  beforeEach(() => {
+    disposeOpenPanels();
+    proxyDisposeCalls = 0;
+    setEmbedProxyIdleDisposeTarget({
+      dispose: () => {
+        proxyDisposeCalls++;
+      }
+    });
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    disposeOpenPanels();
+    setEmbedProxyIdleDisposeTarget(undefined);
+    vi.useRealTimers();
+  });
+
+  it('disposes the registered proxy once the last panel has been closed for the idle delay', () => {
+    const tracked = fakePanel();
+    trackOpenPanel('dashboard:idle', tracked.panel);
+
+    tracked.close();
+    vi.advanceTimersByTime(EMBED_PROXY_IDLE_DISPOSE_DELAY_MS - 1);
+    expect(proxyDisposeCalls).toBe(0);
+
+    vi.advanceTimersByTime(1);
+    expect(proxyDisposeCalls).toBe(1);
+  });
+
+  it('does not schedule a dispose while another panel is still open', () => {
+    const first = fakePanel();
+    const second = fakePanel();
+    trackOpenPanel('dashboard:one', first.panel);
+    trackOpenPanel('alert:two', second.panel);
+
+    first.close();
+    vi.advanceTimersByTime(EMBED_PROXY_IDLE_DISPOSE_DELAY_MS * 2);
+
+    expect(proxyDisposeCalls).toBe(0);
+  });
+
+  it('cancels the pending dispose when a new panel opens within the delay', () => {
+    const closed = fakePanel();
+    trackOpenPanel('dashboard:reopen', closed.panel);
+    closed.close();
+
+    vi.advanceTimersByTime(EMBED_PROXY_IDLE_DISPOSE_DELAY_MS / 2);
+    const reopened = fakePanel();
+    trackOpenPanel('dashboard:reopen', reopened.panel);
+    vi.advanceTimersByTime(EMBED_PROXY_IDLE_DISPOSE_DELAY_MS * 2);
+
+    expect(proxyDisposeCalls).toBe(0);
+  });
+
+  it('is a no-op when no proxy is registered', () => {
+    setEmbedProxyIdleDisposeTarget(undefined);
+    const tracked = fakePanel();
+    trackOpenPanel('dashboard:no-target', tracked.panel);
+
+    tracked.close();
+    vi.advanceTimersByTime(EMBED_PROXY_IDLE_DISPOSE_DELAY_MS * 2);
+
+    expect(proxyDisposeCalls).toBe(0);
+  });
+
+  it('deactivate (disposeOpenPanels) cancels the pending idle timer instead of firing it later', () => {
+    const tracked = fakePanel();
+    trackOpenPanel('dashboard:deactivate', tracked.panel);
+
+    disposeOpenPanels();
+    vi.advanceTimersByTime(EMBED_PROXY_IDLE_DISPOSE_DELAY_MS * 2);
+
+    expect(proxyDisposeCalls).toBe(0);
   });
 });
