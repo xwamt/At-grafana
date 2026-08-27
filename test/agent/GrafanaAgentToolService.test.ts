@@ -40,6 +40,9 @@ function fakeClient(overrides: Partial<GrafanaApiClientLike> = {}): GrafanaApiCl
       throw new Error('not stubbed');
     },
     listAlertRules: async () => [],
+    getAlertRule: async () => {
+      throw new Error('not stubbed');
+    },
     listAlertRuleStates: async () => [],
     getAlertRuleHistory: async () => [],
     listDatasources: async () => [],
@@ -102,9 +105,38 @@ describe('GrafanaAgentToolService', () => {
 
       expect(result).toEqual({
         ok: true,
-        result: [{ id: 'on', label: 'Enabled', url: 'https://grafana.example.com' }]
+        result: { instances: [{ id: 'on', label: 'Enabled', url: 'https://grafana.example.com' }] }
       });
       expect(JSON.stringify(result)).not.toContain('token');
+      expect(JSON.stringify(result)).not.toContain('hint');
+    });
+
+    it('includes a recovery hint when the authorized list is empty', async () => {
+      const { service } = await makeService({
+        instances: [instance({ id: 'off', label: 'Disabled', allowBackgroundAccess: false })]
+      });
+
+      const result = await service.invoke('grafana_list_instances', {});
+
+      expect(result).toEqual({
+        ok: true,
+        result: {
+          instances: [],
+          hint: "No instances have 'Allow background Agent access' enabled. Ask the user to enable it per instance in the AT Grafana extension."
+        }
+      });
+    });
+
+    it('uses the identical empty envelope whether no instance exists or every gate is off (anti-enumeration)', async () => {
+      const { service: nothingConfigured } = await makeService({ instances: [], tokens: {} });
+      const { service: allGatesOff } = await makeService({
+        instances: [instance({ id: 'off', allowBackgroundAccess: false })]
+      });
+
+      const noneResult = await nothingConfigured.invoke('grafana_list_instances', {});
+      const offResult = await allGatesOff.invoke('grafana_list_instances', {});
+
+      expect(noneResult).toEqual(offResult);
     });
 
     it('rejects unknown extra arguments', async () => {
@@ -272,6 +304,22 @@ describe('GrafanaAgentToolService', () => {
       expect(result).toEqual({ ok: true, result: dashboard });
     });
 
+    it('grafana_get_dashboard turns an oversized model into advice to project/filter instead of a bare size error', async () => {
+      const client = fakeClient({
+        getDashboardByUid: async () => {
+          throw new GrafanaApiError('response-too-large', 'Grafana response exceeded the configured maximum of 20971520 bytes.');
+        }
+      });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_get_dashboard', { instanceId: 'instance-1', uid: 'huge' });
+
+      expect(result).toMatchObject({ ok: false, code: 'INTERNAL_ERROR' });
+      const message = (result as { message: string }).message;
+      expect(message).toContain('targets');
+      expect(message).toContain('titleContains');
+    });
+
     it('grafana_get_dashboard projects fields=targets before returning', async () => {
       const dashboard = {
         uid: 'd1',
@@ -434,18 +482,64 @@ describe('GrafanaAgentToolService', () => {
       expect((result as { result: unknown[] }).result).toHaveLength(1);
     });
 
-    it('grafana_get_alert_rule finds the matching rule by uid', async () => {
-      const rule = { uid: 'r1', title: 'CPU high', folderUid: 'f1', ruleGroup: 'g1', condition: 'B', for: '5m' };
-      const client = fakeClient({ listAlertRules: async () => [rule] });
+    it('grafana_list_alert_rules projects isPaused but never the heavyweight data/notificationSettings fields', async () => {
+      const client = fakeClient({
+        listAlertRules: async () => [
+          {
+            uid: 'r1',
+            title: 'CPU high',
+            folderUid: 'f1',
+            ruleGroup: 'g1',
+            condition: 'B',
+            for: '5m',
+            isPaused: true,
+            data: [{ refId: 'A', model: { expr: 'up' } }],
+            notificationSettings: { receiver: 'oncall' }
+          }
+        ],
+        listAlertRuleStates: async () => []
+      });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_list_alert_rules', { instanceId: 'instance-1' });
+
+      expect(result).toMatchObject({ ok: true, result: [{ uid: 'r1', isPaused: true }] });
+      const serialized = JSON.stringify(result);
+      expect(serialized).not.toContain('notificationSettings');
+      expect(serialized).not.toContain('"data"');
+    });
+
+    it('grafana_get_alert_rule fetches the single rule via client.getAlertRule and returns it in full', async () => {
+      const rule = {
+        uid: 'r1',
+        title: 'CPU high',
+        folderUid: 'f1',
+        ruleGroup: 'g1',
+        condition: 'B',
+        for: '5m',
+        isPaused: false,
+        data: [{ refId: 'A', model: { expr: 'rate(cpu[5m])' } }],
+        notificationSettings: { receiver: 'oncall' }
+      };
+      const getAlertRule = vi.fn(async () => rule);
+      const listAlertRules = vi.fn(async () => []);
+      const client = fakeClient({ getAlertRule, listAlertRules });
       const { service } = await makeService({ client });
 
       const result = await service.invoke('grafana_get_alert_rule', { instanceId: 'instance-1', uid: 'r1' });
 
       expect(result).toEqual({ ok: true, result: rule });
+      expect(getAlertRule).toHaveBeenCalledWith('r1');
+      // PERF-06: the single-rule path must not fall back to list-then-find.
+      expect(listAlertRules).not.toHaveBeenCalled();
     });
 
     it('grafana_get_alert_rule returns a NOT_FOUND-class failure for an unknown uid', async () => {
-      const client = fakeClient({ listAlertRules: async () => [] });
+      const client = fakeClient({
+        getAlertRule: async () => {
+          throw new GrafanaApiError('api-error', 'Grafana returned HTTP 404 for /api/v1/provisioning/alert-rules/missing.', 404);
+        }
+      });
       const { service } = await makeService({ client });
 
       const result = await service.invoke('grafana_get_alert_rule', { instanceId: 'instance-1', uid: 'missing' });
@@ -461,6 +555,51 @@ describe('GrafanaAgentToolService', () => {
       const result = await service.invoke('grafana_get_alert_history', { instanceId: 'instance-1', uid: 'r1' });
 
       expect(result).toEqual({ ok: true, result: history });
+    });
+
+    it('grafana_get_alert_history forwards the optional from/to/limit window to the client', async () => {
+      const getAlertRuleHistory = vi.fn(async () => []);
+      const client = fakeClient({ getAlertRuleHistory });
+      const { service } = await makeService({ client });
+
+      await service.invoke('grafana_get_alert_history', {
+        instanceId: 'instance-1',
+        uid: 'r1',
+        from: 1700000000,
+        to: 1700003600,
+        limit: 250
+      });
+
+      expect(getAlertRuleHistory).toHaveBeenCalledWith('r1', { from: 1700000000, to: 1700003600, limit: 250 });
+    });
+
+    it('grafana_get_alert_history explains that state history may be disabled on a 404', async () => {
+      const client = fakeClient({
+        getAlertRuleHistory: async () => {
+          throw new GrafanaApiError('api-error', 'Grafana returned HTTP 404 for /api/v1/rules/history.', 404);
+        }
+      });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_get_alert_history', { instanceId: 'instance-1', uid: 'r1' });
+
+      expect(result).toMatchObject({ ok: false, code: 'NOT_FOUND' });
+      expect((result as { message: string }).message).toContain('state history may be disabled');
+      expect((result as { message: string }).message).toContain('Loki-backed');
+    });
+
+    it('grafana_get_alert_history keeps other failures (e.g. auth) free of the state-history hint', async () => {
+      const client = fakeClient({
+        getAlertRuleHistory: async () => {
+          throw new GrafanaApiError('auth', 'Grafana rejected the request (HTTP 401).', 401);
+        }
+      });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_get_alert_history', { instanceId: 'instance-1', uid: 'r1' });
+
+      expect(result).toMatchObject({ ok: false, code: 'INTERNAL_ERROR' });
+      expect((result as { message: string }).message).not.toContain('state history');
     });
 
     it('grafana_list_annotations forwards dashboardUid as dashboardUID via listAnnotations', async () => {
@@ -564,6 +703,39 @@ describe('GrafanaAgentToolService', () => {
       expect(result).toMatchObject({ ok: true });
       const grafanaUrl = (result as { result: { grafanaUrl: string } }).result.grafanaUrl;
       expect(grafanaUrl).toContain('/explore?left=');
+      expect(openDashboardInIde).not.toHaveBeenCalled();
+    });
+
+    it('grafana_generate_deeplink explore carries an optional expr into the Explore query', async () => {
+      const { service } = await makeService();
+
+      const result = await service.invoke('grafana_generate_deeplink', {
+        instanceId: 'instance-1',
+        kind: 'explore',
+        datasourceUid: 'prom',
+        expr: 'rate(http_requests_total[5m])'
+      });
+
+      expect(result).toMatchObject({ ok: true });
+      const grafanaUrl = (result as { result: { grafanaUrl: string } }).result.grafanaUrl;
+      const left = JSON.parse(decodeURIComponent(new URL(grafanaUrl).searchParams.get('left') ?? ''));
+      expect(left.queries[0]).toMatchObject({ refId: 'A', expr: 'rate(http_requests_total[5m])' });
+    });
+
+    it('grafana_generate_deeplink alertRule returns the Unified Alerting rule view URL and never calls the opener', async () => {
+      const openDashboardInIde = vi.fn(async () => undefined);
+      const { service } = await makeService({ openDashboardInIde });
+
+      const result = await service.invoke('grafana_generate_deeplink', {
+        instanceId: 'instance-1',
+        kind: 'alertRule',
+        uid: 'rule-1'
+      });
+
+      expect(result).toEqual({
+        ok: true,
+        result: { grafanaUrl: 'https://grafana.example.com/alerting/grafana/rule-1/view', openedInIde: false }
+      });
       expect(openDashboardInIde).not.toHaveBeenCalled();
     });
 
@@ -722,6 +894,39 @@ describe('GrafanaAgentToolService', () => {
       expect(Number.isNaN(end)).toBe(false);
       expect(end - start).toBe(DEFAULT_MAX_RANGE_MS);
       expect(result).not.toMatchObject({ result: { truncated: true, reason: 'time-range' } });
+    });
+
+    it('grafana_query_loki instant forwards limit and direction (Loki instant supports both) but no start/end', async () => {
+      const proxyDatasourceRequest = vi.fn(async () => ({ status: 'success' }));
+      const client = fakeClient({ proxyDatasourceRequest });
+      const { service } = await makeService({ client });
+
+      await service.invoke('grafana_query_loki', {
+        instanceId: 'instance-1',
+        datasourceUid: 'loki',
+        expr: '{job="api"}',
+        queryType: 'instant',
+        time: '1700000000',
+        limit: 50,
+        direction: 'backward'
+      });
+
+      expect(proxyDatasourceRequest).toHaveBeenCalledWith(
+        'loki',
+        'GET',
+        'loki/api/v1/query',
+        expect.objectContaining({ query: '{job="api"}', time: '1700000000', limit: '50', direction: 'backward' }),
+        undefined,
+        expect.any(Number)
+      );
+      const [, , , forwardedQuery] = proxyDatasourceRequest.mock.calls[0] as unknown as [
+        string,
+        string,
+        string,
+        Record<string, string>
+      ];
+      expect(forwardedQuery.start).toBeUndefined();
+      expect(forwardedQuery.end).toBeUndefined();
     });
 
     it('grafana_list_prometheus_metric_names forwards GET api/v1/label/__name__/values and projects values', async () => {
@@ -1167,6 +1372,39 @@ describe('GrafanaAgentToolService', () => {
   });
 
   describe('TLS trust', () => {
+    it('appends the Trust-On-First-Use recovery hint to a tls-kind failure', async () => {
+      const client = fakeClient({
+        getFolders: async () => {
+          throw new GrafanaApiError('tls', 'Grafana TLS certificate is not trusted: fingerprint mismatch.');
+        }
+      });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_list_folders', { instanceId: 'instance-1' });
+
+      expect(result).toMatchObject({ ok: false, code: 'INTERNAL_ERROR' });
+      expect((result as { message: string }).message).toContain(
+        'The user must open this instance once in the AT Grafana sidebar to confirm its TLS fingerprint (Trust-On-First-Use).'
+      );
+    });
+
+    it('does not duplicate the recovery hint when the underlying error already carries it', async () => {
+      const alreadyHinted =
+        'Grafana TLS certificate for host:443 was rejected. ' +
+        'The user must open this instance once in the AT Grafana sidebar to confirm its TLS fingerprint (Trust-On-First-Use).';
+      const client = fakeClient({
+        getFolders: async () => {
+          throw new GrafanaApiError('tls', alreadyHinted);
+        }
+      });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_list_folders', { instanceId: 'instance-1' });
+
+      const message = (result as { message: string }).message;
+      expect(message.match(/Trust-On-First-Use/g)).toHaveLength(1);
+    });
+
     it('builds a non-interactive certVerifier that only trusts already-recorded fingerprints', async () => {
       const { service, createClient } = await makeService();
 

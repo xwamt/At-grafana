@@ -7,6 +7,7 @@
  * - getFolders()          -> GET /api/folders
  * - getDashboardByUid()   -> GET /api/dashboards/uid/:uid
  * - listAlertRules()      -> GET /api/v1/provisioning/alert-rules (rule *definitions*; stable, no live state)
+ * - getAlertRule()        -> GET /api/v1/provisioning/alert-rules/:uid (single definition, incl. `data` queries)
  * - listAlertRuleStates() -> GET /api/prometheus/grafana/api/v1/rules (live *state* only; correlate by `uid`)
  * - getAlertRuleHistory() -> GET /api/v1/rules/history?ruleUID=:uid (best-effort; response shape unverified — see GrafanaAlertsApi.ts)
  * - listDatasources()     -> GET /api/datasources
@@ -28,7 +29,7 @@ import { isRecord } from './jsonGuards';
 export { GrafanaApiError, verifyCertFingerprint } from './GrafanaHttpClient';
 export type { GrafanaApiErrorKind, GrafanaCertVerifier } from './GrafanaHttpClient';
 export type { GrafanaDashboard, GrafanaDashboardSearchQuery, GrafanaFolder, GrafanaSearchResult } from './GrafanaDashboardsApi';
-export type { GrafanaAlertHistoryEntry, GrafanaAlertRule, GrafanaAlertRuleState } from './GrafanaAlertsApi';
+export type { GrafanaAlertHistoryEntry, GrafanaAlertHistoryQuery, GrafanaAlertRule, GrafanaAlertRuleState } from './GrafanaAlertsApi';
 export type { GrafanaAnnotation, GrafanaAnnotationQuery } from './GrafanaAnnotationsApi';
 export type { GrafanaDatasource } from './GrafanaDatasourcesApi';
 
@@ -100,6 +101,10 @@ export class GrafanaApiClient {
 
   listAlertRules(): ReturnType<GrafanaAlertsApi['listAlertRules']> {
     return this.alertsApi.listAlertRules();
+  }
+
+  getAlertRule(...args: Parameters<GrafanaAlertsApi['getAlertRule']>): ReturnType<GrafanaAlertsApi['getAlertRule']> {
+    return this.alertsApi.getAlertRule(...args);
   }
 
   listAlertRuleStates(): ReturnType<GrafanaAlertsApi['listAlertRuleStates']> {

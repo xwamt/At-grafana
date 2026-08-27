@@ -62,9 +62,10 @@ export const AT_GRAFANA_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'grafana_list_instances',
     title: 'List Grafana instances',
     description:
-      'List configured Grafana instances that have "Allow Agent background access" enabled, as {id, label, url} ' +
-      '(never the auth token, never a toggled-off instance). Call this first to discover which instanceId values ' +
-      'the other grafana_* management tools will accept.',
+      'List configured Grafana instances that have "Allow Agent background access" enabled, as ' +
+      '{ instances: [{id, label, url}] } (never the auth token, never a toggled-off instance). When instances is ' +
+      'empty a hint field explains that the user must enable access per instance. Call this first to discover which ' +
+      'instanceId values the other grafana_* management tools will accept.',
     risk: 'read',
     inputSchema: GRAFANA_LIST_INSTANCES_INPUT_SCHEMA
   },
@@ -84,7 +85,8 @@ export const AT_GRAFANA_TOOL_CATALOG: ToolCatalogEntry[] = [
     description:
       `Get a dashboard by uid. Default fields is "targets" (panel expr + datasource only); ` +
       `"summary" for panel inventory; pass "full" only when the complete JSON model is required. Optional panelIds / ` +
-      `titleContains filter panels server-side.${MANAGEMENT_FAMILY_SUFFIX}`,
+      `titleContains filter panels server-side in every mode, including "full". targets/summary keep a slim ` +
+      `templating.list (name/type/query/current) so $var references in expr stay resolvable.${MANAGEMENT_FAMILY_SUFFIX}`,
     risk: 'read',
     inputSchema: GRAFANA_GET_DASHBOARD_INPUT_SCHEMA
   },
@@ -99,8 +101,9 @@ export const AT_GRAFANA_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'grafana_list_alert_rules',
     title: 'List Grafana alert rules',
     description:
-      `List Unified Alerting rules on a Grafana instance with current state (firing/pending/normal/unknown). ` +
-      `Optional states filters to those values; omit to list all.${MANAGEMENT_FAMILY_SUFFIX}`,
+      `List Unified Alerting rules on a Grafana instance with current state (firing/pending/normal/unknown) and ` +
+      `isPaused when known. Optional states filters to those values; omit to list all. This is a light projection -- ` +
+      `use grafana_get_alert_rule for a rule's query definitions.${MANAGEMENT_FAMILY_SUFFIX}`,
     risk: 'read',
     inputSchema: GRAFANA_LIST_ALERT_RULES_INPUT_SCHEMA
   },
@@ -108,15 +111,19 @@ export const AT_GRAFANA_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'grafana_get_alert_rule',
     title: 'Get Grafana alert rule',
     description:
-      `Get the full definition of one alert rule by uid (condition, for, labels, annotations, notification policy ` +
-      `references).${MANAGEMENT_FAMILY_SUFFIX}`,
+      `Get the full definition of one alert rule by uid: the data query definitions (PromQL/LogQL + expression ` +
+      `pipeline behind the condition refId), condition, for, isPaused, labels, annotations, and ` +
+      `notificationSettings (notification policy references) when present.${MANAGEMENT_FAMILY_SUFFIX}`,
     risk: 'read',
     inputSchema: GRAFANA_GET_ALERT_RULE_INPUT_SCHEMA
   },
   {
     name: 'grafana_get_alert_history',
     title: 'Get Grafana alert rule history',
-    description: `Get the state-change/event history for one alert rule by uid.${MANAGEMENT_FAMILY_SUFFIX}`,
+    description:
+      `Get the state-change history for one alert rule by uid, roughly [{time (epoch ms), state, labels}]. Optional ` +
+      `from/to (epoch seconds) and limit (max 1000) narrow the window. Requires Grafana's Loki-backed alerting state ` +
+      `history to be enabled on the instance -- a 404 usually means it is disabled.${MANAGEMENT_FAMILY_SUFFIX}`,
     risk: 'read',
     inputSchema: GRAFANA_GET_ALERT_HISTORY_INPUT_SCHEMA
   },
@@ -135,8 +142,10 @@ export const AT_GRAFANA_TOOL_CATALOG: ToolCatalogEntry[] = [
     name: 'grafana_generate_deeplink',
     title: 'Generate Grafana deeplink',
     description:
-      'Build a Grafana dashboard or Explore URL from the instance base URL. Always returns grafanaUrl. Optional ' +
-      'openInIde (default false) opens the AT Grafana Webview for dashboards only; Explore is URL-only.' +
+      'Build a Grafana dashboard, Explore, or alert-rule (kind alertRule, by rule uid) URL from the instance base ' +
+      'URL. Always returns grafanaUrl. Explore accepts an optional expr pre-filled into the first query. Optional ' +
+      'openInIde (default false) opens the AT Grafana Webview for dashboards only and requires the instance TLS ' +
+      'fingerprint to already be trusted in the sidebar; Explore and alertRule are URL-only.' +
       MANAGEMENT_FAMILY_SUFFIX,
     risk: 'read',
     inputSchema: GRAFANA_GENERATE_DEEPLINK_INPUT_SCHEMA

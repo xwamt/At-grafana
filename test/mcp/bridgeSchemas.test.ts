@@ -116,6 +116,30 @@ describe('grafanaListDashboardsSchema', () => {
   });
 });
 
+describe('grafanaGetAlertHistorySchema window parameters', () => {
+  it('accepts optional from/to (epoch seconds) and limit', () => {
+    expect(
+      grafanaGetAlertHistorySchema.safeParse({
+        instanceId: 'abc',
+        uid: 'r1',
+        from: 1700000000,
+        to: 1700003600,
+        limit: 250
+      }).success
+    ).toBe(true);
+  });
+
+  it('rejects a limit of 0 and a limit above 1000', () => {
+    expect(grafanaGetAlertHistorySchema.safeParse({ instanceId: 'abc', uid: 'r1', limit: 0 }).success).toBe(false);
+    expect(grafanaGetAlertHistorySchema.safeParse({ instanceId: 'abc', uid: 'r1', limit: 1001 }).success).toBe(false);
+  });
+
+  it('rejects negative and non-integer from/to', () => {
+    expect(grafanaGetAlertHistorySchema.safeParse({ instanceId: 'abc', uid: 'r1', from: -1 }).success).toBe(false);
+    expect(grafanaGetAlertHistorySchema.safeParse({ instanceId: 'abc', uid: 'r1', to: 1.5 }).success).toBe(false);
+  });
+});
+
 describe('instanceId + uid schemas', () => {
   const schemas = {
     grafanaGetAlertRuleSchema,
@@ -456,6 +480,55 @@ describe('grafanaGenerateDeeplinkSchema', () => {
     if (parsed.success) {
       expect(parsed.data).toMatchObject({ kind: 'dashboard', openInIde: false });
     }
+  });
+
+  it('accepts explore with an optional expr and rejects an empty one', () => {
+    expect(
+      grafanaGenerateDeeplinkSchema.safeParse({
+        instanceId: 'abc',
+        kind: 'explore',
+        datasourceUid: 'prom',
+        expr: 'up'
+      }).success
+    ).toBe(true);
+    expect(
+      grafanaGenerateDeeplinkSchema.safeParse({
+        instanceId: 'abc',
+        kind: 'explore',
+        datasourceUid: 'prom',
+        expr: ''
+      }).success
+    ).toBe(false);
+  });
+
+  it('accepts alertRule with instanceId and uid', () => {
+    expect(
+      grafanaGenerateDeeplinkSchema.safeParse({
+        instanceId: 'abc',
+        kind: 'alertRule',
+        uid: 'rule-1'
+      }).success
+    ).toBe(true);
+  });
+
+  it('rejects alertRule without uid, with openInIde, or with dashboard-only extras', () => {
+    expect(grafanaGenerateDeeplinkSchema.safeParse({ instanceId: 'abc', kind: 'alertRule' }).success).toBe(false);
+    expect(
+      grafanaGenerateDeeplinkSchema.safeParse({
+        instanceId: 'abc',
+        kind: 'alertRule',
+        uid: 'rule-1',
+        openInIde: true
+      }).success
+    ).toBe(false);
+    expect(
+      grafanaGenerateDeeplinkSchema.safeParse({
+        instanceId: 'abc',
+        kind: 'alertRule',
+        uid: 'rule-1',
+        panelId: 5
+      }).success
+    ).toBe(false);
   });
 });
 

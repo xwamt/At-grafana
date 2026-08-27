@@ -64,6 +64,7 @@ export type GrafanaApiClientLike = Pick<
   | 'getFolders'
   | 'getDashboardByUid'
   | 'listAlertRules'
+  | 'getAlertRule'
   | 'listAlertRuleStates'
   | 'getAlertRuleHistory'
   | 'listDatasources'
@@ -168,6 +169,27 @@ const UNAUTHORIZED_INSTANCE_MESSAGE =
   'Unknown Grafana instance, or this instance does not have Agent background access enabled.';
 
 /**
+ * UX-15: one hint for both empty cases ("no instances configured at all" and
+ * "instances exist but every gate is off") — distinguishing them would hand
+ * an unauthorized caller the same enumeration oracle
+ * UNAUTHORIZED_INSTANCE_MESSAGE exists to close.
+ */
+const EMPTY_INSTANCES_HINT =
+  "No instances have 'Allow background Agent access' enabled. Ask the user to enable it per instance in the AT Grafana extension.";
+
+/**
+ * UX-08: appended to a `tls`-kind failure so a headless Agent (which can
+ * never answer the Trust-On-First-Use prompt itself — see the class doc)
+ * relays an actionable recovery path instead of a dead-end certificate error.
+ */
+const TLS_TRUST_RECOVERY_HINT =
+  ' The user must open this instance once in the AT Grafana sidebar to confirm its TLS fingerprint (Trust-On-First-Use).';
+
+/** FUNC-04: `/api/v1/rules/history` only exists when Grafana's Loki-backed alerting state history backend is enabled. */
+const ALERT_HISTORY_DISABLED_HINT =
+  ' Alert state history may be disabled on this Grafana instance: /api/v1/rules/history requires the Loki-backed alerting state history backend to be enabled.';
+
+/**
  * The ADR-004 authorization + dispatch authority for AT Grafana's MCP tools
  * (Task 5.1) -- analogous to `at-terminal-series`'s `AgentToolService`, but
  * built directly from ADR-004's spec since that file isn't available in this
@@ -218,7 +240,9 @@ export class GrafanaAgentToolService {
           );
         case 'grafana_get_dashboard':
           return await this.withAuthorizedClient(grafanaGetDashboardSchema, args, async (client, parsed) => {
-            const dashboard = await client.getDashboardByUid(parsed.uid);
+            const dashboard = await client.getDashboardByUid(parsed.uid).catch((error: unknown) => {
+              throw enrichOversizedDashboardError(error, parsed.uid);
+            });
             return projectDashboard(dashboard, {
               fields: parsed.fields,
               panelIds: parsed.panelIds,
@@ -232,12 +256,16 @@ export class GrafanaAgentToolService {
             this.listAlertRules(client, parsed)
           );
         case 'grafana_get_alert_rule':
+          // Single provisioning GET (PERF-06) — returns the full definition
+          // including `data` query definitions and notificationSettings
+          // (FUNC-01); an unknown uid is the transport's api-error 404,
+          // which toFailure maps to NOT_FOUND exactly like before.
           return await this.withAuthorizedClient(grafanaGetAlertRuleSchema, args, (client, parsed) =>
-            this.getAlertRule(client, parsed.uid)
+            client.getAlertRule(parsed.uid)
           );
         case 'grafana_get_alert_history':
           return await this.withAuthorizedClient(grafanaGetAlertHistorySchema, args, (client, parsed) =>
-            client.getAlertRuleHistory(parsed.uid)
+            this.getAlertRuleHistory(client, parsed)
           );
         case 'grafana_list_annotations':
           return await this.withAuthorizedClient(grafanaListAnnotationsSchema, args, (client, parsed) =>
@@ -365,9 +393,14 @@ export class GrafanaAgentToolService {
     // Per ADR-004/MGT1: id/label/url only, and only instances with
     // background access explicitly enabled -- never the token, never a
     // toggled-off instance.
-    const result = instances
+    const authorized = instances
       .filter((instance) => instance.allowBackgroundAccess)
       .map((instance) => ({ id: instance.id, label: instance.label, url: instance.url }));
+    // UX-15: an envelope instead of a bare array, so the empty case can
+    // carry a recovery hint (see EMPTY_INSTANCES_HINT for why the hint never
+    // distinguishes "nothing configured" from "every gate off").
+    const result =
+      authorized.length === 0 ? { instances: authorized, hint: EMPTY_INSTANCES_HINT } : { instances: authorized };
     return { ok: true, result };
   }
 
@@ -401,7 +434,12 @@ export class GrafanaAgentToolService {
     }
 
     const client = this.deps.createClient(instance.url, token, this.createCertVerifier());
-    const result = await run(client, parsed.data);
+    let result: unknown;
+    try {
+      result = await run(client, parsed.data);
+    } catch (error) {
+      throw appendTlsRecoveryHint(error);
+    }
     return { ok: true, result };
   }
 
@@ -447,6 +485,10 @@ export class GrafanaAgentToolService {
   ): Promise<unknown> {
     const [rules, states] = await Promise.all([client.listAlertRules(), client.listAlertRuleStates()]);
     const stateIndex = buildAlertStateIndex(states);
+    // Deliberately a *light* projection (FUNC-09): isPaused rides along so a
+    // paused rule stops reading as state "unknown", but the heavyweight
+    // definition fields (`data`, notificationSettings) stay exclusive to
+    // grafana_get_alert_rule.
     const mapped = rules.map((rule) => {
       const correlated = correlateAlertState(rule.uid, stateIndex);
       return {
@@ -456,7 +498,8 @@ export class GrafanaAgentToolService {
         ruleGroup: rule.ruleGroup,
         state: correlated.state,
         rawState: correlated.rawState,
-        activeAt: correlated.activeAt
+        activeAt: correlated.activeAt,
+        isPaused: rule.isPaused
       };
     });
     if (parsed.states === undefined) {
@@ -466,17 +509,28 @@ export class GrafanaAgentToolService {
     return mapped.filter((rule) => allowed.has(rule.state));
   }
 
-  private async getAlertRule(client: GrafanaApiClientLike, uid: string): Promise<unknown> {
-    // GrafanaAlertsApi has no dedicated single-rule fetch endpoint (Task 2.1
-    // only added listAlertRules/listAlertRuleStates); filtering the full
-    // list client-side is a minor, accepted V1 inefficiency rather than
-    // adding a new client method for what is otherwise a rare Agent call.
-    const rules = await client.listAlertRules();
-    const rule = rules.find((candidate) => candidate.uid === uid);
-    if (!rule) {
-      throw new GrafanaApiError('api-error', `Alert rule not found: ${uid}`, 404);
+  /**
+   * FUNC-04: forwards the optional window/limit and, on the failure shapes a
+   * disabled state-history backend produces (404/501, or the endpoint's
+   * documented-as-unverified `invalid-response`), enriches the message with
+   * ALERT_HISTORY_DISABLED_HINT. Kind and status are preserved so
+   * `toFailure`'s taxonomy (404 -> NOT_FOUND) is untouched.
+   */
+  private async getAlertRuleHistory(
+    client: GrafanaApiClientLike,
+    parsed: { uid: string; from?: number; to?: number; limit?: number }
+  ): Promise<unknown> {
+    try {
+      return await client.getAlertRuleHistory(parsed.uid, { from: parsed.from, to: parsed.to, limit: parsed.limit });
+    } catch (error) {
+      if (
+        error instanceof GrafanaApiError &&
+        (error.status === 404 || error.status === 501 || error.kind === 'invalid-response')
+      ) {
+        throw new GrafanaApiError(error.kind, `${error.message}${ALERT_HISTORY_DISABLED_HINT}`, error.status);
+      }
+      throw error;
     }
-    return rule;
   }
 
   private async listDatasources(client: GrafanaApiClientLike): Promise<unknown> {
@@ -603,4 +657,28 @@ export class GrafanaAgentToolService {
     }
     return { ok: false, code: 'INTERNAL_ERROR', message: formatError(error) };
   }
+}
+
+/** UX-08: see TLS_TRUST_RECOVERY_HINT. Idempotent -- an error already carrying the hint passes through unchanged. */
+function appendTlsRecoveryHint(error: unknown): unknown {
+  if (error instanceof GrafanaApiError && error.kind === 'tls' && !error.message.includes(TLS_TRUST_RECOVERY_HINT.trim())) {
+    return new GrafanaApiError('tls', `${error.message}${TLS_TRUST_RECOVERY_HINT}`, error.status);
+  }
+  return error;
+}
+
+/**
+ * FUNC-17: a dashboard model past MANAGEMENT_MAX_RESPONSE_BYTES was aborted
+ * mid-download, so the raw `response-too-large` message alone would leave
+ * the Agent stuck. Point it at the narrower request shapes instead.
+ */
+function enrichOversizedDashboardError(error: unknown, uid: string): unknown {
+  if (error instanceof GrafanaApiError && error.kind === 'response-too-large') {
+    return new GrafanaApiError(
+      'response-too-large',
+      `The JSON model of dashboard "${uid}" exceeded the management response size cap and was not returned. ` +
+        'Retry with fields "targets" or "summary" and narrow with panelIds/titleContains instead of fetching the full model.'
+    );
+  }
+  return error;
 }

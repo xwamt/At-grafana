@@ -125,6 +125,22 @@ describe('BridgeServer request handler', () => {
     expect(invoke).toHaveBeenCalledWith('grafana_list_instances', {});
   });
 
+  it('passes the schema-parsed arguments (defaults applied) to toolService.invoke, not the raw body (PERF-07)', async () => {
+    const invoke = vi.fn(async (): Promise<ToolInvokeResult> => ({ ok: true, result: [] }));
+    const response = await handler({ toolService: fakeToolService(invoke) })({
+      method: 'POST',
+      path: '/invoke',
+      headers: { [AT_SERIES_TOKEN_HEADER]: TOKEN },
+      body: JSON.stringify({ name: 'grafana_list_annotations', arguments: { instanceId: 'i1' } })
+    });
+
+    expect(response.status).toBe(200);
+    // `limit: 100` only exists on the *parsed* data (a Zod .default()); raw
+    // args would arrive without it and force the service's second parse to
+    // re-derive what the Bridge already computed.
+    expect(invoke).toHaveBeenCalledWith('grafana_list_annotations', { instanceId: 'i1', limit: 100 });
+  });
+
   it('surfaces the toolService authorization failure as a validation-class error, without re-implementing the check itself', async () => {
     const invoke = vi.fn(async (): Promise<ToolInvokeResult> => ({
       ok: false,

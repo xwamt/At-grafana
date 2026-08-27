@@ -87,6 +87,27 @@ describe('projectDashboard', () => {
     expect(projectDashboard(dashboard, { fields: 'full' })).toBe(dashboard);
   });
 
+  it('full + panelIds keeps the complete model shape but only the selected panels (filters are never silently ignored)', () => {
+    const result = projectDashboard(sampleDashboard(), { fields: 'full', panelIds: [2] });
+    const panels = result.model.panels as Array<Record<string, unknown>>;
+
+    expect(panels.map((panel) => panel.id)).toEqual([2]);
+    // Still the full model: heavy chrome and non-panel keys survive.
+    expect(panels[0]).toHaveProperty('fieldConfig');
+    expect(panels[0]).toHaveProperty('gridPos');
+    expect(result.model.annotations).toEqual({ list: [{ name: 'Deploy', enable: true }] });
+    expect(result.model.templating).toEqual({ list: [{ name: 'job', type: 'query', query: 'label_values(job)' }] });
+  });
+
+  it('full + titleContains filters panels, including inside rows', () => {
+    const result = projectDashboard(sampleDashboard(), { fields: 'full', titleContains: 'network' });
+    const panels = result.model.panels as Array<Record<string, unknown>>;
+
+    expect(panels.map((panel) => panel.id)).toEqual([10]);
+    const row = panels[0] as { panels: Array<{ id: number }> };
+    expect(row.panels.map((panel) => panel.id)).toEqual([11]);
+  });
+
   it('summary keeps uid/title/time and panel id/title/type/datasource only', () => {
     const result = projectDashboard(sampleDashboard(), { fields: 'summary' });
 
@@ -96,6 +117,7 @@ describe('projectDashboard', () => {
       uid: 'd1',
       title: 'Ops Overview',
       time: { from: 'now-6h', to: 'now' },
+      templating: { list: [{ name: 'job', type: 'query', query: 'label_values(job)' }] },
       panels: [
         {
           id: 1,
@@ -157,6 +179,55 @@ describe('projectDashboard', () => {
       targets: [{ expr: 'rate(net_in[5m])' }]
     });
     expect(row.panels[0]).not.toHaveProperty('transformations');
+  });
+
+  it('targets keeps a slim templating.list so $var references in expr stay resolvable', () => {
+    const result = projectDashboard(sampleDashboard(), { fields: 'targets' });
+
+    expect(result.model.templating).toEqual({
+      list: [{ name: 'job', type: 'query', query: 'label_values(job)' }]
+    });
+  });
+
+  it('slim templating keeps only name/type/query/current/label per variable', () => {
+    const dashboard = sampleDashboard();
+    dashboard.model.templating = {
+      list: [
+        {
+          name: 'job',
+          type: 'query',
+          label: 'Job',
+          query: 'label_values(job)',
+          current: { text: 'api', value: 'api' },
+          options: [{ text: 'api', value: 'api' }, { text: 'web', value: 'web' }],
+          refresh: 2,
+          datasource: { uid: 'prom-1' }
+        }
+      ]
+    };
+
+    const result = projectDashboard(dashboard, { fields: 'targets' });
+
+    expect(result.model.templating).toEqual({
+      list: [
+        {
+          name: 'job',
+          type: 'query',
+          label: 'Job',
+          query: 'label_values(job)',
+          current: { text: 'api', value: 'api' }
+        }
+      ]
+    });
+  });
+
+  it('omits templating from the projection when the model has none', () => {
+    const dashboard = sampleDashboard();
+    delete dashboard.model.templating;
+
+    const result = projectDashboard(dashboard, { fields: 'summary' });
+
+    expect(result.model).not.toHaveProperty('templating');
   });
 
   it('filters by panelIds across nested row panels', () => {

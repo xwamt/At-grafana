@@ -60,6 +60,9 @@ function fakeClient(overrides: Partial<GrafanaApiClientLike> = {}): GrafanaApiCl
       throw new Error('not stubbed');
     },
     listAlertRules: async () => [],
+    getAlertRule: async () => {
+      throw new Error('not stubbed');
+    },
     listAlertRuleStates: async () => [],
     getAlertRuleHistory: async () => [],
     listDatasources: async () => [],
@@ -143,7 +146,7 @@ describe('Bridge integration (real GrafanaAgentToolService, no fake toolService)
     expect(response.body).toEqual({
       ok: true,
       name: 'grafana_list_instances',
-      result: [{ id: 'on', label: 'Enabled', url: 'https://grafana.example.com' }]
+      result: { instances: [{ id: 'on', label: 'Enabled', url: 'https://grafana.example.com' }] }
     });
     expect(JSON.stringify(response.body)).not.toContain('token');
   });

@@ -1,4 +1,4 @@
-export type GrafanaDeeplinkKind = 'dashboard' | 'explore';
+export type GrafanaDeeplinkKind = 'dashboard' | 'explore' | 'alertRule';
 
 export interface GrafanaDashboardDeeplinkInput {
   kind: 'dashboard';
@@ -11,11 +11,18 @@ export interface GrafanaDashboardDeeplinkInput {
 export interface GrafanaExploreDeeplinkInput {
   kind: 'explore';
   datasourceUid: string;
+  /** Optional initial query expression written into `queries[0].expr` so Explore opens pre-populated. */
+  expr?: string;
   from?: string;
   to?: string;
 }
 
-export type GrafanaDeeplinkInput = GrafanaDashboardDeeplinkInput | GrafanaExploreDeeplinkInput;
+export interface GrafanaAlertRuleDeeplinkInput {
+  kind: 'alertRule';
+  uid: string;
+}
+
+export type GrafanaDeeplinkInput = GrafanaDashboardDeeplinkInput | GrafanaExploreDeeplinkInput | GrafanaAlertRuleDeeplinkInput;
 
 function stripTrailingSlash(url: string): string {
   return url.replace(/\/+$/, '');
@@ -43,9 +50,18 @@ export function buildGrafanaDeeplink(instanceUrl: string, input: GrafanaDeeplink
       ? `${origin}/d/${encodeURIComponent(input.uid)}?${search}`
       : `${origin}/d/${encodeURIComponent(input.uid)}`;
   }
+  if (input.kind === 'alertRule') {
+    // Grafana's native Unified Alerting rule view page — same route the
+    // embed proxy mirrors (see GrafanaEmbedProxy's `/alerting/grafana/:uid/view`).
+    return `${origin}/alerting/grafana/${encodeURIComponent(input.uid)}/view`;
+  }
+  const query: Record<string, unknown> = { refId: 'A', datasource: { uid: input.datasourceUid } };
+  if (input.expr !== undefined) {
+    query.expr = input.expr;
+  }
   const left = {
     datasource: input.datasourceUid,
-    queries: [{ refId: 'A', datasource: { uid: input.datasourceUid } }],
+    queries: [query],
     range: { from: input.from ?? 'now-1h', to: input.to ?? 'now' }
   };
   return `${origin}/explore?left=${encodeURIComponent(JSON.stringify(left))}`;

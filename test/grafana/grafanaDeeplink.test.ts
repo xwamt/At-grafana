@@ -27,6 +27,28 @@ describe('buildGrafanaDeeplink', () => {
       range: { from: 'now-1h', to: 'now' }
     });
   });
+
+  it('writes an optional expr into the first Explore query', () => {
+    const url = buildGrafanaDeeplink('https://grafana.example.com', {
+      kind: 'explore',
+      datasourceUid: 'prom',
+      expr: 'rate(http_requests_total[5m])',
+      from: 'now-6h',
+      to: 'now'
+    });
+    const left = JSON.parse(decodeURIComponent(new URL(url).searchParams.get('left') ?? ''));
+    expect(left).toEqual({
+      datasource: 'prom',
+      queries: [{ refId: 'A', datasource: { uid: 'prom' }, expr: 'rate(http_requests_total[5m])' }],
+      range: { from: 'now-6h', to: 'now' }
+    });
+  });
+
+  it('builds an alert-rule view URL matching Grafana\'s Unified Alerting route, encoding the uid', () => {
+    expect(
+      buildGrafanaDeeplink('https://grafana.example.com/', { kind: 'alertRule', uid: 'rule/one' })
+    ).toBe('https://grafana.example.com/alerting/grafana/rule%2Fone/view');
+  });
 });
 
 describe('buildOpenInIdeSearch', () => {

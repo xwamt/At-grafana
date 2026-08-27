@@ -169,12 +169,49 @@ describe('toolCatalog', () => {
     expect(tool.inputSchema.additionalProperties).toBe(false);
     expect(tool.inputSchema.properties).toMatchObject({
       instanceId: { type: 'string' },
-      kind: { type: 'string', enum: ['dashboard', 'explore'] },
+      kind: { type: 'string', enum: ['dashboard', 'explore', 'alertRule'] },
       uid: { type: 'string' },
       datasourceUid: { type: 'string' },
+      expr: { type: 'string' },
       panelId: { type: 'integer', exclusiveMinimum: 0 },
       openInIde: { type: 'boolean' }
     });
+    expect(tool.description).toMatch(/alertRule/);
+    expect(tool.description.toLowerCase()).toContain('expr');
+  });
+
+  it('grafana_get_alert_rule promises the query definitions and notification settings it now returns', () => {
+    const tool = findTool('grafana_get_alert_rule');
+    expect(tool.description.toLowerCase()).toContain('data');
+    expect(tool.description.toLowerCase()).toContain('query definitions');
+    expect(tool.description).toMatch(/notificationSettings/);
+    expect(tool.description.toLowerCase()).toContain('ispaused');
+  });
+
+  it('grafana_list_alert_rules documents isPaused on the light projection', () => {
+    const tool = findTool('grafana_list_alert_rules');
+    expect(tool.description).toMatch(/isPaused/);
+  });
+
+  it('grafana_get_alert_history documents the from/to/limit window and the Loki state-history prerequisite', () => {
+    const tool = findTool('grafana_get_alert_history');
+    expect(tool.inputSchema.required).toEqual(['instanceId', 'uid']);
+    expect(tool.inputSchema.additionalProperties).toBe(false);
+    expect(tool.inputSchema.properties).toMatchObject({
+      instanceId: { type: 'string' },
+      uid: { type: 'string' },
+      from: { type: 'integer', minimum: 0 },
+      to: { type: 'integer', minimum: 0 },
+      limit: { type: 'integer', minimum: 1, maximum: 1000 }
+    });
+    expect(tool.description).toMatch(/Loki-backed/);
+    expect(tool.description.toLowerCase()).toContain('limit');
+  });
+
+  it('grafana_list_instances documents the { instances, hint? } envelope', () => {
+    const tool = findTool('grafana_list_instances');
+    expect(tool.description).toMatch(/instances/);
+    expect(tool.description.toLowerCase()).toContain('hint');
   });
 
   it('grafana_query_datasource requires instanceId/datasourceUid/method/path, with method restricted to GET/POST', () => {

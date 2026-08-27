@@ -75,4 +75,22 @@ describe('buildLokiProxyCall', () => {
       query: { query: 'sum(rate({job="api"}[5m]))', time: 'now' }
     });
   });
+
+  it('forwards limit and direction on instant queries (Loki instant supports both) without start/end', () => {
+    expect(
+      buildLokiProxyCall({
+        expr: '{job="api"}',
+        queryType: 'instant',
+        time: '1700000000',
+        start: '1',
+        end: '2',
+        limit: 50,
+        direction: 'backward'
+      })
+    ).toEqual({
+      method: 'GET',
+      path: 'loki/api/v1/query',
+      query: { query: '{job="api"}', time: '1700000000', limit: '50', direction: 'backward' }
+    });
+  });
 });

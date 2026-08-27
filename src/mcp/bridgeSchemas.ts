@@ -54,8 +54,20 @@ export const grafanaGetAlertRuleSchema = z
   .object({ instanceId: z.string().min(1), uid: z.string().min(1) })
   .strict();
 
+/**
+ * `from`/`to` are Unix epoch seconds and `limit` a row cap, forwarded
+ * verbatim to Grafana's `/api/v1/rules/history` (FUNC-04). The endpoint only
+ * answers when the Loki-backed alerting state history backend is enabled —
+ * see the catalog description.
+ */
 export const grafanaGetAlertHistorySchema = z
-  .object({ instanceId: z.string().min(1), uid: z.string().min(1) })
+  .object({
+    instanceId: z.string().min(1),
+    uid: z.string().min(1),
+    from: z.number().int().nonnegative().optional(),
+    to: z.number().int().nonnegative().optional(),
+    limit: z.number().int().positive().max(1000).optional()
+  })
   .strict();
 
 export const grafanaListAnnotationsSchema = z
@@ -87,8 +99,16 @@ export const grafanaGenerateDeeplinkSchema = z.discriminatedUnion('kind', [
       instanceId: z.string().min(1),
       kind: z.literal('explore'),
       datasourceUid: z.string().min(1),
+      expr: z.string().min(1).optional(),
       from: z.string().min(1).optional(),
       to: z.string().min(1).optional()
+    })
+    .strict(),
+  z
+    .object({
+      instanceId: z.string().min(1),
+      kind: z.literal('alertRule'),
+      uid: z.string().min(1)
     })
     .strict()
 ]);
@@ -379,7 +399,18 @@ export const GRAFANA_LIST_ALERT_RULES_INPUT_SCHEMA: JsonSchemaObject = {
   additionalProperties: false
 };
 export const GRAFANA_GET_ALERT_RULE_INPUT_SCHEMA: JsonSchemaObject = instanceIdAndUidInputSchema();
-export const GRAFANA_GET_ALERT_HISTORY_INPUT_SCHEMA: JsonSchemaObject = instanceIdAndUidInputSchema();
+export const GRAFANA_GET_ALERT_HISTORY_INPUT_SCHEMA: JsonSchemaObject = {
+  type: 'object',
+  properties: {
+    instanceId: { type: 'string', minLength: 1 },
+    uid: { type: 'string', minLength: 1 },
+    from: { type: 'integer', minimum: 0, description: 'Start of window as Unix epoch seconds.' },
+    to: { type: 'integer', minimum: 0, description: 'End of window as Unix epoch seconds.' },
+    limit: { type: 'integer', minimum: 1, maximum: 1000, description: 'Max history entries to return (max 1000).' }
+  },
+  required: ['instanceId', 'uid'],
+  additionalProperties: false
+};
 export const GRAFANA_LIST_ANNOTATIONS_INPUT_SCHEMA: JsonSchemaObject = {
   type: 'object',
   properties: {
@@ -402,9 +433,10 @@ export const GRAFANA_GENERATE_DEEPLINK_INPUT_SCHEMA: JsonSchemaObject = {
   type: 'object',
   properties: {
     instanceId: { type: 'string', minLength: 1 },
-    kind: { type: 'string', enum: ['dashboard', 'explore'] },
-    uid: { type: 'string', minLength: 1, description: 'Required when kind is dashboard.' },
+    kind: { type: 'string', enum: ['dashboard', 'explore', 'alertRule'] },
+    uid: { type: 'string', minLength: 1, description: 'Required when kind is dashboard or alertRule.' },
     datasourceUid: { type: 'string', minLength: 1, description: 'Required when kind is explore.' },
+    expr: { type: 'string', minLength: 1, description: 'Explore only. Optional query expression pre-filled into the Explore pane.' },
     panelId: { type: 'integer', exclusiveMinimum: 0 },
     from: { type: 'string', minLength: 1 },
     to: { type: 'string', minLength: 1 },

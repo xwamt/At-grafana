@@ -330,7 +330,12 @@ async function handleInvoke(
     return bridgeError(503, 'UNAVAILABLE', 'AT Grafana tool dispatch is not available.');
   }
 
-  const result = await toolService.invoke(name, args);
+  // PERF-07: hand the service the *parsed* data (defaults already applied)
+  // rather than the raw args. The service still runs its own safeParse as
+  // the ADR-004 authority — that second parse of already-defaulted data is
+  // cheap and idempotent — but the Bridge's parse result no longer gets
+  // thrown away.
+  const result = await toolService.invoke(name, parsedArgs.data);
   if (result.ok) {
     log.trace(`bridge: invoked ${name} successfully`);
     return json(200, { ok: true, name, result: result.result });

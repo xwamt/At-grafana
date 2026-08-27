@@ -65,11 +65,29 @@ export class GrafanaAlertsApi {
    * sorted first").
    */
   async listAlertRules(): Promise<GrafanaAlertRule[]> {
-    const raw = await this.http.requestJson<unknown>('GET', '/api/v1/provisioning/alert-rules');
+    const raw = await this.http.requestJson<unknown>('GET', '/api/v1/provisioning/alert-rules', {
+      maxResponseBytes: MANAGEMENT_MAX_RESPONSE_BYTES
+    });
     if (!Array.isArray(raw)) {
       throw new GrafanaApiError('invalid-response', 'Grafana /api/v1/provisioning/alert-rules did not return an array.');
     }
     return raw.map(toAlertRule);
+  }
+
+  /**
+   * Single-rule fetch via the same provisioning API as `listAlertRules`
+   * (`GET /api/v1/provisioning/alert-rules/:uid`, one entry of the list
+   * shape) — replaces the old list-then-find in `GrafanaAgentToolService`
+   * (PERF-06). An unknown uid surfaces as the transport's
+   * `GrafanaApiError` kind `api-error` with status 404.
+   */
+  async getAlertRule(uid: string): Promise<GrafanaAlertRule> {
+    const raw = await this.http.requestJson<unknown>(
+      'GET',
+      `/api/v1/provisioning/alert-rules/${encodeURIComponent(uid)}`,
+      { maxResponseBytes: MANAGEMENT_MAX_RESPONSE_BYTES }
+    );
+    return toAlertRule(raw);
   }
 
   /**
@@ -126,8 +144,16 @@ export class GrafanaAlertsApi {
    * instance. Unexpected shapes throw `invalid-response` rather than
    * silently returning wrong data.
    */
-  async getAlertRuleHistory(uid: string): Promise<GrafanaAlertHistoryEntry[]> {
-    const raw = await this.http.requestJson<unknown>('GET', '/api/v1/rules/history', { query: { ruleUID: uid } });
+  async getAlertRuleHistory(uid: string, query: GrafanaAlertHistoryQuery = {}): Promise<GrafanaAlertHistoryEntry[]> {
+    const raw = await this.http.requestJson<unknown>('GET', '/api/v1/rules/history', {
+      query: {
+        ruleUID: uid,
+        from: query.from !== undefined ? String(query.from) : undefined,
+        to: query.to !== undefined ? String(query.to) : undefined,
+        limit: query.limit !== undefined ? String(query.limit) : undefined
+      },
+      maxResponseBytes: MANAGEMENT_MAX_RESPONSE_BYTES
+    });
     return parseHistoryFrame(raw);
   }
 }
@@ -154,7 +180,12 @@ function toAlertRule(entry: unknown): GrafanaAlertRule {
     execErrState: typeof entry.execErrState === 'string' ? entry.execErrState : undefined,
     isPaused: typeof entry.isPaused === 'boolean' ? entry.isPaused : undefined,
     labels: toStringRecord(entry.labels),
-    annotations: toStringRecord(entry.annotations)
+    annotations: toStringRecord(entry.annotations),
+    // FUNC-01: keep the query definitions and notification-policy references
+    // instead of dropping them — grafana_get_alert_rule promises the full
+    // definition. Left as unknown pass-throughs (see the interface docs).
+    data: entry.data,
+    notificationSettings: entry.notification_settings
   };
 }
 

@@ -1,6 +1,7 @@
 import { asRedactedLog, type AtGrafanaLog } from '../utils/logger';
 import { GrafanaApiError, type GrafanaHttpClient } from './GrafanaHttpClient';
 import { isRecord, readUidOrLegacyId } from './jsonGuards';
+import { MANAGEMENT_MAX_RESPONSE_BYTES } from './QueryLimits';
 
 export interface GrafanaSearchResult {
   uid: string;
@@ -91,7 +92,8 @@ export class GrafanaDashboardsApi {
         type: query.type,
         tag: query.tag,
         folderUIDs: query.folderUid
-      }
+      },
+      maxResponseBytes: MANAGEMENT_MAX_RESPONSE_BYTES
     });
     if (!Array.isArray(raw)) {
       throw new GrafanaApiError('invalid-response', 'Grafana /api/search did not return an array.');
@@ -143,7 +145,9 @@ export class GrafanaDashboardsApi {
 
   /** One page of `/api/folders`; the Agent-facing counterpart of `search`. See its doc for why this stays unpaged. */
   async getFolders(): Promise<GrafanaFolder[]> {
-    const raw = await this.http.requestJson<unknown>('GET', '/api/folders');
+    const raw = await this.http.requestJson<unknown>('GET', '/api/folders', {
+      maxResponseBytes: MANAGEMENT_MAX_RESPONSE_BYTES
+    });
     if (!Array.isArray(raw)) {
       throw new GrafanaApiError('invalid-response', 'Grafana /api/folders did not return an array.');
     }
@@ -161,7 +165,12 @@ export class GrafanaDashboardsApi {
   }
 
   async getDashboardByUid(uid: string): Promise<GrafanaDashboard> {
-    const raw = await this.http.requestJson<unknown>('GET', `/api/dashboards/uid/${encodeURIComponent(uid)}`);
+    // PERF-09/FUNC-17: a dashboard JSON model is the one management payload
+    // that can plausibly get huge; the cap turns "extension host buffers an
+    // unbounded body" into a classified `response-too-large` failure.
+    const raw = await this.http.requestJson<unknown>('GET', `/api/dashboards/uid/${encodeURIComponent(uid)}`, {
+      maxResponseBytes: MANAGEMENT_MAX_RESPONSE_BYTES
+    });
     return toDashboard(raw);
   }
 

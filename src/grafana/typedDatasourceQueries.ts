@@ -52,6 +52,15 @@ export function buildLokiProxyCall(input: LokiProxyInput): DatasourceProxyCall {
     if (input.time !== undefined) {
       query.time = input.time;
     }
+    // Loki's instant endpoint accepts limit/direction too (they bound a
+    // log-selector instant query exactly like the range one) — dropping them
+    // here silently un-limited instant queries (FUNC-07).
+    if (input.limit !== undefined) {
+      query.limit = String(input.limit);
+    }
+    if (input.direction !== undefined) {
+      query.direction = input.direction;
+    }
     return { method: 'GET', path: 'loki/api/v1/query', query };
   }
   const query: Record<string, string> = { query: input.expr };
