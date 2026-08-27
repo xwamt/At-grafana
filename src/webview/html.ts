@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { t } from '../i18n/t';
 import { createNonce } from '../utils/nonce';
 import { buildRecommendedCsp } from './GrafanaEmbedProxy';
 
@@ -93,11 +92,11 @@ export function renderEmbedWebviewHtml(options: EmbedWebviewOptions): string {
 <body>
   <div id="embed-loading" class="embed-status" role="status">
     <div class="embed-spinner" aria-hidden="true"></div>
-    <p>${escapeHtml(t('Loading Grafana…'))}</p>
+    <p>Loading Grafana…</p>
   </div>
   <div id="embed-error" class="embed-status" role="alert" hidden>
-    <p>${escapeHtml(t('Grafana did not load in this panel. Check that the instance is reachable, then retry.'))}</p>
-    <button id="embed-retry" type="button">${escapeHtml(t('Retry'))}</button>
+    <p>Grafana did not load in this panel. Check that the instance is reachable, then retry.</p>
+    <button id="embed-retry" type="button">Retry</button>
   </div>
   <iframe src="${escapeAttr(options.iframeSrc)}" id="embed-frame" title="${escapeAttr(options.title)}"></iframe>
   <script nonce="${nonce}">
