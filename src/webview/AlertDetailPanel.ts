@@ -57,7 +57,8 @@ export class AlertDetailPanel {
     panel.webview.html = renderEmbedWebviewHtml({
       title,
       proxyOrigin: origin,
-      iframeSrc: proxy.buildAlertRuleUrl(instanceId, uid)
+      iframeSrc: proxy.buildAlertRuleUrl(instanceId, uid),
+      language: vscode.env.language
     });
   }
 }

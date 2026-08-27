@@ -64,7 +64,8 @@ export class DashboardPanel {
     panel.webview.html = renderEmbedWebviewHtml({
       title,
       proxyOrigin: origin,
-      iframeSrc: proxy.buildDashboardUrl(instanceId, uid, slug, search)
+      iframeSrc: proxy.buildDashboardUrl(instanceId, uid, slug, search),
+      language: vscode.env.language
     });
   }
 }

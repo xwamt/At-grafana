@@ -1108,14 +1108,20 @@ export function buildProxiedDocumentCsp(): string {
  * `start()` has resolved. This governs the **parent** Webview document; see
  * `buildProxiedDocumentCsp` above for the one that governs the Grafana page
  * inside the iframe.
+ *
+ * `scriptNonce` (UX-12) admits the shell's own load/error wiring script and
+ * nothing else: a nonce names one exact inline script per render, so every
+ * *source list* still contains only the proxy origin — no host, scheme, or
+ * 'unsafe-inline' is ever added.
  */
-export function buildRecommendedCsp(proxyOrigin: string): string {
+export function buildRecommendedCsp(proxyOrigin: string, scriptNonce?: string): string {
+  const scriptSrc = scriptNonce ? `${proxyOrigin} 'nonce-${scriptNonce}'` : proxyOrigin;
   return (
     "default-src 'none'; " +
     `frame-src ${proxyOrigin}; ` +
     `img-src ${proxyOrigin} data:; ` +
     `style-src ${proxyOrigin} 'unsafe-inline'; ` +
-    `script-src ${proxyOrigin}; ` +
+    `script-src ${scriptSrc}; ` +
     `font-src ${proxyOrigin} data:; ` +
     `connect-src ${proxyOrigin};`
   );
@@ -1495,6 +1501,14 @@ function respondServiceUnavailable(response: http.ServerResponse): void {
   response.end(body);
 }
 
+/**
+ * Error pages render *inside* the embed iframe, where this module (which
+ * never imports `vscode`) cannot reach `t()` — the copy stays English by
+ * accepted limitation (UX-12), but the page at least looks intentional:
+ * system font, light/dark via `prefers-color-scheme`, and a Retry link that
+ * reloads the iframe document so a transient failure (Grafana restarting,
+ * proxy shedding load) has a one-click recovery.
+ */
 function respondError(response: http.ServerResponse, status: number, message: string): void {
   if (response.headersSent) {
     response.destroy();
@@ -1502,8 +1516,21 @@ function respondError(response: http.ServerResponse, status: number, message: st
   }
   const safeMessage = escapeHtml(redactSensitiveText(message));
   const body = Buffer.from(
-    `<!DOCTYPE html><html><head><meta charset="utf-8"><title>AT Grafana Proxy</title></head>` +
-      `<body><h1>AT Grafana proxy error (${status})</h1><p>${safeMessage}</p></body></html>`,
+    `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">` +
+      `<meta name="viewport" content="width=device-width, initial-scale=1.0">` +
+      `<title>AT Grafana Proxy</title>` +
+      `<style>` +
+      `:root{color-scheme:light dark}` +
+      `body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;` +
+      `font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#f3f3f3;color:#1f1f1f}` +
+      `main{max-width:36rem;padding:2rem;text-align:center}` +
+      `h1{font-size:1.05rem;font-weight:600}` +
+      `p{line-height:1.5;overflow-wrap:anywhere}` +
+      `a{color:#005fb8}` +
+      `@media (prefers-color-scheme:dark){body{background:#1f1f1f;color:#cccccc}a{color:#4daafc}}` +
+      `</style></head>` +
+      `<body><main><h1>AT Grafana proxy error (${status})</h1><p>${safeMessage}</p>` +
+      `<p><a href="javascript:location.reload()">Retry</a></p></main></body></html>`,
     'utf8'
   );
   response.writeHead(status, {

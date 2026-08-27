@@ -31,6 +31,9 @@ describe('AlertDetailPanel', () => {
     const panel = createWebviewPanelSpy.mock.results[0]?.value;
     expect(panel.webview.html).toContain('frame-src http://127.0.0.1:54321');
     expect(panel.webview.html).toContain('http://127.0.0.1:54321/instances/instance-1/alerting/grafana/uid-1/view');
+    // The fixture host reports no vscode.env.language, so the shell's lang falls back to en.
+    expect(panel.webview.html).toContain('<html lang="en">');
+    expect(panel.webview.html).toContain('id="embed-loading"');
   });
 
   it('never leaks a real Grafana origin or a Bearer token into the generated HTML', async () => {
