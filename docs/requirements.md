@@ -95,7 +95,7 @@ AT-Grafana 是 **AT 系列**的新成员（同系列已有 `at-terminal-series` 
 |----|------|--------|
 | PROXY1 | 扩展宿主起本地 HTTP 代理，仅绑定 `127.0.0.1` | P0 |
 | PROXY2 | 代理按 instanceId 注入对应实例的 `Authorization: Bearer <token>` | P0 |
-| PROXY3 | 代理转发 Grafana 页面所需的子资源请求（JS/CSS/API/WebSocket，若涉及 Grafana Live） | P0 |
+| PROXY3 | 代理转发 Grafana 页面所需的子资源请求（JS/CSS/API）。WebSocket/Grafana Live 为**明确接受的 V1 降级**：`Upgrade` 连接在代理处直接销毁，依赖实时推送的面板需手动刷新页面。这是已决策的限制（见 ADR-003 / 0.1.0 Residual risks #5），不是未实现的 P0 缺口；WebSocket 代理本身留待 V2 重新评估 | P0 |
 | PROXY4 | Webview CSP 仅允许连接本地代理源，不直接暴露真实 Grafana 源和 token | P0 |
 | PROXY5 | 代理遵循 D3 的证书信任状态（未信任的实例不代理） | P0 |
 

@@ -33,6 +33,17 @@ AT Grafana 把 Grafana 的 dashboard 与告警规则原生集成到 IDE 内，�
 
 `grafana_query_datasource` 是其它数据源类型或不寻常路径的通用代理。它只放行 `GET`/`POST`（绝不允许写操作），并把 `path` 限制在 `/api/datasources/proxy/uid/<datasourceUid>/` 之内——`..`、`\` 与百分号编码的分隔符一律拒绝，拼接后还会在 URL 规范化之后重新校验一次前缀，因此即便 Agent 被注入的输入牵引，也无法借这个工具触达 Grafana 自身的 API。此外还强制执行可配置的时间范围与返回体积上限——超限的请求会在结果中标记 `truncated: true` 并被截断，而不是直接失败，方便 Agent 缩小查询范围后重试。
 
+## 查询计量
+
+数据源流量按**实例**计量，且这些上限作用于所有触达数据源的工具——类型化的 `grafana_query_prometheus` / `grafana_query_loki` 以及四个 metric/label 发现类工具与 `grafana_query_datasource` 走同一套计量，并非只限通用代理。默认值：
+
+- **时间范围上限** —— 12 小时（`atGrafana.queryLimits.maxRangeMs`）。超限范围会被收窄（start 前移、保留请求的 end），结果携带 `truncated: true` 与原因说明。
+- **返回体积上限** —— 5 MiB（`atGrafana.queryLimits.maxResponseBytes`）。超限响应会被整体丢弃而不是部分返回，同样标记 `truncated: true`。
+- **速率限制** —— 每实例每分钟 60 次查询（连续回填的令牌桶，允许从空闲状态一次性打满一整桶）。
+- **并发限制** —— 每实例同时最多 4 个查询在途。
+
+速率/并发拒绝是临时的资源限制而非权限拒绝：错误信息会明确说明这一点，并给出重试等待时间，等待后相同调用即可成功。
+
 ## Hub / IDE 集成
 
 - **AT Grafana: Install/Repair AT Series MCP Config** 与 **AT Grafana: Uninstall AT Series MCP Config** 命令管理的是 AT 系列所有插件共用的同一条 `AT Series` MCP 入口（Cursor、Kiro、Continue）——安装 AT Grafana 不会创建第二个插件专属的 MCP server 入口。

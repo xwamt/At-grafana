@@ -15,19 +15,19 @@ AT Grafana 使用 Grafana 的 **Service Account Token**（Grafana 9.1+）进行�
 
 ### 在扩展中添加实例
 
-1. 从命令面板运行 **AT Grafana: Add Instance**。
+1. 从命令面板运行 **「AT Grafana: 添加实例」**（英文界面下为 **AT Grafana: Add Instance**）。
 2. 填写 label、实例的 base URL（如 `https://grafana.example.com`），并粘贴 Service Account Token。
 3. 保存前点击 **Test connection** 确认 URL/token 是否有效。它会分别报告网络错误、TLS 证书不受信任、鉴权失败（401/403）三类不同结果。
 4. 首次成功连接一个新 host 时，会要求你确认展示的 TLS 证书指纹（Trust-On-First-Use）。此后若指纹发生变化，连接会被阻止直到你重新显式确认——这不是一个可以跳过的警告。
 5. 保存。该实例会出现在 **AT Grafana** 侧边栏的 Dashboards/Alerts 视图中。
 
-之后可通过 **AT Grafana: Manage Instances** 编辑或删除已有实例。
+之后可通过 **「AT Grafana: 管理实例」**（英文界面下为 **AT Grafana: Manage Instances**）编辑或删除已有实例。
 
 ## 2. 开启 Agent 后台访问（可选）
 
 默认情况下，新添加的实例**不会**被 Agent 通过 MCP 访问到，即使已经安装了 AT Series MCP 配置。要开启：
 
-1. 运行 **AT Grafana: Manage Instances**，选中该实例，选择 **Edit**。
+1. 运行 **「AT Grafana: 管理实例」**（AT Grafana: Manage Instances），选中该实例，选择 **Edit**。
 2. 勾选 **Allow background Agent access** 并保存。
 
 开启后，全部 17 个 MCP 工具都可以随时针对该实例的 `instanceId` 调用——Agent 无需先打开任何 dashboard/告警的 Webview 面板。关闭该开关会立即阻止针对该实例的后续所有工具调用，并且该实例也不会再出现在 `grafana_list_instances` 的结果中。
@@ -42,10 +42,10 @@ AT Grafana 使用 Grafana 的 **Service Account Token**（Grafana 9.1+）进行�
 
 AT Grafana 本身不运行独立的 MCP server —— 它注册到 AT 系列共享的 **AT Series** Hub，与其他 AT 系列插件（AT Terminal、AT JumpServer 等）共用同一条入口。
 
-1. 从命令面板运行 **AT Grafana: Install/Repair AT Series MCP Config**。
+1. 从命令面板运行 **「AT Grafana: 安装/修复 AT Series MCP 配置」**（英文界面下为 **AT Grafana: Install/Repair AT Series MCP Config**）。
 2. 该命令会在你的 IDE MCP 配置中写入（或修复）唯一一条 `AT Series` MCP server 条目（Cursor 对应 `~/.cursor/mcp.json`，Kiro 对应 `~/.kiro/settings/mcp.json`，或工作区本地的 Continue 配置），指向共享的 Hub bundle。如果你还安装了其他 AT 系列插件，它们会共用同一条入口——不会为 Grafana 单独再生成一个 MCP server。
 3. 如果你的 MCP 客户端没有自动感知到新配置，重新加载/重连一下。此时应该能看到全部 17 个 `grafana_*` 工具，且均已预先批准（无需逐个手动批准，因为每个工具都是 `risk: read`）。
-4. 如需移除 AT Grafana 的接入而不影响其他插件的条目，运行 **AT Grafana: Uninstall AT Series MCP Config**。如果其他 AT 系列插件仍需要共享的 `AT Series` 条目，该命令不会删除这条共享入口本身。
+4. 如需移除 AT Grafana 的接入而不影响其他插件的条目，运行 **「AT Grafana: 卸载 AT Series MCP 配置」**（英文界面下为 **AT Grafana: Uninstall AT Series MCP Config**）。如果其他 AT 系列插件仍需要共享的 `AT Series` 条目，该命令不会删除这条共享入口本身。
 
 工具目录为发现类（`grafana_list_instances`）、8 个管理类工具、8 个监控数据类工具。`grafana_list_dashboards` 接受可选的 `query` / `tag` / `folderUid`。`grafana_get_dashboard` 缺省 `fields: "targets"`（完整 model 需传 `fields: "full"`）。`grafana_list_alert_rules` 接受可选 `states`。`grafana_generate_deeplink` 始终返回 `grafanaUrl`（`openInIde` 缺省 false）。优先在四个 Prom/Loki list 工具之后用 `grafana_query_prometheus` / `grafana_query_loki`；`grafana_query_datasource` 作为仅 `GET`/`POST`、带 path 禁锢的兜底，超限结果带 `truncated: true`。
 

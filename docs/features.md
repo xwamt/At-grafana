@@ -33,6 +33,17 @@ Seventeen tools, all `risk: read` and auto-approved once the AT Series MCP confi
 
 `grafana_query_datasource` is the generic proxy for other datasource types or unusual paths. It only allows `GET`/`POST` (never a mutating method), and confines `path` to `/api/datasources/proxy/uid/<datasourceUid>/` — `..`, `\`, and percent-encoded separators are rejected, and the joined path is re-checked after URL normalization, so the tool cannot be steered into Grafana's own APIs by an Agent acting on attacker-authored input. It also enforces configurable time-range and response-size caps — an over-cap request is truncated with a `truncated: true` marker in the result rather than failing, so an Agent can narrow its query and retry.
 
+## Query metering
+
+Datasource traffic is metered **per instance**, and the limits apply to every tool that reaches a datasource — the typed `grafana_query_prometheus` / `grafana_query_loki` tools and the four metric/label discovery tools route through the same metering as `grafana_query_datasource`, not just the generic proxy. Defaults:
+
+- **Time range cap** — 12 hours (`atGrafana.queryLimits.maxRangeMs`). An over-cap range is clamped (the start moves forward; the requested end is kept) and the result carries `truncated: true` with the reason.
+- **Response size cap** — 5 MiB (`atGrafana.queryLimits.maxResponseBytes`). An over-cap response is discarded rather than partially returned, again marked `truncated: true`.
+- **Rate limit** — 60 queries per minute per instance (a continuously refilling token bucket, so one full-size burst from idle is allowed).
+- **Concurrency** — at most 4 queries in flight per instance at once.
+
+A rate/concurrency rejection is a temporary resource limit, not an access refusal: the error says so explicitly and names a delay after which the identical call succeeds.
+
 ## Hub / IDE integration
 
 - **AT Grafana: Install/Repair AT Series MCP Config** and **AT Grafana: Uninstall AT Series MCP Config** commands manage the single shared `AT Series` MCP entry (Cursor, Kiro, Continue) used by every AT-family plugin — installing AT Grafana never creates a second, plugin-specific MCP server entry.

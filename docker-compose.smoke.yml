@@ -1,0 +1,23 @@
+# Manual live-smoke stack for AT Grafana — see docs/plans/2026-08-27-live-smoke-checklist.md.
+# Not used by CI. Start:   docker compose -f docker-compose.smoke.yml up -d
+#                Stop:     docker compose -f docker-compose.smoke.yml down -v
+#
+# Prometheus runs on its stock config (it scrapes itself), so there is real
+# metric data to query the moment the stack is up; the Grafana-side setup
+# (datasource, one dashboard, one alert rule, a Viewer service-account token)
+# is a one-time manual step documented in the checklist.
+services:
+  grafana:
+    # Deliberately unpinned: the smoke pass should exercise the Grafana the
+    # user would actually install today. Pin a tag here when reproducing a
+    # version-specific report.
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  prometheus:
+    image: prom/prometheus
+    ports:
+      - "9090:9090"

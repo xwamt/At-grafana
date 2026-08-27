@@ -118,11 +118,13 @@ V1 的安全边界与 MCP 契约质量高：Token 在 SecretStorage、日志脱�
 
 - **位置:** `GrafanaEmbedProxy.handleRequest` → `configManager.getInstance` / `getToken`
 - **建议:** 代理内按 instanceId 缓存 `{instance, token}`，实例保存回调显式失效（不要纯 TTL）。
+- **状态:** ✅ 已实施（2026-08-27）。凭据按 instanceId 缓存；`invalidateInstance`/`invalidateAll` 已导出供表单保存路径调用；`start()`（每次面板打开都会调用）清空凭据缓存；上游 401 时自动失效；负结果（未知实例/空 token）不缓存。
 
 #### PERF-03 — 强制 `accept-encoding: identity` + 可重写响应全量缓冲、无缓存 · P1 · M
 
 - **位置:** `GrafanaEmbedProxy.forward` / `relayRewritableBody` / `rewriteAbsoluteReferences`
 - **建议:** 仅对 document/script/style 强制 identity（或 gzip 解压后再重写）；其余透传压缩并 pipe；重写产物 LRU，键 = `instanceId + path + 上游 ETag`。embed token 前缀导致跨会话缓存全失效，ETag 缓存是会话内收益。
+- **状态:** ✅ 已实施（2026-08-27）。仅疑似可重写请求（Accept: text/html、Sec-Fetch-Dest、.js/.css/.html、SPA 文档路由）强制 identity，其余透传客户端 Accept-Encoding；误判到达的 gzip 可重写响应经 `zlib.createGunzip` 解压后重写；重写产物按 `instanceId+path` LRU 缓存（`maxRewriteCacheBytes` 上限），命中时携带 `If-None-Match` 上游再验证，304 才回放缓存——升级换 ETag 即走全新 200 重写，永不陈旧；错误响应不缓存。
 
 #### PERF-04 — 一次刷新 folders 拉两遍，无请求取消 · P2 · S
 
@@ -148,6 +150,7 @@ V1 的安全边界与 MCP 契约质量高：Token 在 SecretStorage、日志脱�
 
 - **位置:** `asRedactedLog` 不识别已包装的 log；`GrafanaEmbedProxy` 每转发一条 trace
 - **建议:** 包装打品牌标记；trace 热路径读 `LogOutputChannel.logLevel` 短路。
+- **状态:** ✅ 品牌标记已实施（2026-08-27）：`createRedactedLog` 产物带 Symbol 品牌，`asRedactedLog` 识别后原样返回，二次包装不再发生。`logLevel` 级别守卫未做——logger.ts 保持不 import vscode，无法在不破坏该约束的前提下读级别。
 
 #### PERF-09 — 管理类端点无字节上限 · P2 · S
 
@@ -157,10 +160,12 @@ V1 的安全边界与 MCP 契约质量高：Token 在 SecretStorage、日志脱�
 #### PERF-10 — 每个嵌入面板 `retainContextWhenHidden: true` · P2 · S（决策成本大）
 
 - **建议:** 先在文档标明「N 个打开的 Grafana SPA 常驻」；超阈值不再 retain，或隐藏后停轮询。不要未经产品取舍直接改 false。
+- **状态:** ✅ 已按产品取舍处理（2026-08-27）：保留 `true`（切回即时、不丢时间范围/缩放状态），`buildEmbedWebviewOptions` 内注明每个隐藏面板常驻一个完整 Grafana SPA 的成本。
 
 #### PERF-11 — 嵌入代理无空闲关闭 · P2 · S
 
 - **建议:** 最后一个面板 dispose 后延迟 ~60s `proxy.dispose()`；`start()` 已幂等。
+- **状态:** ✅ 已实施（2026-08-27）：`GrafanaEmbedProxy.start()` 向 `openPanels` 注册自身；最后一个面板关闭 60s 后 `dispose()`，期间新开面板会取消定时器；下次打开由幂等 `start()` 复活。
 
 #### PERF-12 — Agent `regex` 直接 `new RegExp` 全量 filter（ReDoS） · P2 · S
 
@@ -247,15 +252,18 @@ V1 的安全边界与 MCP 契约质量高：Token 在 SecretStorage、日志脱�
 #### FUNC-10 — requirements.md PROXY3 仍写 WebSocket P0 · P2 · S（文档）
 
 - **建议:** 回写为「Upgrade 直接销毁，Live 需手动刷新」；WebSocket 代理本身保持 V2。
+- **状态:** ✅ 已实施（2026-08-27）：PROXY3 已改写为「WebSocket/Grafana Live 为明确接受的 V1 降级，非未实现缺口」。
 
 #### FUNC-11 — 活体验证与上限校准债务（DoD 1/2/3/9） · **P1** · M · V1 内
 
 - **现象:** `@vscode/test-electron` 在 devDependencies 但无 E2E；12h/5MiB 仍标 pending calibration。
 - **建议:** `grafana/grafana` + `prom/prometheus` compose，一次关闭 DoD 与 FUNC-04。
+- **状态:** ◐ 部分实施（2026-08-27）：仓库根新增 `docker-compose.smoke.yml`（Grafana + Prometheus，仅手动使用），并新增 `docs/plans/2026-08-27-live-smoke-checklist.md` 把 DoD 1/2/3/9 落成可勾选的人工清单。活体执行与 12h/5MiB 校准仍待人工完成——清单本身不关闭 DoD。
 
 #### FUNC-12 — 0.1.2 发布说明出现不存在的 Organization ID / TLS 表单字段 · P2 · S
 
 - **建议:** 修订该句。表单实际只有 label / url / token / allowBackgroundAccess。
+- **状态:** ✅ 已实施（2026-08-27）：`docs/releases/0.1.2.md` 该句已改为表单实际字段（label / URL / Service Account Token / Allow background Agent access）。
 
 #### FUNC-13 — Explore 深链不能带表达式；无 alertRule 深链 · P2 · S · 只读 URL 拼接，可放 V1
 
@@ -275,6 +283,7 @@ V1 的安全边界与 MCP 契约质量高：Token 在 SecretStorage、日志脱�
 #### FUNC-18 — 设置描述只提 `grafana_query_datasource`；速率限制常量不可见 · P2 · S
 
 - **建议:** 更新 markdownDescription（实际上限约束 7 个工具）；features 增加「查询计量」小节（60 qpm / 4 并发不必都做成旋钮）。
+- **状态:** ◐ 部分实施（2026-08-27）：`features.md` / `features.zh-CN.md` 已增「Query metering / 查询计量」小节（12h / 5MiB / 60 qpm / 4 并发，取自 `QueryLimits.ts` 实际常量，并注明作用于类型化 Prom/Loki 与发现类工具）。`package.json` 的 markdownDescription 归 extension/package 切片，未在本切片改动。
 
 ### 5.4 明确非目标（除非重开 ADR）
 
@@ -319,6 +328,7 @@ V1 的安全边界与 MCP 契约质量高：Token 在 SecretStorage、日志脱�
 
 - **位置:** `McpConfigInstaller.resolveMcpInstallerTarget`；`extension.ts` 提示 *"Open a workspace to install Continue config."*
 - **建议:** 区分「当前 IDE 不支持自动写入（支持 Cursor / Kiro / Continue）」与「Continue 需要打开工作区」。
+- **状态:** ◐ 部分实施（2026-08-27）：`McpConfigInstaller` 新增导出 `missingMcpTargetMessage(hostApp, workspaceFolder?)`，区分两种情况（含测试）；`extension.ts` 侧接线归 extension 切片。
 
 #### UX-04 · 无右键菜单 · P1 · M · 同 FUNC-08
 
@@ -353,6 +363,8 @@ V1 的安全边界与 MCP 契约质量高：Token 在 SecretStorage、日志脱�
 - **建议:** `atGrafana.alerts.refreshIntervalSeconds`（0=关）；Alerts 改 `createTreeView` 以支持 badge。
 
 #### UX-12 · 嵌入无加载态、错误页脱离主题、Live 降级无产品内提示 · P2 · M
+
+- **状态:** ◐ 大部分实施（2026-08-27）：`renderEmbedWebviewHtml` 增加 CSS spinner 加载态（iframe `load` 隐藏）、`error` 时的重试面板（重设 iframe src），`<html lang>` 取自新的可选 `language` 参数（面板侧传 `vscode.env.language`，缺省 `en`）；CSP 仍仅允许代理源（内联脚本走 nonce）。代理错误页（`respondError`）改为系统字体 + `prefers-color-scheme` 深浅色 + Retry 链接（该处无法用 `t()`，保持英文）。Live 降级的产品内提示未做（属 Live 检测/提示逻辑，另行排期）。
 
 #### UX-13 · 表单帮助文案泄漏 "(ADR-004)" · P2 · S
 
