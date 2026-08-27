@@ -90,6 +90,7 @@ Requires Node.js 20+ and a VS Code / Cursor host matching `engines.vscode` (`^1.
 | [`docs/decisions/`](docs/decisions) | ADR-001 … ADR-007 |
 | [`docs/plans/2026-07-29-at-grafana-v1-implementation-plan.md`](docs/plans/2026-07-29-at-grafana-v1-implementation-plan.md) | Phased implementation history |
 | [`docs/plans/2026-08-27-perf-completeness-ux-optimization.md`](docs/plans/2026-08-27-perf-completeness-ux-optimization.md) | Performance / completeness / UX optimization proposals (中文) |
+| [`docs/plans/2026-08-27-followup-completeness-roadmap.md`](docs/plans/2026-08-27-followup-completeness-roadmap.md) | Subsequent completeness roadmap for 0.1.4 → 0.2 → V2 (中文) |
 
 Scaffolded from `at-terminal-series` (independent git history; SSH/SFTP/terminal domain removed) — see [ADR-001](docs/decisions/ADR-001-scaffold-from-at-terminal-series.md).
 
