@@ -318,10 +318,14 @@ export const workspace = {
   __fireDidCloseTextDocument: (document: TextDocument) => didCloseTextDocument.fire(document),
   getConfiguration: () => ({
     get: <T>(_key: string, defaultValue: T): T => defaultValue
+  }),
+  onDidChangeConfiguration: (_listener: (event: { affectsConfiguration(section: string): boolean }) => void) => ({
+    dispose: () => undefined
   })
 };
 
 export const env = {
+  language: 'en',
   clipboard: {
     writeText: async (_value: string) => undefined
   }

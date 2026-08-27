@@ -6,7 +6,11 @@ import { createBridgeToken, timingSafeEqualToken } from '@at-series/mcp-hub';
 import type { GrafanaInstanceConfig } from '../config/schema';
 import type { GrafanaInstanceConfigManager } from '../config/GrafanaInstanceConfigManager';
 import type { GrafanaCertTrustStore } from '../grafana/GrafanaCertTrustStore';
-import { attachCertVerification, type GrafanaCertVerifier } from '../grafana/GrafanaHttpClient';
+import {
+  attachCertVerification,
+  getSharedGrafanaHttpsAgent,
+  type GrafanaCertVerifier
+} from '../grafana/GrafanaHttpClient';
 import { formatError } from '../utils/errors';
 import { asRedactedLog, type AtGrafanaLog } from '../utils/logger';
 import { redactSensitiveText } from '../utils/redaction';
@@ -719,7 +723,11 @@ export class GrafanaEmbedProxy {
         headers: outgoingHeaders,
         timeout: this.limits.upstreamTimeoutMs,
         // Manual TOFU below (attachCertVerification), matching GrafanaHttpClient.
-        rejectUnauthorized: isHttps ? false : undefined
+        rejectUnauthorized: isHttps ? false : undefined,
+        // PERF-01: share the module-level keep-alive pool with GrafanaHttpClient
+        // so dashboard asset fetches reuse TLS sockets instead of hanging on a
+        // reused socket that never fires `secureConnect` again.
+        agent: isHttps ? getSharedGrafanaHttpsAgent() : undefined
       },
       (proxyResponse) => {
         if (proxyResponse.statusCode === 401) {

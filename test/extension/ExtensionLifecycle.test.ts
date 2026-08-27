@@ -20,6 +20,7 @@ vi.mock('../../src/mcp/BridgeServer', () => ({
 vi.mock('../../src/webview/GrafanaEmbedProxy', () => ({
   GrafanaEmbedProxy: class {
     dispose = mocks.proxyDispose;
+    invalidateAll = () => undefined;
   }
 }));
 

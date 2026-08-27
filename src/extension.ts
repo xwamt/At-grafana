@@ -120,6 +120,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const refreshTreeViews = (): void => {
     dashboardTreeProvider.refresh();
     alertTreeProvider.refresh();
+    // Form save / instance edits must drop the embed proxy's instance+token
+    // cache (PERF-02) so the next dashboard request reads the new SecretStorage
+    // token instead of replaying a rotated credential.
+    grafanaEmbedProxy.invalidateAll();
   };
   // MCP activate order: detectHostApp → syncPackagedHub → BridgeServer.start (publish) →
   // ensureAtSeriesConfig → install/uninstall commands. Shutdown (via `deactivate`
@@ -491,6 +495,12 @@ export function activate(context: vscode.ExtensionContext): void {
   };
   extensionCleanup = cleanup;
 
+  const alertsRefreshIntervalListener = vscode.workspace.onDidChangeConfiguration((event) => {
+    if (event.affectsConfiguration('atGrafana.alerts.refreshIntervalSeconds')) {
+      alertTreeProvider.refresh();
+    }
+  });
+
   context.subscriptions.push(
     logChannel,
     installMcpConfigCommand,
@@ -506,6 +516,7 @@ export function activate(context: vscode.ExtensionContext): void {
     dashboardTreeView,
     alertTreeView,
     firingCountSubscription,
+    alertsRefreshIntervalListener,
     refreshDashboardsCommand,
     refreshAlertsCommand,
     filterDashboardsCommand,

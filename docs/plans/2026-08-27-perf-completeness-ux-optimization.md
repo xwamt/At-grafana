@@ -1,6 +1,6 @@
 # AT Grafana 0.1.3 — 性能 / 功能完善性 / 用户友好度 优化建议
 
-**Status:** Proposed（分析结论，尚未实施）  
+**Status:** Implemented on `cursor/implement-optimizations-ef26`（2026-08-27；Wave 0–3 代码已落地，FUNC-11 活体冒烟仍为手动 checklist）  
 **Date:** 2026-08-27  
 **Scope:** 当前 `master`（v0.1.3，17 工具 MCP 目录，559 单测）  
 **Method:** 三个子代理并行审阅，模型均为 `claude-fable-5-thinking-xhigh`：
