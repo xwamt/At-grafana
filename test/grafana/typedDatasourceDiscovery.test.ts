@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DISCOVERY_FILTER_CANDIDATE_MAX,
   DISCOVERY_LIST_MAX,
+  DISCOVERY_REGEX_MAX_LENGTH,
   PROMETHEUS_LABEL_PATTERN,
   buildLokiLabelNamesCall,
   buildLokiLabelValuesCall,
@@ -74,6 +76,49 @@ describe('projectDiscoveryValues', () => {
   it('applies regex before capping', () => {
     const result = projectDiscoveryValues({ data: ['up', 'http_requests', 'go_goroutines'] }, '^go_');
     expect(result).toEqual({ values: ['go_goroutines'] });
+  });
+
+  it('still filters with a simple anchored regex', () => {
+    const result = projectDiscoveryValues({ data: ['foo_total', 'bar_total', 'foobar'] }, '^foo');
+    expect(result).toEqual({ values: ['foo_total', 'foobar'] });
+  });
+
+  it('rejects a regex longer than DISCOVERY_REGEX_MAX_LENGTH (PERF-12 ReDoS guard)', () => {
+    const regex = 'a'.repeat(DISCOVERY_REGEX_MAX_LENGTH + 1);
+    expect(() => projectDiscoveryValues({ data: ['up'] }, regex)).toThrow(/regex/);
+  });
+
+  it('accepts a regex at exactly DISCOVERY_REGEX_MAX_LENGTH', () => {
+    // Anchored 'a...a' of exactly max length: valid, just matches nothing.
+    const regex = 'a'.repeat(DISCOVERY_REGEX_MAX_LENGTH);
+    expect(projectDiscoveryValues({ data: ['up'] }, regex)).toEqual({ values: [] });
+  });
+
+  it('rejects a syntactically invalid regex with a clear error instead of a raw SyntaxError', () => {
+    expect(() => projectDiscoveryValues({ data: ['up'] }, '(unclosed')).toThrow(/Invalid discovery regex/);
+  });
+
+  it('slices candidates to DISCOVERY_FILTER_CANDIDATE_MAX before filtering and marks the result truncated', () => {
+    // One more candidate than the filter cap; only 'm42' matches, and it sits
+    // inside the examined window. truncated: true because the last candidate
+    // was never examined, so the result may be incomplete.
+    const data = Array.from({ length: DISCOVERY_FILTER_CANDIDATE_MAX + 1 }, (_, i) => `m${i}`);
+    expect(projectDiscoveryValues({ data }, '^m42$')).toEqual({
+      values: ['m42'],
+      truncated: true
+    });
+  });
+
+  it('does not mark a regex result truncated when all candidates were examined', () => {
+    const data = Array.from({ length: DISCOVERY_FILTER_CANDIDATE_MAX }, (_, i) => `m${i}`);
+    expect(projectDiscoveryValues({ data }, '^m42$')).toEqual({ values: ['m42'] });
+  });
+
+  it('still caps regex matches at DISCOVERY_LIST_MAX', () => {
+    const data = Array.from({ length: DISCOVERY_LIST_MAX + 5 }, (_, i) => `go_${i}`);
+    const result = projectDiscoveryValues({ data }, '^go_');
+    expect(result.values).toHaveLength(DISCOVERY_LIST_MAX);
+    expect(result.truncated).toBe(true);
   });
 });
 

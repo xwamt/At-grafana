@@ -1,5 +1,16 @@
-import { describe, expect, it } from 'vitest';
-import { createRedactedLog, noopLog, type LogLevelName, type LogSink } from '../../src/utils/logger';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { asRedactedLog, createRedactedLog, noopLog, type LogLevelName, type LogSink } from '../../src/utils/logger';
+import { redactSensitiveText } from '../../src/utils/redaction';
+
+// Wraps the real implementation in a spy so the double-wrap tests below can
+// count redaction passes without changing what any other test observes.
+vi.mock('../../src/utils/redaction', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/utils/redaction')>();
+  return {
+    ...actual,
+    redactSensitiveText: vi.fn(actual.redactSensitiveText)
+  };
+});
 
 interface CapturedLine {
   level: LogLevelName;
@@ -114,5 +125,51 @@ describe('createRedactedLog', () => {
       noopLog.debug('d');
       noopLog.trace('t');
     }).not.toThrow();
+  });
+});
+
+/**
+ * PERF-08: every component calls `asRedactedLog` on the log it is handed, and
+ * extension.ts already hands most of them a log built by `createRedactedLog`.
+ * Before branding, that meant two full redaction passes (each ~16 regex
+ * sweeps) per message on hot paths like the embed proxy's per-request trace.
+ */
+describe('asRedactedLog', () => {
+  beforeEach(() => {
+    vi.mocked(redactSensitiveText).mockClear();
+  });
+
+  it('returns noopLog for undefined and for noopLog itself', () => {
+    expect(asRedactedLog(undefined)).toBe(noopLog);
+    expect(asRedactedLog(noopLog)).toBe(noopLog);
+  });
+
+  it('returns an already-wrapped log as-is instead of wrapping it again', () => {
+    const { sink } = capturingSink();
+    const wrapped = createRedactedLog(sink);
+    const wrappedViaAs = asRedactedLog(sink);
+
+    expect(asRedactedLog(wrapped)).toBe(wrapped);
+    expect(asRedactedLog(wrappedViaAs)).toBe(wrappedViaAs);
+  });
+
+  it('redacts exactly once per message even when the log passed through asRedactedLog twice', () => {
+    const { sink, lines } = capturingSink();
+    const log = asRedactedLog(asRedactedLog(sink));
+    vi.mocked(redactSensitiveText).mockClear();
+
+    log.info('token glsa_H1o2Ck9dQvXzZ4bN7pLmR3sT8uW0yA6e_1f2a3b4c leaked');
+
+    expect(redactSensitiveText).toHaveBeenCalledTimes(1);
+    expect(lines[0]?.message).toBe('token glsa_[REDACTED] leaked');
+  });
+
+  it('still wraps a raw sink that never went through createRedactedLog', () => {
+    const { sink, lines } = capturingSink();
+    const log = asRedactedLog(sink);
+
+    log.warn(`password=hunter2`);
+
+    expect(lines[0]?.message).toBe('password=[REDACTED]');
   });
 });

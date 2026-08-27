@@ -115,6 +115,34 @@ export const DEFAULT_RETRY_BACKOFF_MS: readonly number[] = [200, 600];
 const RETRIABLE_METHODS = new Set(['GET', 'HEAD']);
 
 /**
+ * Module-level keep-alive pool shared by every GrafanaHttpClient (PERF-01).
+ * Clients are constructed per call site (each `new GrafanaApiClient` builds a
+ * fresh one), so a per-client agent could never reuse a connection across
+ * calls; only a module-level agent actually pools TCP+TLS across tree
+ * refreshes, MCP calls, and (via `getSharedGrafanaHttpsAgent`) the embed
+ * proxy.
+ *
+ * One agent safely serves both trust modes: `https.Agent#getName` includes
+ * `rejectUnauthorized` in the connection-pool key, so sockets opened for the
+ * TOFU path (`rejectUnauthorized: false`, fingerprint checked by the
+ * certVerifier) are never handed to strict requests, and vice versa.
+ *
+ * `maxSockets` bounds concurrent connections per origin; 8 comfortably covers
+ * a tree refresh fan-out without letting the embed proxy's per-asset requests
+ * open an unbounded socket pile against one Grafana.
+ */
+const sharedGrafanaHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 8 });
+
+/**
+ * Exported for GrafanaEmbedProxy (Task 4.1), which issues raw `https.request`
+ * calls outside this client but must share the same connection pool rather
+ * than growing its own per-asset sockets.
+ */
+export function getSharedGrafanaHttpsAgent(): https.Agent {
+  return sharedGrafanaHttpsAgent;
+}
+
+/**
  * Whether repeating this failure could plausibly produce a different answer.
  *
  * `network` covers connection failures and timeouts; a 5xx is the server
@@ -279,6 +307,9 @@ export class GrafanaHttpClient {
           method,
           headers,
           timeout: this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+          // HTTPS goes through the shared keep-alive pool (PERF-01); plain
+          // HTTP keeps Node's default global-agent behavior untouched.
+          agent: isHttps ? sharedGrafanaHttpsAgent : undefined,
           rejectUnauthorized: usesCertVerifier ? false : undefined
         },
         (response) => {
@@ -342,13 +373,23 @@ export interface CertVerificationHooks {
 }
 
 /**
- * Wires a one-shot `secureConnect` handshake hook that defers `onVerified`
- * until the certVerifier's TOFU fingerprint check settles (mirroring the
- * SSH-host-key confirmation flow). Exported standalone so this
- * security-sensitive wiring exists in exactly one place: GrafanaHttpClient
- * uses it for buffered JSON requests, and GrafanaEmbedProxy (Task 4.1,
- * src/webview/GrafanaEmbedProxy.ts) reuses it verbatim for raw byte-stream
- * proxied requests instead of duplicating the secureConnect/fingerprint glue.
+ * Wires the handshake hook that defers `onVerified` until the certVerifier's
+ * TOFU fingerprint check settles (mirroring the SSH-host-key confirmation
+ * flow). Exported standalone so this security-sensitive wiring exists in
+ * exactly one place: GrafanaHttpClient uses it for buffered JSON requests,
+ * and GrafanaEmbedProxy (Task 4.1, src/webview/GrafanaEmbedProxy.ts) reuses
+ * it verbatim for raw byte-stream proxied requests instead of duplicating
+ * the secureConnect/fingerprint glue.
+ *
+ * Keep-alive twist (PERF-01): a socket handed out of an Agent's free pool
+ * already completed its TLS handshake and will never emit 'secureConnect'
+ * again, so waiting for that event left the deferred write -- and the whole
+ * request -- hanging until timeout on every reused socket (the default on
+ * Node >= 19, where the global agents keep-alive). When the handshake is
+ * already done the peer certificate is read synchronously and verified
+ * immediately instead. Both paths run the same `verifyCertFingerprint`, so
+ * a fingerprint that changed since the socket was first trusted still fails
+ * closed on reuse.
  */
 export function attachCertVerification(
   request: http.ClientRequest,
@@ -357,9 +398,18 @@ export function attachCertVerification(
   certVerifier: GrafanaCertVerifier,
   hooks: CertVerificationHooks
 ): void {
+  // Exactly one verification (and therefore one onVerified/onRejected) per
+  // request, even if the reused-socket path and a late 'secureConnect' were
+  // ever to fire for the same socket.
+  let verificationStarted = false;
   request.on('socket', (socket) => {
-    socket.once('secureConnect', () => {
-      const fingerprint256 = (socket as TLSSocket).getPeerCertificate()?.fingerprint256;
+    const tlsSocket = socket as TLSSocket;
+    const runVerification = () => {
+      if (verificationStarted) {
+        return;
+      }
+      verificationStarted = true;
+      const fingerprint256 = tlsSocket.getPeerCertificate()?.fingerprint256;
       verifyCertFingerprint(certVerifier, host, port, fingerprint256)
         .then((verifyError) => {
           if (verifyError) {
@@ -376,8 +426,29 @@ export function attachCertVerification(
             )
           );
         });
-    });
+    };
+    if (isTlsHandshakeAlreadyComplete(request, tlsSocket)) {
+      runVerification();
+      return;
+    }
+    socket.once('secureConnect', runVerification);
   });
+}
+
+/**
+ * Whether this socket's TLS handshake already happened, meaning
+ * 'secureConnect' will never fire for this request. `reusedSocket` is the
+ * Agent's own keep-alive signal; the fingerprint probe covers any other way
+ * a post-handshake socket could be assigned, and is the exact datum the
+ * verification needs anyway. (`tlsSocket.authorized` is useless here: the
+ * TLSSocket constructor initializes it to `false`, not `undefined`, so it
+ * cannot distinguish "handshake pending" from "handshake done".)
+ */
+function isTlsHandshakeAlreadyComplete(request: http.ClientRequest, socket: TLSSocket): boolean {
+  if (request.reusedSocket) {
+    return true;
+  }
+  return typeof socket.getPeerCertificate === 'function' && Boolean(socket.getPeerCertificate()?.fingerprint256);
 }
 
 /**
@@ -398,7 +469,13 @@ export async function verifyCertFingerprint(
   const trusted = await verifier.verify(host, port, fingerprint256);
   return trusted
     ? undefined
-    : new GrafanaApiError('tls', `Grafana TLS certificate for ${host}:${port} was rejected by the certificate verifier.`);
+    : new GrafanaApiError(
+        'tls',
+        `Grafana TLS certificate for ${host}:${port} was rejected by the certificate verifier.` +
+          // UX-08: this message reaches the Agent via MCP tool errors, where
+          // no TOFU prompt can be shown -- tell it the human recovery path.
+          ' The user must open this instance once in the AT Grafana sidebar to confirm its TLS fingerprint (Trust-On-First-Use).'
+      );
 }
 
 function writeAndEnd(request: http.ClientRequest, bodyText: string | undefined): void {

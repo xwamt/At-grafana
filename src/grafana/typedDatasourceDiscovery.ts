@@ -1,5 +1,23 @@
 export const DISCOVERY_LIST_MAX = 200;
 
+/**
+ * Regex guardrails (PERF-12): the `regex` argument arrives verbatim from the
+ * Agent, so a pathological pattern must not be able to stall the extension
+ * host with catastrophic backtracking over an unbounded label universe.
+ * The pattern length is capped well above any legitimate discovery filter,
+ * and the candidate list is sliced before filtering so the regex runs
+ * against a bounded input. Enforced here (not in the MCP schema) so every
+ * caller gets the guard.
+ */
+export const DISCOVERY_REGEX_MAX_LENGTH = 256;
+
+/**
+ * Upper bound on candidates a regex filter may run against. 25x the output
+ * cap keeps a sparse filter useful against a large metric universe while
+ * bounding the worst-case regex work.
+ */
+export const DISCOVERY_FILTER_CANDIDATE_MAX = DISCOVERY_LIST_MAX * 25;
+
 export const PROMETHEUS_LABEL_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
 export interface DatasourceProxyCall {
@@ -65,12 +83,27 @@ export function projectDiscoveryValues(raw: unknown, regex?: string): { values: 
     throw new Error('Datasource label API did not return data: string[].');
   }
   let values = data as string[];
+  let truncated = false;
   if (regex !== undefined) {
-    const pattern = new RegExp(regex);
+    if (regex.length > DISCOVERY_REGEX_MAX_LENGTH) {
+      throw new Error(`Invalid discovery regex: exceeds the maximum length of ${DISCOVERY_REGEX_MAX_LENGTH} characters.`);
+    }
+    let pattern: RegExp;
+    try {
+      pattern = new RegExp(regex);
+    } catch (error) {
+      throw new Error(`Invalid discovery regex: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (values.length > DISCOVERY_FILTER_CANDIDATE_MAX) {
+      // Candidates beyond the cap are never examined, so the result may be
+      // missing matches -- surface that the same way the output cap does.
+      values = values.slice(0, DISCOVERY_FILTER_CANDIDATE_MAX);
+      truncated = true;
+    }
     values = values.filter((entry) => pattern.test(entry));
   }
   if (values.length > DISCOVERY_LIST_MAX) {
     return { values: values.slice(0, DISCOVERY_LIST_MAX), truncated: true };
   }
-  return { values };
+  return truncated ? { values, truncated: true } : { values };
 }

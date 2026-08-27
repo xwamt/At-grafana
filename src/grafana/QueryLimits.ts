@@ -71,6 +71,18 @@ export const DEFAULT_MAX_RANGE_MS = 12 * 60 * 60 * 1000;
  */
 export const DEFAULT_MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 
+/**
+ * Loose byte ceiling for Agent-reachable *management* reads (dashboard
+ * models, folder/search listings, alert rules, alert history) — PERF-09/
+ * FUNC-17. Distinct from `DEFAULT_MAX_RESPONSE_BYTES`, which meters the
+ * datasource query path and is user-configurable: management payloads are
+ * normally tiny, so 20 MiB is a runaway guardrail against a pathological
+ * dashboard/rule set exhausting extension-host memory, not a context-size
+ * knob. Enforced via `GrafanaHttpClient`'s existing `maxResponseBytes`
+ * early-abort (`response-too-large`).
+ */
+export const MANAGEMENT_MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
+
 function resolvePositiveNumberSetting(configured: number | undefined, fallback: number): number {
   return typeof configured === 'number' && Number.isFinite(configured) && configured > 0 ? configured : fallback;
 }

@@ -1,5 +1,6 @@
 import { GrafanaApiError, type GrafanaHttpClient } from './GrafanaHttpClient';
 import { isRecord, readUidOrLegacyId, toStringRecord } from './jsonGuards';
+import { MANAGEMENT_MAX_RESPONSE_BYTES } from './QueryLimits';
 
 export interface GrafanaAlertRule {
   uid: string;
@@ -13,6 +14,24 @@ export interface GrafanaAlertRule {
   isPaused?: boolean;
   labels?: Record<string, string>;
   annotations?: Record<string, string>;
+  /**
+   * The provisioning API's `data: AlertQuery[]` — the actual query
+   * definitions (PromQL/LogQL + relative time ranges + expression pipeline)
+   * behind `condition`'s bare refId. Passed through as `unknown` on purpose:
+   * the AlertQuery shape varies by datasource and Grafana version, and the
+   * consumers (Agent tools, MGT6/S6) want the raw definition, not a lossy
+   * re-parse.
+   */
+  data?: unknown;
+  /** The provisioning API's `notification_settings` (contact point / mute timing references), passed through as-is when present. */
+  notificationSettings?: unknown;
+}
+
+/** Optional window/limit forwarded to Grafana's state-history endpoint (`from`/`to` are Unix epoch seconds). */
+export interface GrafanaAlertHistoryQuery {
+  from?: number;
+  to?: number;
+  limit?: number;
 }
 
 export interface GrafanaAlertRuleState {

@@ -3,6 +3,24 @@ import { redactSensitiveText } from './redaction';
 export type LogLevelName = 'error' | 'warn' | 'info' | 'debug' | 'trace';
 
 /**
+ * Brand carried by every log object `createRedactedLog` returns, so
+ * `asRedactedLog` can recognize an already-wrapped log and return it as-is
+ * instead of stacking a second redaction pass (each pass is ~16 regex sweeps
+ * over the message; the embed proxy traces every forwarded sub-resource, so
+ * a doubled pass is a real hot-path cost, not a rounding error).
+ *
+ * A symbol rather than a string property: it cannot collide with anything a
+ * structural `LogSink` (a real `vscode.LogOutputChannel`, a test double)
+ * happens to carry, so nothing can accidentally present itself as
+ * already-redacted.
+ */
+const REDACTED_LOG_BRAND = Symbol('atGrafana.redactedLog');
+
+interface BrandedLog extends AtGrafanaLog {
+  [REDACTED_LOG_BRAND]?: true;
+}
+
+/**
  * The five methods `vscode.LogOutputChannel` exposes, narrowed to the string
  * form this extension uses. Declared structurally (rather than importing the
  * VS Code type) so the modules that log -- `GrafanaEmbedProxy`, `BridgeServer`,
@@ -51,13 +69,17 @@ export type AtGrafanaLog = LogSink;
  * text that already went through `formatError` is unharmed.
  */
 export function createRedactedLog(sink: LogSink): AtGrafanaLog {
-  return {
+  const log: BrandedLog = {
     error: (message: string) => sink.error(redactSensitiveText(message)),
     warn: (message: string) => sink.warn(redactSensitiveText(message)),
     info: (message: string) => sink.info(redactSensitiveText(message)),
     debug: (message: string) => sink.debug(redactSensitiveText(message)),
     trace: (message: string) => sink.trace(redactSensitiveText(message))
   };
+  // Non-enumerable so the brand never shows up in a spread/JSON dump of the
+  // log object; only `asRedactedLog`'s `in` check ever looks for it.
+  Object.defineProperty(log, REDACTED_LOG_BRAND, { value: true });
+  return log;
 }
 
 /**
@@ -82,10 +104,19 @@ export const noopLog: AtGrafanaLog = {
  * `createRedactedLog`. Re-wrapping here means the filtering is a property of
  * *holding* a log rather than of having composed one correctly at the single
  * place `extension.ts` builds it -- a new component, or a future call site
- * that forgets, cannot reintroduce the leak. `redactSensitiveText` is
- * idempotent, so the extra pass on an already-wrapped log costs a regex sweep
- * and changes nothing.
+ * that forgets, cannot reintroduce the leak.
+ *
+ * A log that already carries `REDACTED_LOG_BRAND` is returned as-is: it has
+ * provably been through `createRedactedLog`, so a second wrap would only
+ * re-run every redaction regex per message (see the brand's doc comment for
+ * why that matters on the embed proxy's per-request trace path).
  */
 export function asRedactedLog(log: AtGrafanaLog | undefined): AtGrafanaLog {
-  return log === undefined || log === noopLog ? noopLog : createRedactedLog(log);
+  if (log === undefined || log === noopLog) {
+    return noopLog;
+  }
+  if (REDACTED_LOG_BRAND in log) {
+    return log;
+  }
+  return createRedactedLog(log);
 }
