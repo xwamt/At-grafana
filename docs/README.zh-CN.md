@@ -91,6 +91,7 @@ npm run package
 | [`plans/2026-07-29-at-grafana-v1-implementation-plan.md`](plans/2026-07-29-at-grafana-v1-implementation-plan.md) | 分阶段实施记录 |
 | [`plans/2026-08-27-perf-completeness-ux-optimization.md`](plans/2026-08-27-perf-completeness-ux-optimization.md) | 性能 / 功能完善性 / 用户友好度 优化建议 |
 | [`plans/2026-08-27-followup-completeness-roadmap.md`](plans/2026-08-27-followup-completeness-roadmap.md) | 后续完善路线图（0.1.4 → 0.2 → V2） |
+| [`plans/2026-08-27-agent-implementation-plan.md`](plans/2026-08-27-agent-implementation-plan.md) | 可供 Agent 逐任务落地的后续实现计划（Tasks 1–26，分册 A–D） |
 
 以 `at-terminal-series` 为脚手架新建（独立 git 历史，已删除 SSH/SFTP/终端相关代码），见 [ADR-001](decisions/ADR-001-scaffold-from-at-terminal-series.md)。
 
