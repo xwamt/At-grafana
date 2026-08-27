@@ -99,6 +99,34 @@
       {
         "command": "atGrafana.openAlertRule",
         "title": "%atGrafana.command.openAlertRule.title%"
+      },
+      {
+        "command": "atGrafana.forgetTrustedCertificate",
+        "title": "%atGrafana.command.forgetTrustedCertificate.title%"
+      },
+      {
+        "command": "atGrafana.editInstance",
+        "title": "%atGrafana.command.editInstance.title%",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "atGrafana.deleteInstance",
+        "title": "%atGrafana.command.deleteInstance.title%",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "atGrafana.toggleAgentAccess",
+        "title": "%atGrafana.command.toggleAgentAccess.title%"
+      },
+      {
+        "command": "atGrafana.openInBrowser",
+        "title": "%atGrafana.command.openInBrowser.title%",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "atGrafana.copyGrafanaUrl",
+        "title": "%atGrafana.command.copyGrafanaUrl.title%",
+        "icon": "$(copy)"
       }
     ],
     "menus": {
@@ -120,7 +148,7 @@
         },
         {
           "command": "atGrafana.clearDashboardFilter",
-          "when": "view == atGrafana.dashboards",
+          "when": "view == atGrafana.dashboards && atGrafana.dashboardFilterActive",
           "group": "navigation@4"
         },
         {
@@ -132,6 +160,63 @@
           "command": "atGrafana.manageInstances",
           "when": "view == atGrafana.dashboards || view == atGrafana.alerts",
           "group": "navigation@9"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "atGrafana.editInstance",
+          "when": "view =~ /^atGrafana\\.(dashboards|alerts)$/ && viewItem == atGrafana.instance",
+          "group": "1_manage@1"
+        },
+        {
+          "command": "atGrafana.toggleAgentAccess",
+          "when": "view =~ /^atGrafana\\.(dashboards|alerts)$/ && viewItem == atGrafana.instance",
+          "group": "1_manage@2"
+        },
+        {
+          "command": "atGrafana.deleteInstance",
+          "when": "view =~ /^atGrafana\\.(dashboards|alerts)$/ && viewItem == atGrafana.instance",
+          "group": "1_manage@3"
+        },
+        {
+          "command": "atGrafana.openInBrowser",
+          "when": "view =~ /^atGrafana\\.(dashboards|alerts)$/ && viewItem =~ /^atGrafana\\.(instance|dashboard|alertRule)$/",
+          "group": "2_open@1"
+        },
+        {
+          "command": "atGrafana.copyGrafanaUrl",
+          "when": "view =~ /^atGrafana\\.(dashboards|alerts)$/ && viewItem =~ /^atGrafana\\.(instance|dashboard|alertRule)$/",
+          "group": "2_open@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "atGrafana.openDashboard",
+          "when": "false"
+        },
+        {
+          "command": "atGrafana.openAlertRule",
+          "when": "false"
+        },
+        {
+          "command": "atGrafana.editInstance",
+          "when": "false"
+        },
+        {
+          "command": "atGrafana.deleteInstance",
+          "when": "false"
+        },
+        {
+          "command": "atGrafana.toggleAgentAccess",
+          "when": "false"
+        },
+        {
+          "command": "atGrafana.openInBrowser",
+          "when": "false"
+        },
+        {
+          "command": "atGrafana.copyGrafanaUrl",
+          "when": "false"
         }
       ]
     },
@@ -152,15 +237,22 @@
           "type": "number",
           "default": 43200000,
           "minimum": 60000,
-          "markdownDescription": "Hard cap, in milliseconds, on the `start`..`end` time range that `grafana_query_datasource` will forward to a datasource. If the Agent's query exceeds this, the start time is moved forward so the effective range equals this cap and the tool result is marked `truncated: true` (reason `time-range`). **Proposed default of 12 hours, pending calibration against a real Prometheus/Loki instance** -- adjust based on your datasources' actual query performance and cardinality.",
+          "markdownDescription": "%atGrafana.configuration.queryLimits.maxRangeMs.description%",
           "order": 1
         },
         "atGrafana.queryLimits.maxResponseBytes": {
           "type": "number",
           "default": 5242880,
           "minimum": 1024,
-          "markdownDescription": "Hard cap, in bytes, on a single `grafana_query_datasource` response body. A response exceeding this is discarded (never returned partially or truncated mid-structure) and the tool result is marked `truncated: true` (reason `response-size`). **Proposed default of 5 MiB, pending calibration against a real Prometheus/Loki instance.**",
+          "markdownDescription": "%atGrafana.configuration.queryLimits.maxResponseBytes.description%",
           "order": 2
+        },
+        "atGrafana.alerts.refreshIntervalSeconds": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "%atGrafana.configuration.alerts.refreshIntervalSeconds.description%",
+          "order": 3
         }
       }
     }

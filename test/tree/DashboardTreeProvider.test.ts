@@ -1,10 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { GrafanaInstanceConfig } from '../../src/config/schema';
 import type { GrafanaSearchResult } from '../../src/grafana/GrafanaDashboardsApi';
 import {
+  DASHBOARD_FILTER_STATE_KEY,
   DashboardTreeProvider,
-  type DashboardApiClient
+  type DashboardApiClient,
+  type FilterMemento
 } from '../../src/tree/DashboardTreeProvider';
+import { AlertTreeProvider, type AlertApiClient } from '../../src/tree/AlertTreeProvider';
+import { SharedGrafanaReads } from '../../src/tree/sharedGrafanaReads';
 import {
   DashboardTreeItem,
   ErrorTreeItem,
@@ -12,6 +16,18 @@ import {
   InstanceTreeItem,
   MessageTreeItem
 } from '../../src/tree/GrafanaTreeItems';
+
+class MemoryMemento implements FilterMemento {
+  readonly data = new Map<string, unknown>();
+
+  get<T>(key: string, defaultValue: T): T {
+    return (this.data.has(key) ? this.data.get(key) : defaultValue) as T;
+  }
+
+  async update(key: string, value: unknown): Promise<void> {
+    this.data.set(key, value);
+  }
+}
 
 function instance(overrides: Partial<GrafanaInstanceConfig> = {}): GrafanaInstanceConfig {
   return {
@@ -112,7 +128,28 @@ describe('DashboardTreeProvider', () => {
     expect(restored).toHaveLength(2);
   });
 
-  it('does not filter folder nodes themselves, only dashboard leaves', async () => {
+  it('hides folders with zero matching dashboards while a filter is active (UX-09)', async () => {
+    const inst = instance();
+    const client: DashboardApiClient = {
+      getAllFolders: async () => [
+        { uid: 'f1', title: 'Infra' },
+        { uid: 'f2', title: 'Payments' }
+      ],
+      searchAll: async () => [
+        dashboard({ uid: 'd1', title: 'CPU', folderUid: 'f1' }),
+        dashboard({ uid: 'd2', title: 'Refunds', folderUid: 'f2' })
+      ]
+    };
+    const provider = new DashboardTreeProvider({ listInstances: async () => [inst] }, async () => client);
+    provider.setFilter('cpu');
+
+    const [instanceItem] = await provider.getChildren();
+    const folders = await provider.getChildren(instanceItem);
+
+    expect(folders.map((f) => (f as FolderTreeItem).label)).toEqual(['Infra']);
+  });
+
+  it('shows a single message node when the filter matches nothing anywhere', async () => {
     const inst = instance();
     const client: DashboardApiClient = {
       getAllFolders: async () => [{ uid: 'f1', title: 'Infra' }],
@@ -122,9 +159,137 @@ describe('DashboardTreeProvider', () => {
     provider.setFilter('does-not-match-anything');
 
     const [instanceItem] = await provider.getChildren();
-    const folders = await provider.getChildren(instanceItem);
+    const children = await provider.getChildren(instanceItem);
 
-    expect(folders.map((f) => (f as FolderTreeItem).label)).toContain('Infra');
+    expect(children).toHaveLength(1);
+    expect(children[0]).toBeInstanceOf(MessageTreeItem);
+  });
+
+  it('nests folders by parentUid: children render under their parent, not at the root (FUNC-03)', async () => {
+    const inst = instance();
+    const client: DashboardApiClient = {
+      getAllFolders: async () => [
+        { uid: 'root-a', title: 'Root A' },
+        { uid: 'child-a1', title: 'Child A1', parentUid: 'root-a' },
+        { uid: 'grandchild', title: 'Grandchild', parentUid: 'child-a1' }
+      ],
+      searchAll: async () => [
+        dashboard({ uid: 'd-root', title: 'Root Dash', folderUid: 'root-a' }),
+        dashboard({ uid: 'd-grand', title: 'Grand Dash', folderUid: 'grandchild' })
+      ]
+    };
+    const provider = new DashboardTreeProvider({ listInstances: async () => [inst] }, async () => client);
+
+    const [instanceItem] = await provider.getChildren();
+    const roots = await provider.getChildren(instanceItem);
+    expect(roots.filter((item) => item instanceof FolderTreeItem).map((item) => item.label)).toEqual(['Root A']);
+
+    const rootChildren = await provider.getChildren(roots[0] as FolderTreeItem);
+    // Subfolders come first, then the folder's own dashboards.
+    expect(rootChildren.map((item) => item.label)).toEqual(['Child A1', 'Root Dash']);
+    expect(rootChildren[0]).toBeInstanceOf(FolderTreeItem);
+    expect(rootChildren[1]).toBeInstanceOf(DashboardTreeItem);
+
+    const childChildren = await provider.getChildren(rootChildren[0] as FolderTreeItem);
+    expect(childChildren.map((item) => item.label)).toEqual(['Grandchild']);
+
+    const grandchildChildren = await provider.getChildren(childChildren[0] as FolderTreeItem);
+    expect((grandchildChildren[0] as DashboardTreeItem).uid).toBe('d-grand');
+  });
+
+  it('surfaces a folder whose parent is missing from the listing at the root instead of dropping it', async () => {
+    const inst = instance();
+    const client: DashboardApiClient = {
+      getAllFolders: async () => [{ uid: 'orphan', title: 'Orphan', parentUid: 'not-listed' }],
+      searchAll: async () => [dashboard({ uid: 'd1', title: 'Dash', folderUid: 'orphan' })]
+    };
+    const provider = new DashboardTreeProvider({ listInstances: async () => [inst] }, async () => client);
+
+    const [instanceItem] = await provider.getChildren();
+    const roots = await provider.getChildren(instanceItem);
+
+    expect(roots.filter((item) => item instanceof FolderTreeItem).map((item) => item.label)).toContain('Orphan');
+  });
+
+  it('keeps an ancestor folder visible while filtering when only a nested descendant matches', async () => {
+    const inst = instance();
+    const client: DashboardApiClient = {
+      getAllFolders: async () => [
+        { uid: 'root-a', title: 'Root A' },
+        { uid: 'child-a1', title: 'Child A1', parentUid: 'root-a' },
+        { uid: 'root-b', title: 'Root B' }
+      ],
+      searchAll: async () => [
+        dashboard({ uid: 'd1', title: 'API Latency', folderUid: 'child-a1' }),
+        dashboard({ uid: 'd2', title: 'Disk Usage', folderUid: 'root-b' })
+      ]
+    };
+    const provider = new DashboardTreeProvider({ listInstances: async () => [inst] }, async () => client);
+    provider.setFilter('api');
+
+    const [instanceItem] = await provider.getChildren();
+    const roots = await provider.getChildren(instanceItem);
+    expect(roots.map((item) => item.label)).toEqual(['Root A']);
+
+    const rootChildren = await provider.getChildren(roots[0] as FolderTreeItem);
+    expect(rootChildren.map((item) => item.label)).toEqual(['Child A1']);
+  });
+
+  it('restores a persisted filter from workspaceState and persists changes to it (UX-09)', async () => {
+    const memento = new MemoryMemento();
+    await memento.update(DASHBOARD_FILTER_STATE_KEY, 'latency');
+    const provider = new DashboardTreeProvider(
+      { listInstances: async () => [] },
+      async (): Promise<DashboardApiClient> => ({ getAllFolders: async () => [], searchAll: async () => [] }),
+      { workspaceState: memento }
+    );
+
+    expect(provider.getFilter()).toBe('latency');
+
+    provider.setFilter('errors');
+    expect(memento.data.get(DASHBOARD_FILTER_STATE_KEY)).toBe('errors');
+
+    provider.clearFilter();
+    expect(memento.data.get(DASHBOARD_FILTER_STATE_KEY)).toBeUndefined();
+  });
+
+  it('shares one folders fetch per instance with the alert tree via SharedGrafanaReads (PERF-04)', async () => {
+    const inst = instance();
+    const sharedReads = new SharedGrafanaReads();
+    const getAllFolders = vi.fn(async () => [{ uid: 'f1', title: 'Infra' }]);
+    const dashboardProvider = new DashboardTreeProvider(
+      { listInstances: async () => [inst] },
+      async (): Promise<DashboardApiClient> => ({
+        getAllFolders,
+        searchAll: async () => [dashboard({ uid: 'd1', title: 'CPU', folderUid: 'f1' })]
+      }),
+      { sharedReads }
+    );
+    const alertProvider = new AlertTreeProvider(
+      { listInstances: async () => [inst] },
+      async (): Promise<AlertApiClient> => ({
+        getAllFolders,
+        listAlertRules: async () => [],
+        listAlertRuleStates: async () => []
+      }),
+      { sharedReads }
+    );
+
+    const [dashboardInstanceItem] = await dashboardProvider.getChildren();
+    await dashboardProvider.getChildren(dashboardInstanceItem);
+    const [alertInstanceItem] = await alertProvider.getChildren();
+    await alertProvider.getChildren(alertInstanceItem);
+
+    expect(getAllFolders).toHaveBeenCalledTimes(1);
+
+    // refresh() on either provider invalidates the shared cache, so the next
+    // expand re-fetches instead of serving stale folders.
+    alertProvider.refresh();
+    const [dashboardInstanceItem2] = await dashboardProvider.getChildren();
+    dashboardProvider.refresh();
+    await dashboardProvider.getChildren(dashboardInstanceItem2);
+    expect(getAllFolders).toHaveBeenCalledTimes(2);
+    alertProvider.dispose();
   });
 
   it('surfaces a root-level listInstances error as a single ErrorTreeItem without throwing', async () => {

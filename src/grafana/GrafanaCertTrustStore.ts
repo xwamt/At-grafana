@@ -80,6 +80,16 @@ export class GrafanaCertTrustStore {
     return this.read()[this.key(host, port)];
   }
 
+  /**
+   * Every recorded trust decision, sorted by host:port so the "Forget Trusted
+   * Certificate" QuickPick (FUNC-05) renders a stable order.
+   */
+  listTrusted(): TrustedCert[] {
+    return Object.values(this.read()).sort((a, b) =>
+      `${a.host}:${a.port}`.localeCompare(`${b.host}:${b.port}`)
+    );
+  }
+
   async forget(host: string, port: number): Promise<void> {
     const certs = this.read();
     delete certs[this.key(host, port)];

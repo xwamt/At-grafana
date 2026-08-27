@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
 import type { GrafanaInstanceConfigManager } from '../config/GrafanaInstanceConfigManager';
 import type { GrafanaInstanceConfig } from '../config/schema';
+import { createInteractiveCertVerifier } from '../grafana/createInteractiveCertVerifier';
+import type { GrafanaCertTrustStore } from '../grafana/GrafanaCertTrustStore';
+import { GrafanaApiClient, GrafanaApiError, type GrafanaCertVerifier } from '../grafana/GrafanaApiClient';
 import { testGrafanaConnection, type GrafanaConnectionTestResult } from '../grafana/testGrafanaConnection';
 import { formatError } from '../utils/errors';
 import { renderWebviewHtml } from './html';
@@ -17,12 +20,56 @@ interface InstanceFormMessageOptions {
   testConnection?: (url: string, token: string | undefined) => Promise<GrafanaConnectionTestResult>;
 }
 
+/** The one method of GrafanaApiClient the connection test needs; injectable so tests never open a socket. */
+type HealthProbeClient = Pick<GrafanaApiClient, 'health'>;
+
+export type TofuHealthClientFactory = (
+  url: string,
+  token: string | undefined,
+  certVerifier: GrafanaCertVerifier
+) => HealthProbeClient;
+
+const defaultHealthClientFactory: TofuHealthClientFactory = (url, token, certVerifier) =>
+  new GrafanaApiClient({ baseUrl: url, token: token ?? '', certVerifier });
+
+/**
+ * FUNC-02 / UX-01: the form's Test Connection button probes through the real
+ * Grafana client WITH the interactive TOFU verifier, instead of the bare
+ * `testGrafanaConnection` probe that deliberately ignores the trust store.
+ * Consequences, in order:
+ * - a fingerprint already trusted in `certTrustStore` connects silently;
+ * - an unknown fingerprint prompts trust-on-first-use -- clicking Test
+ *   Connection is exactly the user gesture ADR-004 wants behind that modal;
+ * - a rejected prompt (or changed fingerprint the user declines) still
+ *   reports a `tls` failure so the form shows the distinct TLS message.
+ */
+export function createTofuConnectionTester(
+  certTrustStore: GrafanaCertTrustStore,
+  createClient: TofuHealthClientFactory = defaultHealthClientFactory
+): (url: string, token: string | undefined) => Promise<GrafanaConnectionTestResult> {
+  return async (url, token) => {
+    try {
+      const client = createClient(url, token, createInteractiveCertVerifier(certTrustStore));
+      await client.health();
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof GrafanaApiError) {
+        const reason =
+          error.kind === 'auth' ? 'auth' : error.kind === 'tls' ? 'tls' : error.kind === 'network' ? 'network' : 'error';
+        return { ok: false, reason, message: error.message };
+      }
+      return { ok: false, reason: 'error', message: formatError(error) };
+    }
+  };
+}
+
 export class GrafanaInstanceFormPanel {
   static async open(
     context: vscode.ExtensionContext,
     configManager: GrafanaInstanceConfigManager,
     onSaved: () => void,
-    existing?: GrafanaInstanceConfig
+    existing?: GrafanaInstanceConfig,
+    certTrustStore?: GrafanaCertTrustStore
   ): Promise<void> {
     const title = existing
       ? t('Edit Grafana Instance: {label}', { label: existing.label })
@@ -49,8 +96,11 @@ export class GrafanaInstanceFormPanel {
       formHtml.data
     );
 
+    const options: InstanceFormMessageOptions = certTrustStore
+      ? { testConnection: createTofuConnectionTester(certTrustStore) }
+      : {};
     panel.webview.onDidReceiveMessage(async (message: InstanceFormMessage) => {
-      await handleInstanceFormMessage(message, existing, configManager, onSaved, panel);
+      await handleInstanceFormMessage(message, existing, configManager, onSaved, panel, options);
     });
   }
 }
@@ -154,7 +204,7 @@ export function renderInstanceForm(
   const tokenHelp =
     existing && hasStoredToken
       ? t('Leave blank to keep the saved Service Account Token.')
-      : t('Stored securely in VS Code SecretStorage. Create one under Grafana → Administration → Service accounts.');
+      : t('Stored securely in the IDE\'s SecretStorage. Create one under Grafana → Administration → Service accounts.');
   const tokenPlaceholder = existing && hasStoredToken ? '••••••••' : 'glsa_...';
 
   const body = `<main class="instance-form-shell">
@@ -168,19 +218,19 @@ export function renderInstanceForm(
     <label class="field-stack">${escapeAttr(t('Label'))} <input name="label" value="${escapeAttr(existing?.label ?? '')}" required autocomplete="off"></label>
     <label class="field-stack">${escapeAttr(t('Grafana URL'))} <input name="url" type="url" placeholder="https://grafana.example.com" value="${escapeAttr(existing?.url ?? '')}" required autocomplete="off"></label>
     <label class="field-stack">${escapeAttr(t('Service Account Token'))}
-      <input name="token" type="password" autocomplete="new-password" placeholder="${tokenPlaceholder}">
-      <span class="field-help">${escapeAttr(tokenHelp)}</span>
+      <input name="token" type="password" autocomplete="new-password" placeholder="${tokenPlaceholder}" aria-describedby="token-help">
+      <span id="token-help" class="field-help">${escapeAttr(tokenHelp)}</span>
     </label>
     <label class="toggle-row" for="allowBackgroundAccess">
       <span class="toggle-copy">
         <span class="toggle-title">${escapeAttr(t('Allow background Agent access'))}</span>
-        <span class="field-help">${escapeAttr(t("Lets Agents query this instance's dashboards, alerts, and datasources via MCP even when no panel is open (ADR-004)."))}</span>
+        <span id="agent-access-help" class="field-help">${escapeAttr(t('Lets AI agents query this instance\'s dashboards, alerts, and datasources read-only with its token via MCP, even when no panel is open.'))}</span>
       </span>
-      <input id="allowBackgroundAccess" name="allowBackgroundAccess" type="checkbox"${existing?.allowBackgroundAccess ? ' checked' : ''}>
+      <input id="allowBackgroundAccess" name="allowBackgroundAccess" type="checkbox" aria-describedby="agent-access-help"${existing?.allowBackgroundAccess ? ' checked' : ''}>
     </label>
     <footer class="form-footer">
       <div class="form-feedback">
-        <div id="form-error" class="form-error" role="status" aria-live="polite"></div>
+        <div id="form-error" class="form-error" role="alert"></div>
         <div id="testStatus" class="test-status" role="status" aria-live="polite"></div>
       </div>
       <div class="form-actions">
@@ -210,4 +260,3 @@ export function renderInstanceForm(
 function escapeAttr(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
-

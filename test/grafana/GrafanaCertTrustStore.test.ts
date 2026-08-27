@@ -43,4 +43,34 @@ describe('GrafanaCertTrustStore', () => {
     await new GrafanaCertTrustStore(memento).trust('grafana.example.com', 443, 'SHA256:abc');
     expect(await new GrafanaCertTrustStore(memento).check('grafana.example.com', 443, 'SHA256:abc')).toBe('trusted');
   });
+
+  it('listTrusted returns an empty list when nothing has been trusted', () => {
+    const store = new GrafanaCertTrustStore(new MemoryMemento());
+    expect(store.listTrusted()).toEqual([]);
+  });
+
+  it('listTrusted returns every recorded cert, sorted by host:port', async () => {
+    const store = new GrafanaCertTrustStore(new MemoryMemento());
+    await store.trust('zeta.example.com', 443, 'SHA256:zzz');
+    await store.trust('alpha.example.com', 3000, 'SHA256:aaa');
+
+    const trusted = store.listTrusted();
+
+    expect(trusted.map((cert) => `${cert.host}:${cert.port}`)).toEqual([
+      'alpha.example.com:3000',
+      'zeta.example.com:443'
+    ]);
+    expect(trusted[0]).toMatchObject({ host: 'alpha.example.com', port: 3000, fingerprint: 'SHA256:aaa' });
+    expect(typeof trusted[0].trustedAt).toBe('number');
+  });
+
+  it('listTrusted no longer includes an entry after forget()', async () => {
+    const store = new GrafanaCertTrustStore(new MemoryMemento());
+    await store.trust('grafana.example.com', 443, 'SHA256:abc');
+    await store.trust('other.example.com', 443, 'SHA256:def');
+
+    await store.forget('grafana.example.com', 443);
+
+    expect(store.listTrusted().map((cert) => cert.host)).toEqual(['other.example.com']);
+  });
 });

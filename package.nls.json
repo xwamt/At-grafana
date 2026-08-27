@@ -14,7 +14,16 @@
   "atGrafana.command.refreshAlerts.title": "AT Grafana: Refresh Alerts",
   "atGrafana.command.openDashboard.title": "AT Grafana: Open Dashboard",
   "atGrafana.command.openAlertRule.title": "AT Grafana: Open Alert Rule",
+  "atGrafana.command.forgetTrustedCertificate.title": "AT Grafana: Forget Trusted Certificate",
+  "atGrafana.command.editInstance.title": "Edit Instance",
+  "atGrafana.command.deleteInstance.title": "Delete Instance",
+  "atGrafana.command.toggleAgentAccess.title": "Toggle Agent Access",
+  "atGrafana.command.openInBrowser.title": "Open in Browser",
+  "atGrafana.command.copyGrafanaUrl.title": "Copy Grafana URL",
   "atGrafana.welcome.dashboards": "No Grafana instances are configured yet.\n[Add Grafana Instance](command:atGrafana.addInstance)\nAlready configured elsewhere? [Manage Instances](command:atGrafana.manageInstances) lets you edit or remove one.",
   "atGrafana.welcome.alerts": "No Grafana instances are configured yet.\n[Add Grafana Instance](command:atGrafana.addInstance)\nAlready configured elsewhere? [Manage Instances](command:atGrafana.manageInstances) lets you edit or remove one.",
-  "atGrafana.configuration.title": "AT Grafana"
+  "atGrafana.configuration.title": "AT Grafana",
+  "atGrafana.configuration.queryLimits.maxRangeMs.description": "Maximum time span, in milliseconds, that a single Agent (MCP) datasource query may cover. A query with a longer `start`..`end` range is narrowed to the most recent span of this length and its result is marked `truncated: true` (reason `time-range`). Default: 43200000 (12 hours).",
+  "atGrafana.configuration.queryLimits.maxResponseBytes.description": "Maximum size, in bytes, of a single Agent (MCP) datasource query response. A larger response is discarded (never returned partially) and the result is marked `truncated: true` (reason `response-size`). Default: 5242880 (5 MiB).",
+  "atGrafana.configuration.alerts.refreshIntervalSeconds.description": "Automatically refresh the Alerts view every this many seconds. `0` (the default) turns auto-refresh off."
 }

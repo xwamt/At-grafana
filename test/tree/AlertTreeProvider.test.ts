@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GrafanaInstanceConfig } from '../../src/config/schema';
 import type { GrafanaFolder } from '../../src/grafana/GrafanaDashboardsApi';
 import type { GrafanaAlertRule, GrafanaAlertRuleState } from '../../src/grafana/GrafanaAlertsApi';
@@ -203,5 +203,107 @@ describe('AlertTreeProvider', () => {
     provider.refresh();
     await provider.getChildren(instanceItem);
     expect(callCount).toBe(2);
+  });
+
+  it('treats a paused rule with no live state as paused (ranked normal), not unknown (UX-18)', async () => {
+    const inst = instance();
+    const client: AlertApiClient = {
+      listAlertRules: async () => [
+        rule({ uid: 'r1', title: 'Paused rule', folderUid: 'f1', ruleGroup: 'g-a', isPaused: true }),
+        rule({ uid: 'r2', title: 'Active rule', folderUid: 'f1', ruleGroup: 'g-a' })
+      ],
+      // No state entry for r1 (Grafana excludes paused rules from live state).
+      listAlertRuleStates: async () => [state({ uid: 'r2', state: 'normal', group: 'g-a' })],
+      getAllFolders: async () => folders
+    };
+    const provider = new AlertTreeProvider({ listInstances: async () => [inst] }, async () => client);
+
+    const [instanceItem] = await provider.getChildren();
+    const groups = (await provider.getChildren(instanceItem)) as AlertGroupTreeItem[];
+    expect(groups[0].worstState).toBe('normal');
+
+    const items = (await provider.getChildren(groups[0])) as AlertRuleTreeItem[];
+    const pausedItem = items.find((item) => item.rule.uid === 'r1');
+    expect(pausedItem?.rule.isPaused).toBe(true);
+    expect(pausedItem?.rule.state).toBe('normal');
+    expect(pausedItem?.description).toBe('paused');
+  });
+
+  it('counts firing rules across instances and fires onDidChangeFiringCount (UX-11)', async () => {
+    const inst = instance();
+    const client: AlertApiClient = {
+      listAlertRules: async () => [
+        rule({ uid: 'r1', folderUid: 'f1', ruleGroup: 'g-a' }),
+        rule({ uid: 'r2', folderUid: 'f1', ruleGroup: 'g-a' })
+      ],
+      listAlertRuleStates: async () => [
+        state({ uid: 'r1', state: 'firing', group: 'g-a' }),
+        state({ uid: 'r2', state: 'firing', group: 'g-a' })
+      ],
+      getAllFolders: async () => folders
+    };
+    const provider = new AlertTreeProvider({ listInstances: async () => [inst] }, async () => client);
+    const firingEvents: number[] = [];
+    provider.onDidChangeFiringCount((count) => firingEvents.push(count));
+
+    expect(provider.getFiringCount()).toBe(0);
+    const [instanceItem] = await provider.getChildren();
+    await provider.getChildren(instanceItem);
+
+    expect(provider.getFiringCount()).toBe(2);
+    expect(firingEvents).toEqual([2]);
+  });
+
+  describe('auto refresh (UX-11)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('refreshes on the configured interval and stops on dispose', () => {
+      vi.useFakeTimers();
+      const provider = new AlertTreeProvider(
+        { listInstances: async () => [] },
+        async (): Promise<AlertApiClient> => ({
+          listAlertRules: async () => [],
+          listAlertRuleStates: async () => [],
+          getAllFolders: async () => []
+        }),
+        { getRefreshIntervalSeconds: () => 5 }
+      );
+      let refreshes = 0;
+      provider.onDidChangeTreeData(() => {
+        refreshes += 1;
+      });
+
+      vi.advanceTimersByTime(5000);
+      expect(refreshes).toBe(1);
+      vi.advanceTimersByTime(5000);
+      expect(refreshes).toBe(2);
+
+      provider.dispose();
+      vi.advanceTimersByTime(20000);
+      expect(refreshes).toBe(2);
+    });
+
+    it('never schedules a timer when the interval is 0 (the default)', () => {
+      vi.useFakeTimers();
+      const provider = new AlertTreeProvider(
+        { listInstances: async () => [] },
+        async (): Promise<AlertApiClient> => ({
+          listAlertRules: async () => [],
+          listAlertRuleStates: async () => [],
+          getAllFolders: async () => []
+        }),
+        { getRefreshIntervalSeconds: () => 0 }
+      );
+      let refreshes = 0;
+      provider.onDidChangeTreeData(() => {
+        refreshes += 1;
+      });
+
+      vi.advanceTimersByTime(60000);
+      expect(refreshes).toBe(0);
+      provider.dispose();
+    });
   });
 });

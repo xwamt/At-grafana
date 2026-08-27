@@ -14,7 +14,16 @@
   "atGrafana.command.refreshAlerts.title": "AT Grafana: 刷新告警",
   "atGrafana.command.openDashboard.title": "AT Grafana: 打开仪表盘",
   "atGrafana.command.openAlertRule.title": "AT Grafana: 打开告警规则",
+  "atGrafana.command.forgetTrustedCertificate.title": "AT Grafana: 忘记已信任的证书",
+  "atGrafana.command.editInstance.title": "编辑实例",
+  "atGrafana.command.deleteInstance.title": "删除实例",
+  "atGrafana.command.toggleAgentAccess.title": "切换 Agent 访问",
+  "atGrafana.command.openInBrowser.title": "在浏览器中打开",
+  "atGrafana.command.copyGrafanaUrl.title": "复制 Grafana 链接",
   "atGrafana.welcome.dashboards": "尚未配置任何 Grafana 实例。\n[添加 Grafana 实例](command:atGrafana.addInstance)\n已在其他地方配置？使用 [管理实例](command:atGrafana.manageInstances) 进行编辑或移除。",
   "atGrafana.welcome.alerts": "尚未配置任何 Grafana 实例。\n[添加 Grafana 实例](command:atGrafana.addInstance)\n已在其他地方配置？使用 [管理实例](command:atGrafana.manageInstances) 进行编辑或移除。",
-  "atGrafana.configuration.title": "AT Grafana"
+  "atGrafana.configuration.title": "AT Grafana",
+  "atGrafana.configuration.queryLimits.maxRangeMs.description": "单次 Agent (MCP) 数据源查询允许覆盖的最大时间跨度（毫秒）。`start`..`end` 超出此跨度的查询会被收窄为最近的这段时间，结果标记 `truncated: true`（原因 `time-range`）。默认值：43200000（12 小时）。",
+  "atGrafana.configuration.queryLimits.maxResponseBytes.description": "单次 Agent (MCP) 数据源查询响应体的最大字节数。超过此大小的响应会被整体丢弃（不会部分返回），结果标记 `truncated: true`（原因 `response-size`）。默认值：5242880（5 MiB）。",
+  "atGrafana.configuration.alerts.refreshIntervalSeconds.description": "每隔多少秒自动刷新告警视图。`0`（默认值）表示关闭自动刷新。"
 }

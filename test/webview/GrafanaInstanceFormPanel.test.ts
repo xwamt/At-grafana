@@ -1,6 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as vscode from 'vscode';
 import type { GrafanaInstanceConfig } from '../../src/config/schema';
-import { handleInstanceFormMessage } from '../../src/webview/GrafanaInstanceFormPanel';
+import { GrafanaApiError, type GrafanaCertVerifier } from '../../src/grafana/GrafanaApiClient';
+import { GrafanaCertTrustStore, type CertTrustMemento } from '../../src/grafana/GrafanaCertTrustStore';
+import { createTofuConnectionTester, handleInstanceFormMessage } from '../../src/webview/GrafanaInstanceFormPanel';
 
 function instance(overrides: Partial<GrafanaInstanceConfig> = {}): GrafanaInstanceConfig {
   return {
@@ -12,6 +15,18 @@ function instance(overrides: Partial<GrafanaInstanceConfig> = {}): GrafanaInstan
     updatedAt: 1,
     ...overrides
   };
+}
+
+class MemoryMemento implements CertTrustMemento {
+  private data = new Map<string, unknown>();
+
+  get<T>(key: string, defaultValue: T): T {
+    return (this.data.has(key) ? this.data.get(key) : defaultValue) as T;
+  }
+
+  async update(key: string, value: unknown): Promise<void> {
+    this.data.set(key, value);
+  }
 }
 
 describe('GrafanaInstanceFormPanel message handling', () => {
@@ -198,5 +213,89 @@ describe('GrafanaInstanceFormPanel message handling', () => {
     );
 
     expect(handled).toBe(false);
+  });
+});
+
+describe('createTofuConnectionTester (FUNC-02 / UX-01)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * A stand-in for GrafanaApiClient.health() that behaves like the real HTTPS
+   * path: it asks the injected verifier about a fingerprint and throws the
+   * same classified `tls` error GrafanaHttpClient throws on rejection.
+   */
+  function fakeHealthClientFactory(fingerprint: string) {
+    return (_url: string, _token: string | undefined, certVerifier: GrafanaCertVerifier) => ({
+      health: async () => {
+        const trusted = await certVerifier.verify('grafana.example.com', 443, fingerprint);
+        if (!trusted) {
+          throw new GrafanaApiError('tls', 'certificate was rejected by the certificate verifier');
+        }
+        return { ok: true as const };
+      }
+    });
+  }
+
+  it('succeeds without prompting when the fingerprint is already trusted in the store', async () => {
+    const store = new GrafanaCertTrustStore(new MemoryMemento());
+    await store.trust('grafana.example.com', 443, 'SHA256:abc');
+    const showWarningMessage = vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(undefined);
+    const test = createTofuConnectionTester(store, fakeHealthClientFactory('SHA256:abc'));
+
+    await expect(test('https://grafana.example.com', 'glsa_x')).resolves.toEqual({ ok: true });
+    expect(showWarningMessage).not.toHaveBeenCalled();
+  });
+
+  it('prompts trust-on-first-use for an unknown fingerprint and succeeds when the user accepts', async () => {
+    const store = new GrafanaCertTrustStore(new MemoryMemento());
+    // The interactive verifier's accept button is the first message item.
+    const showWarningMessage = vi
+      .spyOn(vscode.window, 'showWarningMessage')
+      .mockImplementation(async (_message: string, ...rest: unknown[]) => {
+        const items = rest.filter((item): item is string => typeof item === 'string');
+        return items[0] as never;
+      });
+    const test = createTofuConnectionTester(store, fakeHealthClientFactory('SHA256:new'));
+
+    await expect(test('https://grafana.example.com', 'glsa_x')).resolves.toEqual({ ok: true });
+    expect(showWarningMessage).toHaveBeenCalledOnce();
+    expect(store.getTrusted('grafana.example.com', 443)?.fingerprint).toBe('SHA256:new');
+  });
+
+  it('reports a tls failure when the user rejects the trust prompt', async () => {
+    const store = new GrafanaCertTrustStore(new MemoryMemento());
+    vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(undefined);
+    const test = createTofuConnectionTester(store, fakeHealthClientFactory('SHA256:new'));
+
+    const result = await test('https://grafana.example.com', 'glsa_x');
+
+    expect(result).toMatchObject({ ok: false, reason: 'tls' });
+    expect(store.getTrusted('grafana.example.com', 443)).toBeUndefined();
+  });
+
+  it('maps classified auth and network errors onto the form result reasons', async () => {
+    const store = new GrafanaCertTrustStore(new MemoryMemento());
+    const failWith = (error: Error) =>
+      createTofuConnectionTester(store, () => ({
+        health: async () => {
+          throw error;
+        }
+      }));
+
+    await expect(failWith(new GrafanaApiError('auth', 'token rejected', 401))('https://g', 't')).resolves.toMatchObject({
+      ok: false,
+      reason: 'auth'
+    });
+    await expect(failWith(new GrafanaApiError('network', 'unreachable'))('https://g', 't')).resolves.toMatchObject({
+      ok: false,
+      reason: 'network'
+    });
+    await expect(failWith(new Error('boom'))('https://g', 't')).resolves.toMatchObject({
+      ok: false,
+      reason: 'error',
+      message: 'boom'
+    });
   });
 });
