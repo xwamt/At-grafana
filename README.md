@@ -4,7 +4,7 @@
 
 AT Grafana is a VS Code / Cursor extension in the **AT Series** (alongside `at-terminal-series` and `at-jumpserver-series`). It brings Grafana dashboards and Unified Alerting into the IDE, and exposes read-only Grafana metadata plus datasource queries (Prometheus, Loki, …) to Agents through the shared [`@at-series/mcp-hub`](https://www.npmjs.com/package/@at-series/mcp-hub) Protocol v1.
 
-**Current version: `0.1.3`** — MCP catalog aligned to 17 read-only tools (typed Prom/Loki, discovery, annotations, deeplink). Automated suite: typecheck + **559** tests. See [`docs/releases/0.1.3.md`](docs/releases/0.1.3.md). Live Grafana / real MCP-client smoke checks remain listed in [`docs/releases/0.1.0.md`](docs/releases/0.1.0.md).
+**Current version: `0.1.4`** — MCP catalog aligned to 17 read-only tools (typed Prom/Loki, discovery, annotations, deeplink). Automated suite: typecheck + **709** tests. See [`docs/releases/0.1.4.md`](docs/releases/0.1.4.md). Live Grafana / real MCP-client smoke checks remain listed in [`docs/releases/0.1.0.md`](docs/releases/0.1.0.md).
 
 ## Features
 
@@ -34,7 +34,7 @@ AT Grafana is a VS Code / Cursor extension in the **AT Series** (alongside `at-t
 
    ```bash
    npm install
-   npm run package   # produces at-grafana-0.1.3.vsix
+   npm run package   # produces at-grafana-0.1.4.vsix
    ```
 
 2. In VS Code / Cursor: **Extensions → ⋯ → Install from VSIX…** and select the file.
@@ -83,7 +83,8 @@ Requires Node.js 20+ and a VS Code / Cursor host matching `engines.vscode` (`^1.
 | --- | --- |
 | [`docs/features.md`](docs/features.md) ([中文](docs/features.zh-CN.md)) | Feature overview |
 | [`docs/usage.md`](docs/usage.md) ([中文](docs/usage.zh-CN.md)) | Setup, Agent access, MCP client |
-| [`docs/releases/0.1.3.md`](docs/releases/0.1.3.md) | Current release notes (17-tool MCP catalog) |
+| [`docs/releases/0.1.4.md`](docs/releases/0.1.4.md) | Current release notes (HTTPS keep-alive fix, WAF User-Agent, embed caching) |
+| [`docs/releases/0.1.3.md`](docs/releases/0.1.3.md) | 0.1.3 release notes (17-tool MCP catalog) |
 | [`docs/releases/0.1.0.md`](docs/releases/0.1.0.md) | V1 Definition-of-Done / acceptance record |
 | [`docs/requirements.md`](docs/requirements.md) | Full requirements (中文) |
 | [`skills/at-grafana-mcp/SKILL.md`](skills/at-grafana-mcp/SKILL.md) | Agent-facing MCP catalog guide |
