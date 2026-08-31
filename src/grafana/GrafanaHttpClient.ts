@@ -92,6 +92,8 @@ export interface GrafanaRequestOptions {
   retry?: boolean;
 }
 
+export const GRAFANA_CLIENT_USER_AGENT = 'AT-Grafana/1.0';
+
 const DEFAULT_TIMEOUT_MS = 15_000;
 
 /**
@@ -290,6 +292,7 @@ export class GrafanaHttpClient {
       const isHttps = target.protocol === 'https:';
       const client: typeof http | typeof https = isHttps ? https : http;
       const headers: Record<string, string> = {
+        'user-agent': GRAFANA_CLIENT_USER_AGENT,
         authorization: `Bearer ${this.options.token}`,
         accept: 'application/json'
       };

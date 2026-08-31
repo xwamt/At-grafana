@@ -43,19 +43,11 @@ await writeFile(join(stage, 'package.json'), `${JSON.stringify(packagedManifest,
 await cp(join(root, 'README.md'), join(stage, 'README.md'));
 await cp(join(root, 'LICENSE'), join(stage, 'LICENSE')).catch(() => {});
 
+const vsceBin = join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'vsce.cmd' : 'vsce');
+
 const result = spawnSync(
-  process.platform === 'win32' ? 'cmd' : 'npx',
-  process.platform === 'win32'
-    ? [
-        '/c',
-        'npx',
-        '@vscode/vsce',
-        'package',
-        '--allow-missing-repository',
-        '--no-rewrite-relative-links',
-        '--no-dependencies'
-      ]
-    : ['@vscode/vsce', 'package', '--allow-missing-repository', '--no-rewrite-relative-links', '--no-dependencies'],
+  vsceBin,
+  ['package', '--allow-missing-repository', '--no-rewrite-relative-links', '--no-dependencies'],
   { cwd: stage, stdio: 'inherit' }
 );
 if (result.status !== 0) {

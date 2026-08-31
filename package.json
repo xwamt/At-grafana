@@ -2,7 +2,7 @@
   "name": "at-grafana",
   "displayName": "%atGrafana.displayName%",
   "description": "%atGrafana.description%",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "local",
   "license": "MIT",
   "icon": "media/at-grafana-icon.png",
@@ -267,13 +267,14 @@
     "package": "npm run build && npm run copy:hub && node scripts/package.mjs"
   },
   "dependencies": {
-    "@at-series/mcp-hub": "^0.3.2",
+    "@at-series/mcp-hub": "^0.3.3",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^20.19.0",
     "@types/vscode": "^1.85.0",
     "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.9.1",
     "esbuild": "^0.25.0",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"

@@ -23,6 +23,7 @@ describe('testGrafanaConnection', () => {
   it('resolves ok for a healthy 2xx response', async () => {
     const url = await listen((req, res) => {
       expect(req.url).toBe('/api/health');
+      expect(req.headers['user-agent']).toBe('AT-Grafana/1.0');
       res.writeHead(200).end('{"database":"ok"}');
     });
 

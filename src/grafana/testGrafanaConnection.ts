@@ -1,5 +1,6 @@
 import * as http from 'node:http';
 import * as https from 'node:https';
+import { GRAFANA_CLIENT_USER_AGENT } from './GrafanaHttpClient';
 
 export type GrafanaConnectionTestResult =
   | { ok: true }
@@ -49,7 +50,10 @@ export function testGrafanaConnection(
       {
         method: 'GET',
         timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-        headers: token ? { authorization: `Bearer ${token}` } : undefined
+        headers: {
+          'user-agent': GRAFANA_CLIENT_USER_AGENT,
+          ...(token ? { authorization: `Bearer ${token}` } : {})
+        }
       },
       (response) => {
         response.resume();

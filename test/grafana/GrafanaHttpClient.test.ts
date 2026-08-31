@@ -36,6 +36,16 @@ afterEach(async () => {
 });
 
 describe('GrafanaHttpClient.requestJson', () => {
+  it('sends a User-Agent so AWS WAF NoUserAgent_HEADER does not block the request', async () => {
+    server = await listen((req, res) => {
+      expect(req.headers['user-agent']).toBe('AT-Grafana/1.0');
+      res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+    });
+    const client = new GrafanaHttpClient({ baseUrl: server.url, token: SECRET_TOKEN });
+
+    await expect(client.requestJson('GET', '/api/health')).resolves.toEqual({});
+  });
+
   it('parses a realistic 2xx JSON response', async () => {
     server = await listen((req, res) => {
       expect(req.headers.authorization).toBe(`Bearer ${SECRET_TOKEN}`);
