@@ -267,7 +267,7 @@
     "package": "npm run build && npm run copy:hub && node scripts/package.mjs"
   },
   "dependencies": {
-    "@at-series/mcp-hub": "^0.3.3",
+    "@at-series/mcp-hub": "^0.3.4",
     "zod": "^3.25.76"
   },
   "devDependencies": {
