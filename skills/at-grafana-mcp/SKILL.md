@@ -44,6 +44,25 @@ Official PromQL/LogQL knowledge: [references/compose-grafana-skills.md](referenc
 
 **Firing alerts:** `list_instances` → `list_alert_rules` (light: state + `isPaused`) → `get_alert_rule` for the full definition including the `data` query definitions and `notificationSettings` → `get_alert_history` with `from`/`to`/`limit` for the window you care about.
 
+## Incident playbook
+
+Use this order for a production incident, and keep the Grafana selection through the whole investigation (`never mid-investigation`).
+
+1. `grafana_list_instances` — pick the instance and confirm it has background Agent access enabled.
+2. `grafana_list_alert_rules` with `{ "states": ["firing"] }` — establish what is currently firing.
+3. `grafana_get_alert_rule` with the rule `uid` — inspect the `data` query definitions (PromQL/LogQL), `condition`, and `isPaused`.
+4. `grafana_list_annotations` over the incident window — look for deploys, restarts, or other change events.
+5. `grafana_query_prometheus` / `grafana_query_loki` — reproduce the rule's expression with a tight `start`/`end` window.
+6. `grafana_generate_deeplink` — deliver a dashboard or alert-rule link the user can open (use `openInIde: true` only when they asked to open the panel).
+
+## Escape-hatch recipes (Tempo / Elasticsearch)
+
+`grafana_query_datasource`'s `path` is relative to `/api/datasources/proxy/uid/<datasourceUid>/`; never repeat that prefix yourself.
+
+- Tempo search: `{ "method": "GET", "path": "api/search", "query": { "q": "{ }", "limit": "20" } }`
+- Tempo trace by ID: `{ "method": "GET", "path": "api/traces/<traceID>" }`
+- Elasticsearch search: `{ "method": "POST", "path": "_search", "body": { "query": { "match_all": {} }, "size": 20 } }`
+
 ## Troubleshooting
 
 - **TLS / certificate rejected:** the instance's fingerprint has not been confirmed. Ask the user to open the instance once in the AT Grafana sidebar to confirm it (Trust-On-First-Use); Agent calls never prompt.

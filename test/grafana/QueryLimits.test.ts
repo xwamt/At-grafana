@@ -6,6 +6,8 @@ import {
   classifyQueryEndpoint,
   DEFAULT_MAX_RANGE_MS,
   DEFAULT_MAX_RESPONSE_BYTES,
+  normalizeDatasourceTimestamp,
+  parseRelativeTimestamp,
   planQueryLimits,
   resolveMaxRangeMs,
   resolveMaxResponseBytes,
@@ -120,6 +122,40 @@ describe('clampQueryTimeRange', () => {
     // no upside.
     const ambiguous = { start: '1700000000000000', end: '1700018000000000' };
     expect(clampQueryTimeRange(ambiguous, maxRangeMs)).toEqual({ query: ambiguous, clamped: false });
+  });
+});
+
+describe('normalizeDatasourceTimestamp', () => {
+  const NOW = 1_770_000_000_000;
+
+  it('converts epoch milliseconds to epoch seconds', () => {
+    expect(normalizeDatasourceTimestamp('1700000000123', NOW)).toBe('1700000000');
+    expect(normalizeDatasourceTimestamp('1700000000000', NOW)).toBe('1700000000');
+  });
+
+  it('resolves relative now and now-<duration> expressions against the supplied clock', () => {
+    expect(parseRelativeTimestamp('now', NOW)).toBe(NOW);
+    expect(parseRelativeTimestamp('now-1h', NOW)).toBe(NOW - 3_600_000);
+    expect(parseRelativeTimestamp('now-30m', NOW)).toBe(NOW - 1_800_000);
+    expect(normalizeDatasourceTimestamp('now', NOW)).toBe(String(NOW / 1000));
+    expect(normalizeDatasourceTimestamp('now-1h', NOW)).toBe(String(NOW / 1000 - 3600));
+  });
+
+  it('leaves RFC3339, Unix seconds, and Loki nanoseconds untouched', () => {
+    expect(normalizeDatasourceTimestamp('2026-07-29T00:00:00Z', NOW)).toBe('2026-07-29T00:00:00Z');
+    expect(normalizeDatasourceTimestamp('1700000000', NOW)).toBe('1700000000');
+    expect(normalizeDatasourceTimestamp('1700000000000000000', NOW)).toBe('1700000000000000000');
+  });
+
+  it('passes unrecognized values through for the upstream API to reject', () => {
+    expect(normalizeDatasourceTimestamp('-1h', NOW)).toBe('-1h');
+    expect(normalizeDatasourceTimestamp('yesterday', NOW)).toBe('yesterday');
+  });
+
+  it('does not treat an arbitrary string as a relative expression', () => {
+    expect(parseRelativeTimestamp('now-', NOW)).toBeUndefined();
+    expect(parseRelativeTimestamp('now+1h', NOW)).toBeUndefined();
+    expect(parseRelativeTimestamp('now-1x', NOW)).toBeUndefined();
   });
 });
 
@@ -318,7 +354,7 @@ describe('planQueryLimits bypass closures', () => {
     expect(plan.body).toMatchObject({ start: String(endSeconds - 12 * 3600), end: String(endSeconds) });
   });
 
-  it('does not rewrite unparseable relative start/end as a default rfc3339 window', () => {
+  it('resolves relative now-6h..now to Unix seconds before the request leaves', () => {
     const query = { query: 'up', start: 'now-6h', end: 'now' };
     const plan = planQueryLimits({
       path: 'api/v1/query_range',
@@ -327,9 +363,53 @@ describe('planQueryLimits bypass closures', () => {
       now: NOW
     });
 
-    expect(plan.query?.start).toBe('now-6h');
-    expect(plan.query?.end).toBe('now');
+    expect(plan.query?.start).toBe(String(NOW / 1000 - 6 * 3600));
+    expect(plan.query?.end).toBe(String(NOW / 1000));
     expect(plan.adjustments).not.toContain('time-range');
+  });
+
+  it('clamps a relative range that exceeds maxRangeMs instead of passing now-24h upstream', () => {
+    const plan = planQueryLimits({
+      path: 'loki/api/v1/query_range',
+      query: { query: '{app="x"}', start: 'now-24h', end: 'now' },
+      limits,
+      now: NOW
+    });
+
+    expect(plan.adjustments).toContain('time-range');
+    expect(plan.query?.start).toBe(String(NOW / 1000 - 12 * 3600));
+    expect(plan.query?.end).toBe(String(NOW / 1000));
+  });
+
+  it('converts millisecond query timestamps to Unix seconds for Prometheus', () => {
+    const plan = planQueryLimits({
+      path: 'api/v1/query_range',
+      query: { query: 'up', start: String(NOW - 3600_000), end: String(NOW) },
+      limits,
+      now: NOW
+    });
+
+    expect(plan.query?.start).toBe(String(NOW / 1000 - 3600));
+    expect(plan.query?.end).toBe(String(NOW / 1000));
+    expect(plan.adjustments).not.toContain('time-range');
+  });
+
+  it('converts a millisecond instant-query time for Loki without touching the nanoseconds format', () => {
+    const msPlan = planQueryLimits({
+      path: 'loki/api/v1/query',
+      query: { query: '{app="x"}', time: '1700000000123' },
+      limits,
+      now: NOW
+    });
+    expect(msPlan.query?.time).toBe('1700000000');
+
+    const nsPlan = planQueryLimits({
+      path: 'loki/api/v1/query',
+      query: { query: '{app="x"}', time: '1700000000000000000' },
+      limits,
+      now: NOW
+    });
+    expect(nsPlan.query?.time).toBe('1700000000000000000');
   });
 
   it('does not stuff a default query-string window when the POST body already has a parseable range', () => {

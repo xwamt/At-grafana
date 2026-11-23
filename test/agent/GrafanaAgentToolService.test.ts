@@ -60,6 +60,7 @@ interface ServiceOptions {
   queryLimitsConfig?: RawQueryLimitsConfig;
   queryRateLimiter?: QueryRateLimiter;
   openDashboardInIde?: GrafanaAgentToolServiceDependencies['openDashboardInIde'];
+  openAlertRuleInIde?: GrafanaAgentToolServiceDependencies['openAlertRuleInIde'];
 }
 
 async function makeService(options: ServiceOptions = {}) {
@@ -86,7 +87,8 @@ async function makeService(options: ServiceOptions = {}) {
     createClient,
     getQueryLimitsConfig: options.queryLimitsConfig ? () => options.queryLimitsConfig! : undefined,
     queryRateLimiter: options.queryRateLimiter,
-    openDashboardInIde: options.openDashboardInIde
+    openDashboardInIde: options.openDashboardInIde,
+    openAlertRuleInIde: options.openAlertRuleInIde
   });
   return { service, createClient, certTrustStore, configManager };
 }
@@ -237,6 +239,46 @@ describe('GrafanaAgentToolService', () => {
       expect(search).toHaveBeenCalledWith({ type: 'dash-db', query: 'cpu', tag: 'infra', folderUid: 'f1' });
     });
 
+    it('grafana_list_dashboards forwards limit/page and returns a truncation envelope on a full page', async () => {
+      const search = vi.fn(async () => [
+        { uid: 'd1', title: 'CPU', type: 'dash-db' },
+        { uid: 'd2', title: 'MEM', type: 'dash-db' }
+      ]);
+      const client = fakeClient({ search, getFolders: async () => [] });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_list_dashboards', {
+        instanceId: 'instance-1',
+        limit: 2,
+        page: 1
+      });
+
+      expect(search).toHaveBeenCalledWith({ type: 'dash-db', query: undefined, tag: undefined, folderUid: undefined, limit: 2, page: 1 });
+      expect(result).toMatchObject({
+        ok: true,
+        result: {
+          dashboards: [
+            { uid: 'd1', title: 'CPU' },
+            { uid: 'd2', title: 'MEM' }
+          ],
+          truncated: true
+        }
+      });
+      expect((result as { result: { message: string } }).result.message).toContain('page/limit');
+    });
+
+    it('grafana_list_dashboards returns a bare array for an ordinary unpaged request', async () => {
+      const client = fakeClient({
+        search: async () => [{ uid: 'd1', title: 'CPU', type: 'dash-db' }],
+        getFolders: async () => []
+      });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_list_dashboards', { instanceId: 'instance-1' });
+
+      expect(Array.isArray((result as { result: unknown }).result)).toBe(true);
+    });
+
     it('grafana_get_dashboard defaults to fields=targets', async () => {
       const dashboard = {
         uid: 'd1',
@@ -374,6 +416,37 @@ describe('GrafanaAgentToolService', () => {
     });
 
     it('grafana_list_folders passes through the client folder list', async () => {
+      const folders = [{ uid: 'f1', title: 'Infra' }];
+      const client = fakeClient({ getFolders: async () => folders });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_list_folders', { instanceId: 'instance-1' });
+
+      expect(result).toEqual({ ok: true, result: folders });
+    });
+
+    it('grafana_list_folders forwards limit/page and signals truncation on a full page', async () => {
+      const getFolders = vi.fn(async () => [
+        { uid: 'f1', title: 'Infra' },
+        { uid: 'f2', title: 'Apps' }
+      ]);
+      const client = fakeClient({ getFolders });
+      const { service } = await makeService({ client });
+
+      const result = await service.invoke('grafana_list_folders', {
+        instanceId: 'instance-1',
+        limit: 2,
+        page: 1
+      });
+
+      expect(getFolders).toHaveBeenCalledWith({ limit: 2, page: 1 });
+      expect(result).toMatchObject({
+        ok: true,
+        result: { folders: [{ uid: 'f1' }, { uid: 'f2' }], truncated: true }
+      });
+    });
+
+    it('grafana_list_folders keeps returning a bare array for an ordinary unpaged request', async () => {
       const folders = [{ uid: 'f1', title: 'Infra' }];
       const client = fakeClient({ getFolders: async () => folders });
       const { service } = await makeService({ client });
@@ -737,6 +810,72 @@ describe('GrafanaAgentToolService', () => {
         result: { grafanaUrl: 'https://grafana.example.com/alerting/grafana/rule-1/view', openedInIde: false }
       });
       expect(openDashboardInIde).not.toHaveBeenCalled();
+    });
+
+    it('grafana_generate_deeplink alertRule openInIde opens the alert detail panel', async () => {
+      const openAlertRuleInIde = vi.fn(async () => undefined);
+      const { service } = await makeService({ openAlertRuleInIde });
+
+      const result = await service.invoke('grafana_generate_deeplink', {
+        instanceId: 'instance-1',
+        kind: 'alertRule',
+        uid: 'rule-1',
+        openInIde: true,
+        title: 'High CPU'
+      });
+
+      expect(openAlertRuleInIde).toHaveBeenCalledWith({
+        instanceId: 'instance-1',
+        uid: 'rule-1',
+        title: 'High CPU'
+      });
+      expect(result).toEqual({
+        ok: true,
+        result: { grafanaUrl: 'https://grafana.example.com/alerting/grafana/rule-1/view', openedInIde: true }
+      });
+    });
+
+    it('grafana_generate_deeplink alertRule openInIde reports opener failures without losing the URL', async () => {
+      const openAlertRuleInIde = vi.fn(async () => {
+        throw new Error('TLS certificate is not trusted yet');
+      });
+      const { service } = await makeService({ openAlertRuleInIde });
+
+      const result = await service.invoke('grafana_generate_deeplink', {
+        instanceId: 'instance-1',
+        kind: 'alertRule',
+        uid: 'rule-1',
+        openInIde: true
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        result: {
+          grafanaUrl: 'https://grafana.example.com/alerting/grafana/rule-1/view',
+          openedInIde: false,
+          message: expect.stringContaining('TLS certificate')
+        }
+      });
+    });
+
+    it('grafana_generate_deeplink alertRule openInIde with no opener still returns the URL', async () => {
+      const { service } = await makeService();
+
+      const result = await service.invoke('grafana_generate_deeplink', {
+        instanceId: 'instance-1',
+        kind: 'alertRule',
+        uid: 'rule-1',
+        openInIde: true
+      });
+
+      expect(result).toEqual({
+        ok: true,
+        result: {
+          grafanaUrl: 'https://grafana.example.com/alerting/grafana/rule-1/view',
+          openedInIde: false,
+          message: 'IDE opener is not available.'
+        }
+      });
     });
 
     it('grafana_generate_deeplink openInIde with no callback still returns the URL', async () => {

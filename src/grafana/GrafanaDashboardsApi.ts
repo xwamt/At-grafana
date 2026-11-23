@@ -38,6 +38,10 @@ export interface GrafanaDashboardSearchQuery {
   tag?: string;
   /** Mapped to Grafana `/api/search` `folderUIDs`. */
   folderUid?: string;
+  /** Mapped to `/api/search` `limit` (Grafana caps it at 5000). */
+  limit?: number;
+  /** Mapped to `/api/search` `page` (1-based). */
+  page?: number;
 }
 
 /**
@@ -79,11 +83,11 @@ export class GrafanaDashboardsApi {
   /**
    * One page of `/api/search`, exactly as Grafana returns it.
    *
-   * Deliberately left unpaged. This is the method the Agent-facing
-   * `grafana_list_dashboards` tool reaches (via `GrafanaAgentToolService`),
-   * so the number of rows one tool call can put into a model's context stays
-   * bounded by Grafana's own `/api/search` default. Completeness is the tree
-   * view's requirement, and it has its own method -- see `searchAll`.
+   * The Agent-facing `grafana_list_dashboards` tool reaches this method (via
+   * `GrafanaAgentToolService`), so by default one call returns Grafana's own
+   * single page (1000 rows) and keeps the model's context bounded. Optional
+   * `limit`/`page` let a caller walk a large instance deliberately;
+   * completeness for the tree view has its own method -- see `searchAll`.
    */
   async search(query: GrafanaDashboardSearchQuery = {}): Promise<GrafanaSearchResult[]> {
     const raw = await this.http.requestJson<unknown>('GET', '/api/search', {
@@ -91,7 +95,9 @@ export class GrafanaDashboardsApi {
         query: query.query,
         type: query.type,
         tag: query.tag,
-        folderUIDs: query.folderUid
+        folderUIDs: query.folderUid,
+        limit: query.limit === undefined ? undefined : String(query.limit),
+        page: query.page === undefined ? undefined : String(query.page)
       },
       maxResponseBytes: MANAGEMENT_MAX_RESPONSE_BYTES
     });
@@ -143,9 +149,13 @@ export class GrafanaDashboardsApi {
     );
   }
 
-  /** One page of `/api/folders`; the Agent-facing counterpart of `search`. See its doc for why this stays unpaged. */
-  async getFolders(): Promise<GrafanaFolder[]> {
+  /** One page of `/api/folders`; the Agent-facing counterpart of `search`. See its doc for why the default stays a single page. */
+  async getFolders(query: { limit?: number; page?: number } = {}): Promise<GrafanaFolder[]> {
     const raw = await this.http.requestJson<unknown>('GET', '/api/folders', {
+      query: {
+        limit: query.limit === undefined ? undefined : String(query.limit),
+        page: query.page === undefined ? undefined : String(query.page)
+      },
       maxResponseBytes: MANAGEMENT_MAX_RESPONSE_BYTES
     });
     if (!Array.isArray(raw)) {
@@ -191,7 +201,8 @@ export class GrafanaDashboardsApi {
 
     for (;;) {
       const raw = await this.http.requestJson<unknown>('GET', path, {
-        query: { ...baseQuery, page: String(page), limit: String(pageSize) }
+        query: { ...baseQuery, page: String(page), limit: String(pageSize) },
+        maxResponseBytes: MANAGEMENT_MAX_RESPONSE_BYTES
       });
       const entries = parsePage(raw);
       pages++;

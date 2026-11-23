@@ -16,13 +16,15 @@ import {
   type GrafanaTreeItem
 } from './GrafanaTreeItems';
 import { SharedGrafanaReads } from './sharedGrafanaReads';
-
+import type { FilterMemento } from './DashboardTreeProvider';
 
 /** `getAllFolders` rather than `getFolders` for the same reason as the dashboard tree; see DashboardTreeProvider. */
 export type AlertApiClient = Pick<GrafanaApiClient, 'listAlertRules' | 'listAlertRuleStates' | 'getAllFolders'>;
 export type AlertClientFactory = (instance: GrafanaInstanceConfig) => Promise<AlertApiClient>;
 
 export interface AlertTreeProviderOptions {
+  /** `context.workspaceState`; when set, the alert filters survive a window reload. */
+  workspaceState?: FilterMemento;
   /** Folders promise cache shared with DashboardTreeProvider (PERF-04). */
   sharedReads?: SharedGrafanaReads;
   /**
@@ -31,6 +33,26 @@ export interface AlertTreeProviderOptions {
    * `0` (the default) disables auto-refresh (UX-11).
    */
   getRefreshIntervalSeconds?: () => number;
+}
+
+export const ALERT_FILTER_STATE_KEY = 'atGrafana.alertFilter';
+export const ALERT_STATE_FILTER_STATE_KEY = 'atGrafana.alertStateFilter';
+const ALERT_FILTER_ACTIVE_CONTEXT_KEY = 'atGrafana.alertFilterActive';
+
+const NORMALIZED_ALERT_STATES: readonly NormalizedAlertState[] = ['firing', 'pending', 'normal', 'unknown'];
+
+/**
+ * The values the alert-state filter accepts. `paused` is a UI-level filter
+ * dimension, not a normalized alert state: paused rules are normalized to
+ * `normal` for ranking (Grafana excludes them from live state), so matching
+ * them requires the rule's `isPaused` flag -- see `applyFilters`.
+ */
+export type AlertStateFilter = NormalizedAlertState | 'paused';
+
+const ALERT_STATE_FILTERS: readonly AlertStateFilter[] = [...NORMALIZED_ALERT_STATES, 'paused'];
+
+function isAlertStateFilter(value: unknown): value is AlertStateFilter {
+  return typeof value === 'string' && (ALERT_STATE_FILTERS as readonly string[]).includes(value);
 }
 
 interface InstanceAlertGroup {
@@ -62,6 +84,10 @@ export class AlertTreeProvider implements vscode.TreeDataProvider<GrafanaTreeIte
   private readonly firingCountByInstance = new Map<string, number>();
   private readonly sharedReads: SharedGrafanaReads;
   private readonly getRefreshIntervalSeconds: (() => number) | undefined;
+  private readonly workspaceState: FilterMemento | undefined;
+  private filterText: string | undefined;
+  private stateFilter: Set<AlertStateFilter> | undefined;
+  private treeView: Pick<vscode.TreeView<GrafanaTreeItem>, 'message'> | undefined;
   private refreshTimer: ReturnType<typeof setInterval> | undefined;
   private disposed = false;
 
@@ -72,16 +98,80 @@ export class AlertTreeProvider implements vscode.TreeDataProvider<GrafanaTreeIte
   ) {
     this.sharedReads = options.sharedReads ?? new SharedGrafanaReads();
     this.getRefreshIntervalSeconds = options.getRefreshIntervalSeconds;
+    this.workspaceState = options.workspaceState;
+    const persistedText = this.workspaceState?.get<string | undefined>(ALERT_FILTER_STATE_KEY, undefined);
+    this.filterText = typeof persistedText === 'string' && persistedText.trim().length > 0 ? persistedText.trim() : undefined;
+    const persistedStates = this.workspaceState?.get<unknown>(ALERT_STATE_FILTER_STATE_KEY, []);
+    const states = Array.isArray(persistedStates) ? persistedStates.filter(isAlertStateFilter) : [];
+    this.stateFilter = states.length > 0 ? new Set(states) : undefined;
+    // Initialize the `when`-clause context even when no filter was restored,
+    // so the Clear Filter button starts hidden rather than in a stale state
+    // from a previous session.
+    this.syncFilterContext();
     this.scheduleAutoRefresh();
   }
 
-  refresh(): void {
-    this.instanceGroupsCache.clear();
-    this.sharedReads.invalidateAll();
+  attachTreeView(treeView: Pick<vscode.TreeView<GrafanaTreeItem>, 'message'>): void {
+    this.treeView = treeView;
+    this.updateTreeViewMessage();
+  }
+
+  /**
+   * Clears the per-instance cache. With an `instanceId`, only that instance's
+   * groups and shared folder reads are invalidated; the other instances'
+   * settled promises stay cached, so a single-instance edit does not force
+   * every other instance to re-fetch on the next expand.
+   */
+  refresh(instanceId?: string): void {
+    if (instanceId !== undefined) {
+      this.instanceGroupsCache.delete(instanceId);
+      this.sharedReads.invalidate(instanceId);
+    } else {
+      this.instanceGroupsCache.clear();
+      this.sharedReads.invalidateAll();
+    }
     this.onDidChangeTreeDataEmitter.fire();
     // Re-read the interval setting on every refresh, so toggling it on/off
     // applies without a configuration-change listener.
     this.scheduleAutoRefresh();
+  }
+
+  setFilter(text: string): void {
+    const trimmed = text.trim();
+    this.filterText = trimmed.length > 0 ? trimmed : undefined;
+    this.persistFilters();
+    this.syncFilterContext();
+    this.updateTreeViewMessage();
+    this.onDidChangeTreeDataEmitter.fire();
+  }
+
+  setStateFilter(states?: AlertStateFilter[]): void {
+    const unique = states ? [...new Set(states)].filter(isAlertStateFilter) : [];
+    this.stateFilter = unique.length > 0 ? new Set(unique) : undefined;
+    this.persistFilters();
+    this.syncFilterContext();
+    this.updateTreeViewMessage();
+    this.onDidChangeTreeDataEmitter.fire();
+  }
+
+  clearFilter(): void {
+    if (this.filterText === undefined && this.stateFilter === undefined) {
+      return;
+    }
+    this.filterText = undefined;
+    this.stateFilter = undefined;
+    this.persistFilters();
+    this.syncFilterContext();
+    this.updateTreeViewMessage();
+    this.onDidChangeTreeDataEmitter.fire();
+  }
+
+  getFilter(): string | undefined {
+    return this.filterText;
+  }
+
+  getStateFilter(): AlertStateFilter[] | undefined {
+    return this.stateFilter ? [...this.stateFilter] : undefined;
   }
 
   /** Sum of firing rules across every instance fetched so far. */
@@ -144,12 +234,57 @@ export class AlertTreeProvider implements vscode.TreeDataProvider<GrafanaTreeIte
     } catch (error) {
       return [new ErrorTreeItem(describeTreeError(error), { instanceId: instance.id, detail: formatError(error) })];
     }
-    if (groups.length === 0) {
-      return [new MessageTreeItem(t('No alert rules found.'))];
+    const visibleGroups = this.applyFilters(groups);
+    if (visibleGroups.length === 0) {
+      return [
+        new MessageTreeItem(
+          this.isFilterActive() ? t('No alert rules match the current filter.') : t('No alert rules found.')
+        )
+      ];
     }
-    return groups.map(
+    return visibleGroups.map(
       (group) => new AlertGroupTreeItem(instance, group.folderUid, group.ruleGroup, group.label, group.worstState, group.rules)
     );
+  }
+
+  private isFilterActive(): boolean {
+    return this.filterText !== undefined || this.stateFilter !== undefined;
+  }
+
+  /**
+   * Applies the title/state filters to an already-fetched, fully sorted group
+   * list. Groups left with no matching rule are dropped. `worstState` is
+   * recomputed for the visible subset so a filtered group's colour does not
+   * claim a firing rule that the filter hid.
+   */
+  private applyFilters(groups: InstanceAlertGroup[]): InstanceAlertGroup[] {
+    const needle = this.filterText?.toLowerCase();
+    const states = this.stateFilter;
+    if (needle === undefined && states === undefined) {
+      return groups;
+    }
+    const filtered: InstanceAlertGroup[] = [];
+    for (const group of groups) {
+      const rules = group.rules.filter(
+        (rule) =>
+          (needle === undefined || rule.title.toLowerCase().includes(needle)) &&
+          (states === undefined ||
+            states.has(rule.state) ||
+            (states.has('paused') && rule.isPaused === true))
+      );
+      if (rules.length === 0) {
+        continue;
+      }
+      let worstState = rules[0]!.state;
+      for (const rule of rules) {
+        if (ALERT_STATE_RANK[rule.state] < ALERT_STATE_RANK[worstState]) {
+          worstState = rule.state;
+        }
+      }
+      filtered.push({ ...group, rules, worstState });
+    }
+    filtered.sort((a, b) => ALERT_STATE_RANK[a.worstState] - ALERT_STATE_RANK[b.worstState] || a.label.localeCompare(b.label));
+    return filtered;
   }
 
   private getGroupChildren(element: AlertGroupTreeItem): GrafanaTreeItem[] {
@@ -249,6 +384,29 @@ export class AlertTreeProvider implements vscode.TreeDataProvider<GrafanaTreeIte
     if (changed) {
       this.onDidChangeFiringCountEmitter.fire(this.getFiringCount());
     }
+  }
+
+  private persistFilters(): void {
+    void this.workspaceState?.update(ALERT_FILTER_STATE_KEY, this.filterText);
+    void this.workspaceState?.update(ALERT_STATE_FILTER_STATE_KEY, this.stateFilter ? [...this.stateFilter] : []);
+  }
+
+  private syncFilterContext(): void {
+    void vscode.commands.executeCommand('setContext', ALERT_FILTER_ACTIVE_CONTEXT_KEY, this.isFilterActive());
+  }
+
+  private updateTreeViewMessage(): void {
+    if (!this.treeView) {
+      return;
+    }
+    const parts: string[] = [];
+    if (this.filterText !== undefined) {
+      parts.push(t('Filter: "{filterText}"', { filterText: this.filterText }));
+    }
+    if (this.stateFilter !== undefined) {
+      parts.push(t('States: {states}', { states: [...this.stateFilter].join(', ') }));
+    }
+    this.treeView.message = parts.length > 0 ? parts.join(' · ') : undefined;
   }
 
   private scheduleAutoRefresh(): void {

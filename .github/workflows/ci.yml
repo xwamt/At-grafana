@@ -9,44 +9,46 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      # This plugin resolves @at-series/mcp-hub through a file: path to a
-      # sibling directory, so both repos must be on disk in that exact layout.
       - name: Check out plugin
         uses: actions/checkout@v4
-        with:
-          path: at-grafana-series
-
-      - name: Check out the hub
-        uses: actions/checkout@v4
-        with:
-          repository: xwamt/at-series-mcp-hub
-          path: at-series-mcp-hub
 
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: npm
 
-      # dist/ is gitignored, so the hub has to be built before the plugin can
-      # resolve the dependency.
-      - name: Build the hub
-        working-directory: at-series-mcp-hub
-        run: |
-          npm ci
-          npm run build
-          npm run build:hub
-
-      - name: Install plugin dependencies
-        working-directory: at-grafana-series
+      - name: Install dependencies
         run: npm ci
 
       - name: Typecheck
-        working-directory: at-grafana-series
         run: npm run typecheck
 
       - name: Test
-        working-directory: at-grafana-series
         run: npm test
 
+      - name: Package VSIX
+        run: npm run package
+
+      - name: Verify VSIX contents
+        run: |
+          set -euo pipefail
+          VSIX=$(ls at-grafana-*.vsix | head -n 1)
+          echo "Inspecting $VSIX"
+          unzip -l "$VSIX" > vsix-contents.txt
+          grep -q 'extension/dist/extension.js' vsix-contents.txt
+          grep -q 'extension/dist/hub.js' vsix-contents.txt
+          grep -q 'extension/l10n/bundle.l10n.zh-cn.json' vsix-contents.txt
+          if grep -Eq '\.map$' vsix-contents.txt; then
+            echo 'Unexpected source map in VSIX' >&2
+            exit 1
+          fi
+
       - name: Audit production dependencies
-        working-directory: at-grafana-series
         run: npm audit --omit=dev --audit-level=high
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: at-grafana-vsix
+          path: at-grafana-*.vsix
+          if-no-files-found: error

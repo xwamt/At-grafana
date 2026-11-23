@@ -79,6 +79,18 @@ describe('renderEmbedWebviewHtml', () => {
     expect(html).toContain(`<script nonce="${nonce}">`);
   });
 
+  it('renders injected localized copy and escapes it instead of trusting it as markup', () => {
+    const html = renderEmbedWebviewHtml({
+      ...options,
+      copy: { loading: '正在加载…', loadFailed: '<script>alert(1)</script>', retry: '重试' }
+    });
+
+    expect(html).toContain('正在加载…');
+    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(html).not.toContain('<script>alert(1)</script>');
+    expect(html).toContain('>重试</button>');
+  });
+
   it('keeps the iframe src as the first attribute for the embed proxy e2e test contract', () => {
     const html = renderEmbedWebviewHtml(options);
     expect(/<iframe src="([^"]+)"/.exec(html)?.[1]).toBe(options.iframeSrc);

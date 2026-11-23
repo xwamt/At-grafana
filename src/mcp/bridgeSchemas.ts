@@ -20,7 +20,11 @@ export const grafanaListDashboardsSchema = z
     instanceId: z.string().min(1),
     query: z.string().min(1).optional(),
     tag: z.string().min(1).optional(),
-    folderUid: z.string().min(1).optional()
+    folderUid: z.string().min(1).optional(),
+    /** Page size; omit for Grafana's default single page (1000 rows). */
+    limit: z.number().int().min(1).max(1000).optional(),
+    /** 1-based page number, for walking a large instance. */
+    page: z.number().int().min(1).optional()
   })
   .strict();
 
@@ -41,7 +45,13 @@ export const grafanaGetDashboardSchema = z
   })
   .strict();
 
-export const grafanaListFoldersSchema = z.object({ instanceId: z.string().min(1) }).strict();
+export const grafanaListFoldersSchema = z
+  .object({
+    instanceId: z.string().min(1),
+    limit: z.number().int().min(1).max(1000).optional(),
+    page: z.number().int().min(1).optional()
+  })
+  .strict();
 
 export const grafanaListAlertRulesSchema = z
   .object({
@@ -108,7 +118,9 @@ export const grafanaGenerateDeeplinkSchema = z.discriminatedUnion('kind', [
     .object({
       instanceId: z.string().min(1),
       kind: z.literal('alertRule'),
-      uid: z.string().min(1)
+      uid: z.string().min(1),
+      openInIde: z.boolean().default(false),
+      title: z.string().min(1).optional()
     })
     .strict()
 ]);
@@ -366,7 +378,9 @@ export const GRAFANA_LIST_DASHBOARDS_INPUT_SCHEMA: JsonSchemaObject = {
     instanceId: { type: 'string', minLength: 1 },
     query: { type: 'string', minLength: 1, description: 'Grafana /api/search query string (title/metadata).' },
     tag: { type: 'string', minLength: 1, description: 'Single Grafana dashboard tag to filter on.' },
-    folderUid: { type: 'string', minLength: 1, description: 'Restrict results to this folder UID (Grafana folderUIDs).' }
+    folderUid: { type: 'string', minLength: 1, description: 'Restrict results to this folder UID (Grafana folderUIDs).' },
+    limit: { type: 'integer', minimum: 1, maximum: 1000, description: 'Page size (max 1000). Omit for the default single page.' },
+    page: { type: 'integer', minimum: 1, description: '1-based page number for large instances.' }
   },
   required: ['instanceId'],
   additionalProperties: false
@@ -383,7 +397,16 @@ export const GRAFANA_GET_DASHBOARD_INPUT_SCHEMA: JsonSchemaObject = {
   required: ['instanceId', 'uid'],
   additionalProperties: false
 };
-export const GRAFANA_LIST_FOLDERS_INPUT_SCHEMA: JsonSchemaObject = instanceIdOnlyInputSchema();
+export const GRAFANA_LIST_FOLDERS_INPUT_SCHEMA: JsonSchemaObject = {
+  type: 'object',
+  properties: {
+    instanceId: { type: 'string', minLength: 1 },
+    limit: { type: 'integer', minimum: 1, maximum: 1000, description: 'Page size (max 1000). Omit for the default single page.' },
+    page: { type: 'integer', minimum: 1, description: '1-based page number for large instances.' }
+  },
+  required: ['instanceId'],
+  additionalProperties: false
+};
 export const GRAFANA_LIST_ALERT_RULES_INPUT_SCHEMA: JsonSchemaObject = {
   type: 'object',
   properties: {
@@ -442,7 +465,7 @@ export const GRAFANA_GENERATE_DEEPLINK_INPUT_SCHEMA: JsonSchemaObject = {
     to: { type: 'string', minLength: 1 },
     openInIde: {
       type: 'boolean',
-      description: 'Dashboard only. Default false. Opens the AT Grafana Webview.'
+      description: 'Dashboard or alertRule. Default false. Opens the AT Grafana Webview when the instance TLS fingerprint is already trusted.'
     },
     title: { type: 'string', minLength: 1 }
   },
@@ -475,6 +498,11 @@ export const GRAFANA_QUERY_DATASOURCE_INPUT_SCHEMA: JsonSchemaObject = {
   additionalProperties: false
 };
 
+/** Shared description for every Prometheus/Loki timestamp-bearing input property. */
+const DATASOURCE_TIMESTAMP_DESCRIPTION =
+  'Timestamp as Unix seconds (recommended), RFC3339, or relative expression like "now-1h" ' +
+  '(epoch milliseconds are automatically converted to seconds).';
+
 export const GRAFANA_QUERY_PROMETHEUS_INPUT_SCHEMA: JsonSchemaObject = {
   type: 'object',
   properties: {
@@ -482,10 +510,10 @@ export const GRAFANA_QUERY_PROMETHEUS_INPUT_SCHEMA: JsonSchemaObject = {
     datasourceUid: { type: 'string', minLength: 1 },
     expr: { type: 'string', minLength: 1, description: 'PromQL expression.' },
     queryType: { type: 'string', enum: ['instant', 'range'], description: 'Defaults to range.' },
-    start: { type: 'string', minLength: 1 },
-    end: { type: 'string', minLength: 1 },
+    start: { type: 'string', minLength: 1, description: DATASOURCE_TIMESTAMP_DESCRIPTION },
+    end: { type: 'string', minLength: 1, description: DATASOURCE_TIMESTAMP_DESCRIPTION },
     step: { type: 'string', minLength: 1 },
-    time: { type: 'string', minLength: 1, description: 'Evaluation time for instant queries.' }
+    time: { type: 'string', minLength: 1, description: DATASOURCE_TIMESTAMP_DESCRIPTION }
   },
   required: ['instanceId', 'datasourceUid', 'expr'],
   additionalProperties: false
@@ -498,9 +526,9 @@ export const GRAFANA_QUERY_LOKI_INPUT_SCHEMA: JsonSchemaObject = {
     datasourceUid: { type: 'string', minLength: 1 },
     expr: { type: 'string', minLength: 1, description: 'LogQL expression.' },
     queryType: { type: 'string', enum: ['instant', 'range'], description: 'Defaults to range.' },
-    start: { type: 'string', minLength: 1 },
-    end: { type: 'string', minLength: 1 },
-    time: { type: 'string', minLength: 1 },
+    start: { type: 'string', minLength: 1, description: DATASOURCE_TIMESTAMP_DESCRIPTION },
+    end: { type: 'string', minLength: 1, description: DATASOURCE_TIMESTAMP_DESCRIPTION },
+    time: { type: 'string', minLength: 1, description: DATASOURCE_TIMESTAMP_DESCRIPTION },
     limit: { type: 'integer', exclusiveMinimum: 0 },
     direction: { type: 'string', enum: ['forward', 'backward'] }
   },
@@ -512,8 +540,8 @@ const PROMETHEUS_LABEL_JSON_SCHEMA_PATTERN = '^[a-zA-Z_][a-zA-Z0-9_]*$';
 
 const discoveryTimeAndRegexProperties = {
   regex: { type: 'string' as const, minLength: 1, description: 'Optional JavaScript regular expression used to filter returned values.' },
-  start: { type: 'string' as const, minLength: 1 },
-  end: { type: 'string' as const, minLength: 1 }
+  start: { type: 'string' as const, minLength: 1, description: DATASOURCE_TIMESTAMP_DESCRIPTION },
+  end: { type: 'string' as const, minLength: 1, description: DATASOURCE_TIMESTAMP_DESCRIPTION }
 };
 
 export const GRAFANA_LIST_PROMETHEUS_METRIC_NAMES_INPUT_SCHEMA: JsonSchemaObject = {

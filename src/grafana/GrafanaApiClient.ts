@@ -9,7 +9,7 @@
  * - listAlertRules()      -> GET /api/v1/provisioning/alert-rules (rule *definitions*; stable, no live state)
  * - getAlertRule()        -> GET /api/v1/provisioning/alert-rules/:uid (single definition, incl. `data` queries)
  * - listAlertRuleStates() -> GET /api/prometheus/grafana/api/v1/rules (live *state* only; correlate by `uid`)
- * - getAlertRuleHistory() -> GET /api/v1/rules/history?ruleUID=:uid (best-effort; response shape unverified — see GrafanaAlertsApi.ts)
+ * - getAlertRuleHistory() -> GET /api/v1/rules/history?ruleUID=:uid (supports Grafana's annotation and Loki state-history backends — see GrafanaAlertsApi.ts)
  * - listDatasources()     -> GET /api/datasources
  * - listAnnotations()     -> GET /api/annotations
  * - proxyDatasourceRequest() -> GET/POST /api/datasources/proxy/uid/:uid/:path (method allowlist enforced pre-network, ADR-004 MON4)
@@ -85,8 +85,8 @@ export class GrafanaApiClient {
     return this.dashboardsApi.searchAll(...args);
   }
 
-  getFolders(): ReturnType<GrafanaDashboardsApi['getFolders']> {
-    return this.dashboardsApi.getFolders();
+  getFolders(...args: Parameters<GrafanaDashboardsApi['getFolders']>): ReturnType<GrafanaDashboardsApi['getFolders']> {
+    return this.dashboardsApi.getFolders(...args);
   }
 
   getAllFolders(

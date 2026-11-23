@@ -50,6 +50,12 @@ export interface EmbedWebviewOptions {
    * matching the shell's own (English-fallback) copy.
    */
   language?: string;
+  /**
+   * Localized shell copy. This module can't call `vscode.l10n` on behalf of
+   * future embedders, so the extension host translates with `t()` and passes
+   * the strings in; every field falls back to its English default.
+   */
+  copy?: { loading?: string; loadFailed?: string; retry?: string };
 }
 
 /**
@@ -71,6 +77,13 @@ export interface EmbedWebviewOptions {
  */
 export function renderEmbedWebviewHtml(options: EmbedWebviewOptions): string {
   const nonce = createNonce();
+  const copy = {
+    loading: escapeHtml(options.copy?.loading ?? 'Loading Grafana…'),
+    loadFailed: escapeHtml(
+      options.copy?.loadFailed ?? 'Grafana did not load in this panel. Check that the instance is reachable, then retry.'
+    ),
+    retry: escapeHtml(options.copy?.retry ?? 'Retry')
+  };
   return `<!DOCTYPE html>
 <html lang="${escapeAttr(options.language ?? 'en')}">
 <head>
@@ -92,11 +105,11 @@ export function renderEmbedWebviewHtml(options: EmbedWebviewOptions): string {
 <body>
   <div id="embed-loading" class="embed-status" role="status">
     <div class="embed-spinner" aria-hidden="true"></div>
-    <p>Loading Grafana…</p>
+    <p>${copy.loading}</p>
   </div>
   <div id="embed-error" class="embed-status" role="alert" hidden>
-    <p>Grafana did not load in this panel. Check that the instance is reachable, then retry.</p>
-    <button id="embed-retry" type="button">Retry</button>
+    <p>${copy.loadFailed}</p>
+    <button id="embed-retry" type="button">${copy.retry}</button>
   </div>
   <iframe src="${escapeAttr(options.iframeSrc)}" id="embed-frame" title="${escapeAttr(options.title)}"></iframe>
   <script nonce="${nonce}">

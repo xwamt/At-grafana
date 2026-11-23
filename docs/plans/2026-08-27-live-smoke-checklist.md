@@ -56,3 +56,10 @@ Then launch the Extension Development Host (`F5` in this repo) with the extensio
 ## Recording results
 
 Check items off in a copy of this file (or the PR description) together with: Grafana image tag, Prometheus image tag, host IDE + version, and date. Update the corresponding *Pending manual verification* rows in `docs/releases/0.1.0.md` only when an item has actually been executed — this checklist existing does not close the DoD by itself.
+
+## Execution log
+
+| Date | Environment | Result |
+|---|---|---|
+| 2026-11-20 | macOS agent workspace; no container runtime (`docker` / `podman` / `colima` unavailable) and no Extension Development Host GUI | Not executed. DoD 1 / 2 / 3 / 9 remain **Pending manual verification**; the checks above must be run on a machine with Docker and VS Code before the 0.2.0 release gate can close. |
+| 2026-11-20 | Grafana `13.0.1+security-01` (package `13.0.1-01`) on `ip-10-0-3-5` (Ubuntu, AWS), reached through the AT Terminal SSH server; default `[unified_alerting.state_history] backend = annotations` | Live API-level check completed: `/api/health` reports `13.0.1+security-01`; annotation table holds 1,664 state-history rows with correct `prev_state`/`new_state`/`epoch` (ms). Found Grafana's annotation backend serializes time 1000x too large (`time.Unix(epochMs, 0)`); plugin parser fixed and covered by `test-fixtures/rules-history-dataframe.json`. DoD 1 / 2 / 3 / 9 UI checks still need an Extension Development Host. |

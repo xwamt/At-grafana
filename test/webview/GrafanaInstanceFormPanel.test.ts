@@ -183,6 +183,45 @@ describe('GrafanaInstanceFormPanel message handling', () => {
     });
   });
 
+  it('falls back to the stored token when editing an instance with a blank token field', async () => {
+    const postMessage = vi.fn();
+    const testConnection = vi.fn(async () => ({ ok: true as const }));
+    const getToken = vi.fn(async () => 'glsa_stored');
+
+    await handleInstanceFormMessage(
+      { type: 'testConnection', payload: { url: 'https://grafana.example.com' } },
+      instance(),
+      { createInstance: vi.fn(), updateInstance: vi.fn(), getToken } as never,
+      vi.fn(),
+      { dispose: vi.fn(), webview: { postMessage } } as never,
+      { testConnection }
+    );
+
+    expect(getToken).toHaveBeenCalledWith('instance-1');
+    expect(testConnection).toHaveBeenCalledWith('https://grafana.example.com', 'glsa_stored');
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'connectionTestResult',
+      payload: { ok: true, message: 'Connection succeeded.' }
+    });
+  });
+
+  it('rejects an empty token on the default real connection path', async () => {
+    const postMessage = vi.fn();
+
+    await handleInstanceFormMessage(
+      { type: 'testConnection', payload: { url: 'https://grafana.example.com' } },
+      undefined,
+      { createInstance: vi.fn(), updateInstance: vi.fn() } as never,
+      vi.fn(),
+      { dispose: vi.fn(), webview: { postMessage } } as never
+    );
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'connectionTestResult',
+      payload: { ok: false, message: 'Enter a Service Account Token before testing.' }
+    });
+  });
+
   it('short-circuits the connection test for an invalid url without invoking the tester', async () => {
     const postMessage = vi.fn();
     const testConnection = vi.fn();
@@ -273,6 +312,37 @@ describe('createTofuConnectionTester (FUNC-02 / UX-01)', () => {
 
     expect(result).toMatchObject({ ok: false, reason: 'tls' });
     expect(store.getTrusted('grafana.example.com', 443)).toBeUndefined();
+  });
+
+  it('rejects an empty token before creating a client or probing the network', async () => {
+    const store = new GrafanaCertTrustStore(new MemoryMemento());
+    const createClient = vi.fn();
+    const test = createTofuConnectionTester(store, createClient as never);
+
+    await expect(test('https://grafana.example.com', '   ')).resolves.toEqual({
+      ok: false,
+      reason: 'auth',
+      message: 'A Service Account Token is required to verify authentication.'
+    });
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
+  it('performs an authenticated search probe after health and reports its auth failure', async () => {
+    const store = new GrafanaCertTrustStore(new MemoryMemento());
+    await store.trust('grafana.example.com', 443, 'SHA256:abc');
+    const search = vi.fn(async () => {
+      throw new GrafanaApiError('auth', 'token rejected', 401);
+    });
+    const test = createTofuConnectionTester(store, () => ({
+      health: async () => ({ ok: true as const }),
+      search
+    }));
+
+    await expect(test('https://grafana.example.com', 'glsa_bad')).resolves.toMatchObject({
+      ok: false,
+      reason: 'auth'
+    });
+    expect(search).toHaveBeenCalledWith({ type: 'dash-db', limit: 1 });
   });
 
   it('maps classified auth and network errors onto the form result reasons', async () => {

@@ -94,9 +94,20 @@ export class DashboardTreeProvider implements vscode.TreeDataProvider<GrafanaTre
     this.updateTreeViewMessage();
   }
 
-  refresh(): void {
-    this.instanceDataCache.clear();
-    this.sharedReads.invalidateAll();
+  /**
+   * Clears the per-instance cache. With an `instanceId`, only that instance's
+   * data and shared folder reads are invalidated; other instances keep their
+   * settled promises and make zero additional network requests when the root
+   * rebuilds.
+   */
+  refresh(instanceId?: string): void {
+    if (instanceId !== undefined) {
+      this.instanceDataCache.delete(instanceId);
+      this.sharedReads.invalidate(instanceId);
+    } else {
+      this.instanceDataCache.clear();
+      this.sharedReads.invalidateAll();
+    }
     this.onDidChangeTreeDataEmitter.fire();
   }
 

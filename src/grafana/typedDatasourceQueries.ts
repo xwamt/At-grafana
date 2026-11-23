@@ -1,3 +1,5 @@
+import { normalizeDatasourceTimestamp } from './QueryLimits';
+
 export type TypedQueryType = 'instant' | 'range';
 
 export interface PrometheusProxyInput {
@@ -25,20 +27,20 @@ export interface DatasourceProxyCall {
   query: Record<string, string>;
 }
 
-export function buildPrometheusProxyCall(input: PrometheusProxyInput): DatasourceProxyCall {
+export function buildPrometheusProxyCall(input: PrometheusProxyInput, nowMs = Date.now()): DatasourceProxyCall {
   if (input.queryType === 'instant') {
     const query: Record<string, string> = { query: input.expr };
     if (input.time !== undefined) {
-      query.time = input.time;
+      query.time = normalizeDatasourceTimestamp(input.time, nowMs);
     }
     return { method: 'GET', path: 'api/v1/query', query };
   }
   const query: Record<string, string> = { query: input.expr };
   if (input.start !== undefined) {
-    query.start = input.start;
+    query.start = normalizeDatasourceTimestamp(input.start, nowMs);
   }
   if (input.end !== undefined) {
-    query.end = input.end;
+    query.end = normalizeDatasourceTimestamp(input.end, nowMs);
   }
   if (input.step !== undefined) {
     query.step = input.step;
@@ -46,11 +48,11 @@ export function buildPrometheusProxyCall(input: PrometheusProxyInput): Datasourc
   return { method: 'GET', path: 'api/v1/query_range', query };
 }
 
-export function buildLokiProxyCall(input: LokiProxyInput): DatasourceProxyCall {
+export function buildLokiProxyCall(input: LokiProxyInput, nowMs = Date.now()): DatasourceProxyCall {
   if (input.queryType === 'instant') {
     const query: Record<string, string> = { query: input.expr };
     if (input.time !== undefined) {
-      query.time = input.time;
+      query.time = normalizeDatasourceTimestamp(input.time, nowMs);
     }
     // Loki's instant endpoint accepts limit/direction too (they bound a
     // log-selector instant query exactly like the range one) — dropping them
@@ -65,10 +67,10 @@ export function buildLokiProxyCall(input: LokiProxyInput): DatasourceProxyCall {
   }
   const query: Record<string, string> = { query: input.expr };
   if (input.start !== undefined) {
-    query.start = input.start;
+    query.start = normalizeDatasourceTimestamp(input.start, nowMs);
   }
   if (input.end !== undefined) {
-    query.end = input.end;
+    query.end = normalizeDatasourceTimestamp(input.end, nowMs);
   }
   if (input.limit !== undefined) {
     query.limit = String(input.limit);

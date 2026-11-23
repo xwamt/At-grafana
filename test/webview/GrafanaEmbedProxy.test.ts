@@ -12,6 +12,7 @@ import {
   GrafanaEmbedProxy,
   injectGrafanaEmbedShim,
   injectProxyBaseTag,
+  isAllowedEmbedProxyMethodAndPath,
   isGrafanaNativePath,
   isLikelyRewritableRequest,
   parseEmbedReferrer,
@@ -19,6 +20,7 @@ import {
   parseProxyRoute,
   rewriteAbsoluteReferences,
   rewriteGrafanaAppSubUrl,
+  rewriteProxiedLocation,
   type GrafanaEmbedProxyDependencies
 } from '../../src/webview/GrafanaEmbedProxy';
 import { renderEmbedWebviewHtml } from '../../src/webview/html';
@@ -673,6 +675,49 @@ describe('GrafanaEmbedProxy body rewriting', () => {
     expect(result.headers.location).toBe(`${embedProxy.origin}${embedPath(embedProxy, `/instances/${instance.id}`)}/d/moved-dash`);
   });
 
+  it('preserves a reverse-proxy subpath for routes and absolute references', async () => {
+    const seen: string[] = [];
+    upstream = await listen((req, res) => {
+      seen.push(req.url ?? '');
+      res
+        .writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+        .end(
+          `<html><head><script src="${upstream!.url}/grafana/public/build/app.js"></script></head>` +
+            `<body><a href="${upstream!.url}/grafana/d/other">link</a></body></html>`
+        );
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-subpath', `${upstream.url}/grafana`);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`));
+    const proxyBase = `${embedProxy.origin}${embedPath(embedProxy, `/instances/${instance.id}`)}`;
+
+    expect(seen).toEqual(['/grafana/d/uid/slug']);
+    expect(result.status).toBe(200);
+    expect(result.body).not.toContain(`${upstream.url}/grafana`);
+    expect(result.body).toContain(`${proxyBase}/public/build/app.js`);
+    expect(result.body).toContain(`${proxyBase}/d/other`);
+  });
+
+  it('rewrites a path-only Location redirect carrying the configured subpath', async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(302, { location: '/grafana/d/abc/my-dash' }).end();
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-subpath-redirect', `${upstream.url}/grafana`);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`));
+
+    expect(result.status).toBe(302);
+    expect(result.headers.location).toBe(`${embedProxy.origin}${embedPath(embedProxy, `/instances/${instance.id}`)}/d/abc/my-dash`);
+  });
+
   it('strips Set-Cookie headers from the proxied response and sets none of its own', async () => {
     upstream = await listen((_req, res) => {
       res
@@ -749,6 +794,136 @@ describe('GrafanaEmbedProxy body rewriting', () => {
     const proxyBase = `${embedProxy.origin}${embedPath(embedProxy, `/instances/${instance.id}`)}`;
 
     expect(result.body).toContain(`<base href="${proxyBase}/">`);
+  });
+});
+
+describe('GrafanaEmbedProxy auth-rejected document pages', () => {
+  it('replaces an upstream HTML login page on 401 with an actionable token message', async () => {
+    upstream = await listen((_req, res) => {
+      res
+        .writeHead(401, { 'content-type': 'text/html; charset=utf-8' })
+        .end('<html><body><form action="/login">Grafana login</form></body></html>');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-auth-page', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`));
+
+    expect(result.status).toBe(401);
+    expect(result.body).toContain('Service Account Token is invalid or lacks permission');
+    expect(result.body).not.toContain('Grafana login');
+  });
+
+  it('uses an injected copy table when one is provided', async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(403, { 'content-type': 'text/html; charset=utf-8' }).end('<html><body>denied</body></html>');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-auth-copy', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({
+      configManager,
+      copy: { authRejectedMessage: '请更新该实例的 Token 后重试。' }
+    });
+    await embedProxy.start();
+
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`));
+
+    expect(result.status).toBe(403);
+    expect(result.body).toContain('请更新该实例的 Token 后重试。');
+  });
+
+  it('does not replace a JSON 401 API response with the HTML guidance page', async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(401, { 'content-type': 'application/json' }).end('{"message":"Unauthorized"}');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-auth-json', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/api/search`));
+
+    expect(result.status).toBe(401);
+    expect(result.body).toBe('{"message":"Unauthorized"}');
+  });
+});
+
+describe('GrafanaEmbedProxy read-only method and path guard', () => {
+  const WRITE_CASES: Array<{ method: string; path: string }> = [
+    { method: 'PUT', path: '/api/dashboards/db' },
+    { method: 'DELETE', path: '/api/dashboards/uid/abc' },
+    { method: 'PATCH', path: '/api/folders/x' },
+    { method: 'POST', path: '/api/dashboards/db' },
+    { method: 'POST', path: '/api/ds/query/../../dashboards/db' },
+    { method: 'POST', path: '/api/v1/provisioning/alert-rules' }
+  ];
+
+  it('refuses mutating requests with 403 and never contacts upstream', async () => {
+    upstream = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-readonly', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+    const before = upstream.requestCount;
+
+    for (const testCase of WRITE_CASES) {
+      const result = await requestProxy(
+        proxyPort(embedProxy),
+        embedPath(embedProxy, `/instances/${instance.id}${testCase.path}`),
+        { method: testCase.method }
+      );
+      expect(result.status, `${testCase.method} ${testCase.path}`).toBe(403);
+      expect(result.body).toContain('Write operations are disabled');
+    }
+
+    expect(upstream.requestCount).toBe(before);
+  });
+
+  it('forwards GET documents and allowlisted query POSTs', async () => {
+    const hits: Array<{ method: string | undefined; url: string | undefined }> = [];
+    upstream = await listen((req, res) => {
+      hits.push({ method: req.method, url: req.url });
+      const isDocument = (req.url ?? '').includes('/d/abc');
+      res
+        .writeHead(200, { 'content-type': isDocument ? 'text/html; charset=utf-8' : 'application/json' })
+        .end(isDocument ? '<html><head></head><body>ok</body></html>' : '{}');
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-readonly-ok', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+    const port = proxyPort(embedProxy);
+
+    const requests: Array<{ method: string; path: string }> = [
+      { method: 'GET', path: '/d/abc' },
+      { method: 'POST', path: '/api/ds/query' },
+      { method: 'POST', path: '/api/datasources/proxy/uid/p1/api/v1/query_range' },
+      { method: 'POST', path: '/api/prometheus/api/v1/query_range' },
+      { method: 'POST', path: '/api/frontend-metrics' }
+    ];
+    for (const testCase of requests) {
+      const result = await requestProxy(port, embedPath(embedProxy, `/instances/${instance.id}${testCase.path}`), {
+        method: testCase.method
+      });
+      expect(result.status, `${testCase.method} ${testCase.path}`).toBe(200);
+    }
+
+    expect(hits.map((hit) => `${hit.method} ${hit.url}`)).toEqual([
+      'GET /d/abc',
+      'POST /api/ds/query',
+      'POST /api/datasources/proxy/uid/p1/api/v1/query_range',
+      'POST /api/prometheus/api/v1/query_range',
+      'POST /api/frontend-metrics'
+    ]);
   });
 });
 
@@ -832,6 +1007,24 @@ describe('GrafanaEmbedProxy host allowlist (resolveTarget/buildTargetUrl)', () =
     expect(target.search).toBe('?from=proxy');
   });
 
+  it('preserves a configured reverse-proxy subpath when resolving the target', () => {
+    const origin = new URL('https://ops.internal/grafana');
+    const target = buildTargetUrl(origin, '/d/abc/dash', '?k=v');
+
+    expect(target.toString()).toBe('https://ops.internal/grafana/d/abc/dash?k=v');
+  });
+
+  it('does not duplicate a subpath the remaining path already carries', () => {
+    const origin = new URL('https://ops.internal/grafana');
+    expect(buildTargetUrl(origin, '/grafana/d/abc/dash', '').pathname).toBe('/grafana/d/abc/dash');
+    expect(buildTargetUrl(origin, '/grafana', '').pathname).toBe('/grafana');
+  });
+
+  it('rejects a path that traverses above a configured subpath', () => {
+    const origin = new URL('https://ops.internal/grafana');
+    expect(() => buildTargetUrl(origin, '/../admin', '')).toThrow(/subpath/);
+  });
+
   it('keeps a protocol-relative-looking path confined to the origin host instead of hijacking it', () => {
     const origin = new URL('https://grafana.example.com');
     const target = buildTargetUrl(origin, '//evil.example.com/steal', '');
@@ -874,6 +1067,89 @@ describe('rewriteAbsoluteReferences', () => {
     expect(result).toBe(
       'a=http://127.0.0.1:9999/instances/abc/x b=http://127.0.0.1:9999/instances/abc/y c=http://127.0.0.1:9999/instances/abc/z'
     );
+  });
+});
+
+describe('rewriteAbsoluteReferences subpath deployments', () => {
+  it('rewrites absolute, http, and protocol-relative forms including the configured subpath once', () => {
+    const realOrigin = new URL('https://ops.internal/grafana');
+    const text =
+      'a=https://ops.internal/grafana/d/x b=http://ops.internal/grafana/public/app.js c=//ops.internal/grafana/api/search d=https://ops.internal/other';
+
+    const result = rewriteAbsoluteReferences(text, realOrigin, 'http://127.0.0.1:9999/instances/abc');
+
+    expect(result).toBe(
+      'a=http://127.0.0.1:9999/instances/abc/d/x ' +
+        'b=http://127.0.0.1:9999/instances/abc/public/app.js ' +
+        'c=http://127.0.0.1:9999/instances/abc/api/search ' +
+        'd=http://127.0.0.1:9999/instances/abc/other'
+    );
+  });
+});
+
+describe('rewriteProxiedLocation', () => {
+  it('rewrites a path-only Location carrying the configured subpath', () => {
+    expect(
+      rewriteProxiedLocation('/grafana/d/abc/my-dash', new URL('https://ops.internal/grafana'), 'http://127.0.0.1:9/instances/x')
+    ).toBe('http://127.0.0.1:9/instances/x/d/abc/my-dash');
+    expect(
+      rewriteProxiedLocation('/grafana/login', new URL('https://ops.internal/grafana'), 'http://127.0.0.1:9/instances/x')
+    ).toBe('http://127.0.0.1:9/instances/x/login');
+  });
+
+  it('rewrites absolute Location values through the normal origin substitution', () => {
+    expect(
+      rewriteProxiedLocation(
+        'https://ops.internal/grafana/login',
+        new URL('https://ops.internal/grafana'),
+        'http://127.0.0.1:9/instances/x'
+      )
+    ).toBe('http://127.0.0.1:9/instances/x/login');
+  });
+
+  it('leaves unrelated locations untouched', () => {
+    expect(
+      rewriteProxiedLocation('/login', new URL('https://ops.internal/grafana'), 'http://127.0.0.1:9/instances/x')
+    ).toBe('/login');
+  });
+});
+
+describe('isAllowedEmbedProxyMethodAndPath', () => {
+  it('allows read-only methods everywhere', () => {
+    for (const method of ['GET', 'HEAD', 'OPTIONS', 'get', undefined]) {
+      expect(isAllowedEmbedProxyMethodAndPath(method, '/api/dashboards/db')).toBe(true);
+    }
+  });
+
+  it('allows POST only on query/telemetry endpoints', () => {
+    for (const path of [
+      '/api/ds/query',
+      '/api/datasources/proxy/uid/p1/api/v1/query_range',
+      '/api/datasources/uid/p1/resources/api/search',
+      '/api/prometheus/api/v1/query_range',
+      '/api/frontend-metrics'
+    ]) {
+      expect(isAllowedEmbedProxyMethodAndPath('POST', path), path).toBe(true);
+    }
+    for (const path of ['/api/dashboards/db', '/api/folders/x', '/api/v1/provisioning/alert-rules', '/login', '/api/ds/queryx']) {
+      expect(isAllowedEmbedProxyMethodAndPath('POST', path), path).toBe(false);
+    }
+  });
+
+  it('refuses every write-style method regardless of path', () => {
+    for (const method of ['PUT', 'DELETE', 'PATCH', 'CONNECT']) {
+      expect(isAllowedEmbedProxyMethodAndPath(method, '/api/ds/query')).toBe(false);
+    }
+  });
+
+  it('rejects a POST whose normalized path is no longer on the allowlist', () => {
+    expect(isAllowedEmbedProxyMethodAndPath('POST', '/dashboards/db')).toBe(false);
+    expect(isAllowedEmbedProxyMethodAndPath('POST', '//dashboards/db')).toBe(false);
+  });
+
+  it('rejects traversal segments even under an otherwise allowlisted prefix', () => {
+    expect(isAllowedEmbedProxyMethodAndPath('POST', '/api/datasources/proxy/uid/p1/../../dashboards/db')).toBe(false);
+    expect(isAllowedEmbedProxyMethodAndPath('POST', '/api/ds/query/../dashboards/db')).toBe(false);
   });
 });
 
@@ -1413,6 +1689,49 @@ describe('GrafanaEmbedProxy upstream compression (PERF-03)', () => {
     });
 
     expect(seen).toEqual(['identity']);
+  });
+
+  it('decompresses a brotli-encoded rewritable response before rewriting it', async () => {
+    upstream = await listen((_req, res) => {
+      const html = `<html><head></head><body><a href="${upstream!.url}/d/other">link</a></body></html>`;
+      res
+        .writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-encoding': 'br' })
+        .end(zlib.brotliCompressSync(html));
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-br', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`));
+
+    expect(result.status).toBe(200);
+    expect(result.headers['content-encoding']).toBeUndefined();
+    expect(result.body).toContain('<base href=');
+    expect(result.body).not.toContain(upstream.url);
+    expect(result.body).toContain(`${embedProxy.origin}${embedPath(embedProxy, `/instances/${instance.id}`)}/d/other`);
+  });
+
+  it('decompresses a deflate-encoded rewritable response before rewriting it', async () => {
+    upstream = await listen((_req, res) => {
+      const html = `<html><head></head><body><a href="${upstream!.url}/d/other">link</a></body></html>`;
+      res
+        .writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-encoding': 'deflate' })
+        .end(zlib.deflateSync(html));
+    });
+    const configManager = new FakeConfigManager();
+    const instance = makeInstance('inst-deflate', upstream.url);
+    configManager.addInstance(instance, TOKEN);
+    const embedProxy = createProxy({ configManager });
+    await embedProxy.start();
+
+    const result = await requestProxy(proxyPort(embedProxy), embedPath(embedProxy, `/instances/${instance.id}/d/uid/slug`));
+
+    expect(result.status).toBe(200);
+    expect(result.headers['content-encoding']).toBeUndefined();
+    expect(result.body).toContain('<base href=');
+    expect(result.body).not.toContain(upstream.url);
   });
 
   it('gunzips a gzip-encoded rewritable response before rewriting it', async () => {

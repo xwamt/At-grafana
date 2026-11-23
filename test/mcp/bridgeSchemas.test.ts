@@ -16,7 +16,11 @@ import {
   grafanaListPrometheusLabelValuesSchema,
   grafanaListLokiLabelNamesSchema,
   grafanaListLokiLabelValuesSchema,
-  grafanaGenerateDeeplinkSchema
+  grafanaGenerateDeeplinkSchema,
+  GRAFANA_QUERY_PROMETHEUS_INPUT_SCHEMA,
+  GRAFANA_QUERY_LOKI_INPUT_SCHEMA,
+  GRAFANA_LIST_PROMETHEUS_METRIC_NAMES_INPUT_SCHEMA,
+  GRAFANA_LIST_LOKI_LABEL_NAMES_INPUT_SCHEMA
 } from '../../src/mcp/bridgeSchemas';
 
 describe('grafanaListInstancesSchema', () => {
@@ -58,6 +62,36 @@ describe('instanceId-only schemas', () => {
       });
     });
   }
+});
+
+describe('grafanaListDashboardsSchema pagination', () => {
+  it('accepts optional limit and page', () => {
+    expect(
+      grafanaListDashboardsSchema.safeParse({ instanceId: 'abc', limit: 100, page: 2 }).success
+    ).toBe(true);
+  });
+
+  it('rejects an out-of-range limit or a zero page', () => {
+    expect(grafanaListDashboardsSchema.safeParse({ instanceId: 'abc', limit: 0 }).success).toBe(false);
+    expect(grafanaListDashboardsSchema.safeParse({ instanceId: 'abc', limit: 1001 }).success).toBe(false);
+    expect(grafanaListDashboardsSchema.safeParse({ instanceId: 'abc', page: 0 }).success).toBe(false);
+  });
+});
+
+describe('grafanaListFoldersSchema pagination', () => {
+  it('accepts optional limit and page', () => {
+    expect(grafanaListFoldersSchema.safeParse({ instanceId: 'abc', limit: 50, page: 3 }).success).toBe(true);
+  });
+
+  it('still accepts instanceId alone', () => {
+    expect(grafanaListFoldersSchema.safeParse({ instanceId: 'abc' }).success).toBe(true);
+  });
+
+  it('rejects an out-of-range limit or a zero page', () => {
+    expect(grafanaListFoldersSchema.safeParse({ instanceId: 'abc', limit: 0 }).success).toBe(false);
+    expect(grafanaListFoldersSchema.safeParse({ instanceId: 'abc', limit: 1001 }).success).toBe(false);
+    expect(grafanaListFoldersSchema.safeParse({ instanceId: 'abc', page: 0 }).success).toBe(false);
+  });
 });
 
 describe('grafanaListAlertRulesSchema', () => {
@@ -511,16 +545,8 @@ describe('grafanaGenerateDeeplinkSchema', () => {
     ).toBe(true);
   });
 
-  it('rejects alertRule without uid, with openInIde, or with dashboard-only extras', () => {
+  it('rejects alertRule without uid or with dashboard-only extras', () => {
     expect(grafanaGenerateDeeplinkSchema.safeParse({ instanceId: 'abc', kind: 'alertRule' }).success).toBe(false);
-    expect(
-      grafanaGenerateDeeplinkSchema.safeParse({
-        instanceId: 'abc',
-        kind: 'alertRule',
-        uid: 'rule-1',
-        openInIde: true
-      }).success
-    ).toBe(false);
     expect(
       grafanaGenerateDeeplinkSchema.safeParse({
         instanceId: 'abc',
@@ -529,6 +555,18 @@ describe('grafanaGenerateDeeplinkSchema', () => {
         panelId: 5
       }).success
     ).toBe(false);
+  });
+
+  it('accepts alertRule openInIde and title', () => {
+    const parsed = grafanaGenerateDeeplinkSchema.safeParse({
+      instanceId: 'abc',
+      kind: 'alertRule',
+      uid: 'rule-1',
+      openInIde: true,
+      title: 'High CPU'
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data).toMatchObject({ openInIde: true, title: 'High CPU' });
   });
 });
 
@@ -551,5 +589,31 @@ describe('grafanaListLokiLabelValuesSchema', () => {
         label: 'job/name'
       }).success
     ).toBe(false);
+  });
+});
+
+
+describe('datasource timestamp schema descriptions', () => {
+  const descriptionPattern = /Unix seconds.*RFC3339.*now-1h.*milliseconds.*converted to seconds/;
+
+  it('documents start/end/time units for Prometheus and Loki query tools', () => {
+    for (const schema of [GRAFANA_QUERY_PROMETHEUS_INPUT_SCHEMA, GRAFANA_QUERY_LOKI_INPUT_SCHEMA]) {
+      for (const key of ['start', 'end', 'time'] as const) {
+        const property = schema.properties?.[key] as { description?: string } | undefined;
+        expect(property?.description).toMatch(descriptionPattern);
+      }
+    }
+  });
+
+  it('documents start/end units for the discovery tools', () => {
+    for (const schema of [
+      GRAFANA_LIST_PROMETHEUS_METRIC_NAMES_INPUT_SCHEMA,
+      GRAFANA_LIST_LOKI_LABEL_NAMES_INPUT_SCHEMA
+    ]) {
+      for (const key of ['start', 'end'] as const) {
+        const property = schema.properties?.[key] as { description?: string } | undefined;
+        expect(property?.description).toMatch(descriptionPattern);
+      }
+    }
   });
 });

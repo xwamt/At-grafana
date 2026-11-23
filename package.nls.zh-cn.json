@@ -12,6 +12,8 @@
   "atGrafana.command.filterDashboards.title": "AT Grafana: 过滤仪表盘",
   "atGrafana.command.clearDashboardFilter.title": "AT Grafana: 清除仪表盘过滤",
   "atGrafana.command.refreshAlerts.title": "AT Grafana: 刷新告警",
+  "atGrafana.command.filterAlerts.title": "AT Grafana: 过滤告警",
+  "atGrafana.command.clearAlertFilter.title": "AT Grafana: 清除告警过滤",
   "atGrafana.command.openDashboard.title": "AT Grafana: 打开仪表盘",
   "atGrafana.command.openAlertRule.title": "AT Grafana: 打开告警规则",
   "atGrafana.command.forgetTrustedCertificate.title": "AT Grafana: 忘记已信任的证书",

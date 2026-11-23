@@ -353,6 +353,50 @@ describe('GrafanaHttpClient HTTPS with a certVerifier (PERF-01 keep-alive TOFU r
     expect(tlsServer.requestCount).toBe(1);
   });
 
+  it('does not let the socket timeout fire while the TOFU prompt is still pending', async () => {
+    tlsServer = await listenTls((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(okBody);
+    });
+    const certVerifier: GrafanaCertVerifier = {
+      verify: async () => {
+        // Longer than timeoutMs: pre-fix, the socket timer destroyed the
+        // request mid-prompt and the request failed as a network error.
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return true;
+      }
+    };
+    const client = new GrafanaHttpClient({
+      baseUrl: tlsServer.url,
+      token: SECRET_TOKEN,
+      certVerifier,
+      timeoutMs: 30,
+      retryBackoffMs: []
+    });
+
+    await expect(client.requestJson('GET', '/api/health')).resolves.toEqual({ ok: true });
+    expect(tlsServer.requestCount).toBe(1);
+  });
+
+  it('still times out a response that hangs after verification has completed', async () => {
+    tlsServer = await listenTls((_req, _res) => {
+      // Deliberately never respond: the post-verification read must hit the
+      // normal socket timeout.
+    });
+    const certVerifier: GrafanaCertVerifier = { verify: async () => true };
+    const client = new GrafanaHttpClient({
+      baseUrl: tlsServer.url,
+      token: SECRET_TOKEN,
+      certVerifier,
+      timeoutMs: 50,
+      retryBackoffMs: []
+    });
+
+    const error = await client.requestJson('GET', '/api/health').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GrafanaApiError);
+    expect((error as GrafanaApiError).kind).toBe('network');
+    expect((error as GrafanaApiError).message).toContain('timed out');
+  });
+
   it('getSharedGrafanaHttpsAgent exposes one module-level keep-alive agent for the embed proxy to share', () => {
     const agent = getSharedGrafanaHttpsAgent();
     expect(getSharedGrafanaHttpsAgent()).toBe(agent);

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { GrafanaApiError } from '../../src/grafana/GrafanaHttpClient';
 import { GrafanaApiClient } from '../../src/grafana/GrafanaApiClient';
@@ -267,6 +269,39 @@ describe('GrafanaApiClient alerts', () => {
       { time: 1700000000000, state: 'Alerting', labels: { severity: 'critical' } },
       { time: 1700000060000, state: 'Normal', labels: { severity: 'critical' } }
     ]);
+  });
+
+  it('parses the checked-in annotation-backend history fixture through the full client path', async () => {
+    const fixture = readFileSync(resolve(process.cwd(), 'test-fixtures/rules-history-dataframe.json'), 'utf8');
+    server = await listen((req, res) => {
+      expect(req.url).toBe('/api/v1/rules/history?ruleUID=r1');
+      res.writeHead(200, { 'content-type': 'application/json' }).end(fixture);
+    });
+    const client = new GrafanaApiClient({ baseUrl: server.url, token: 'tok' });
+
+    const entries = await client.getAlertRuleHistory('r1');
+    expect(entries).toHaveLength(3);
+    // Annotation backend: time is serialized 1000x too large by Grafana,
+    // `next` is the current state and `prev` the previous one.
+    expect(entries[0]).toMatchObject({
+      time: 1794832820000,
+      state: 'Normal (NoData)',
+      previous: 'Alerting',
+      text: expect.stringContaining('服务重启'),
+      data: { values: { A: -1, B: -1, C: -1 } }
+    });
+    expect(entries[2]).toMatchObject({ time: 1794832460000, state: 'Alerting', previous: 'Pending' });
+  });
+
+  it('enforces the requested limit client-side because the annotation backend ignores it', async () => {
+    const fixture = readFileSync(resolve(process.cwd(), 'test-fixtures/rules-history-dataframe.json'), 'utf8');
+    server = await listen((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' }).end(fixture);
+    });
+    const client = new GrafanaApiClient({ baseUrl: server.url, token: 'tok' });
+
+    const entries = await client.getAlertRuleHistory('r1', { limit: 2 });
+    expect(entries).toHaveLength(2);
   });
 
   it('getAlertRuleHistory() forwards the optional from/to/limit window as query parameters', async () => {

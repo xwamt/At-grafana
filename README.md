@@ -4,19 +4,19 @@
 
 AT Grafana is a VS Code / Cursor extension in the **AT Series** (alongside `at-terminal-series` and `at-jumpserver-series`). It brings Grafana dashboards and Unified Alerting into the IDE, and exposes read-only Grafana metadata plus datasource queries (Prometheus, Loki, …) to Agents through the shared [`@at-series/mcp-hub`](https://www.npmjs.com/package/@at-series/mcp-hub) Protocol v1.
 
-**Current version: `0.1.4`** — MCP catalog aligned to 17 read-only tools (typed Prom/Loki, discovery, annotations, deeplink). Automated suite: typecheck + **709** tests. See [`docs/releases/0.1.4.md`](docs/releases/0.1.4.md). Live Grafana / real MCP-client smoke checks remain listed in [`docs/releases/0.1.0.md`](docs/releases/0.1.0.md).
+**Current version: `0.1.5`** — MCP catalog aligned to 17 read-only tools (typed Prom/Loki, discovery, annotations, deeplink). Automated suite: typecheck + the full Vitest suite (49+ test files). See [`docs/releases/0.1.5.md`](docs/releases/0.1.5.md). Live Grafana / real MCP-client smoke checks remain listed in [`docs/releases/0.1.0.md`](docs/releases/0.1.0.md).
 
 ## Features
 
 - **Multi-instance config** — label, URL, Grafana Service Account Token (9.1+); tokens live in VS Code `SecretStorage`, never in plaintext settings
 - **TLS Trust-On-First-Use** — first connection prompts for certificate fingerprint confirmation; fingerprint changes fail closed
 - **Dashboards sidebar** — Grafana folder tree, title filter, refresh; open a dashboard in an embedded Webview
-- **Alerts sidebar** — Unified Alerting rules with live state, folder grouping, Firing rules sorted first
-- **Native embedded pages** — fully interactive Grafana dashboard / alert detail UI via a local `127.0.0.1` reverse proxy that injects `Authorization` on the extension side (token never visible to the Webview)
+- **Alerts sidebar** — Unified Alerting rules with live state, folder grouping, Firing rules sorted first; title/state filters including **Paused**, with per-instance refresh
+- **Native embedded pages** — fully interactive Grafana dashboard / alert detail UI via a local `127.0.0.1` reverse proxy that injects `Authorization` on the extension side (token never visible to the Webview); proxy enforces a read-only method/path allowlist, preserves reverse-proxy subpaths, and supports gzip/br/deflate upstream responses
 - **Per-instance Agent gate** — “Allow background Agent access” (default off); only enabled instances appear to MCP tools
 - **17 MCP tools** (`risk: read`, auto-approved after AT Series MCP install):
   - Discovery: `grafana_list_instances`
-  - Management: `grafana_list_dashboards` (optional `query` / `tag` / `folderUid`), `grafana_get_dashboard` (defaults to `fields: "targets"`; complete model requires `fields: "full"`), `grafana_list_folders`, `grafana_list_alert_rules` (optional `states`), `grafana_get_alert_rule`, `grafana_get_alert_history`, `grafana_list_annotations`, `grafana_generate_deeplink` (`openInIde` default false)
+  - Management: `grafana_list_dashboards` (optional `query` / `tag` / `folderUid`, plus `limit` / `page` pagination), `grafana_get_dashboard` (defaults to `fields: "targets"`; complete model requires `fields: "full"`), `grafana_list_folders` (optional `limit` / `page`), `grafana_list_alert_rules` (optional `states`), `grafana_get_alert_rule`, `grafana_get_alert_history` (annotation and Loki state-history backends), `grafana_list_annotations`, `grafana_generate_deeplink` (`openInIde` default false; supports dashboards and alert rules)
   - Monitoring: `grafana_list_datasources`, `grafana_query_prometheus`, `grafana_query_loki`, `grafana_list_prometheus_metric_names`, `grafana_list_prometheus_label_values`, `grafana_list_loki_label_names`, `grafana_list_loki_label_values`, and `grafana_query_datasource` as an escape hatch. Prefer the typed Prom/Loki tools; the generic proxy is `GET`/`POST` only, with `path` confined to `/api/datasources/proxy/uid/<uid>/` so it cannot reach Grafana's own APIs; over-cap results include `truncated: true`
 - **Shared AT Series Hub** — one `AT Series` MCP entry for Cursor / Kiro / Continue; no plugin-specific MCP server
 
@@ -34,7 +34,7 @@ AT Grafana is a VS Code / Cursor extension in the **AT Series** (alongside `at-t
 
    ```bash
    npm install
-   npm run package   # produces at-grafana-0.1.4.vsix
+   npm run package   # produces at-grafana-0.1.5.vsix
    ```
 
 2. In VS Code / Cursor: **Extensions → ⋯ → Install from VSIX…** and select the file.
@@ -83,7 +83,7 @@ Requires Node.js 20+ and a VS Code / Cursor host matching `engines.vscode` (`^1.
 | --- | --- |
 | [`docs/features.md`](docs/features.md) ([中文](docs/features.zh-CN.md)) | Feature overview |
 | [`docs/usage.md`](docs/usage.md) ([中文](docs/usage.zh-CN.md)) | Setup, Agent access, MCP client |
-| [`docs/releases/0.1.4.md`](docs/releases/0.1.4.md) | Current release notes (HTTPS keep-alive fix, WAF User-Agent, embed caching) |
+| [`docs/releases/0.1.5.md`](docs/releases/0.1.5.md) | Current release notes (P0/P1 fixes, read-only proxy hardening, alert UX, Grafana 13 history compatibility) |
 | [`docs/releases/0.1.3.md`](docs/releases/0.1.3.md) | 0.1.3 release notes (17-tool MCP catalog) |
 | [`docs/releases/0.1.0.md`](docs/releases/0.1.0.md) | V1 Definition-of-Done / acceptance record |
 | [`docs/requirements.md`](docs/requirements.md) | Full requirements (中文) |

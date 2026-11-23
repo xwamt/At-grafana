@@ -27,6 +27,23 @@ describe('buildPrometheusMetricNamesCall', () => {
       query: { start: '1700000000', end: '1700003600' }
     });
   });
+
+  it('normalizes millisecond and relative discovery bounds', () => {
+    expect(
+      buildPrometheusMetricNamesCall({ start: '1700000000000', end: 'now' }, 1_700_003_600_000)
+    ).toEqual({
+      method: 'GET',
+      path: 'api/v1/label/__name__/values',
+      query: { start: '1700000000', end: '1700003600' }
+    });
+    expect(
+      buildLokiLabelNamesCall({ start: 'now-1h', end: 'now' }, 1_700_003_600_000)
+    ).toEqual({
+      method: 'GET',
+      path: 'loki/api/v1/labels',
+      query: { start: String(1_700_003_600 - 3600), end: '1700003600' }
+    });
+  });
 });
 
 describe('buildPrometheusLabelValuesCall', () => {

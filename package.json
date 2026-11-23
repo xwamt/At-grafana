@@ -2,7 +2,7 @@
   "name": "at-grafana",
   "displayName": "%atGrafana.displayName%",
   "description": "%atGrafana.description%",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "local",
   "license": "MIT",
   "icon": "media/at-grafana-icon.png",
@@ -93,6 +93,16 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "atGrafana.filterAlerts",
+        "title": "%atGrafana.command.filterAlerts.title%",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "atGrafana.clearAlertFilter",
+        "title": "%atGrafana.command.clearAlertFilter.title%",
+        "icon": "$(clear-all)"
+      },
+      {
         "command": "atGrafana.openDashboard",
         "title": "%atGrafana.command.openDashboard.title%"
       },
@@ -155,6 +165,16 @@
           "command": "atGrafana.refreshAlerts",
           "when": "view == atGrafana.alerts",
           "group": "navigation@2"
+        },
+        {
+          "command": "atGrafana.filterAlerts",
+          "when": "view == atGrafana.alerts",
+          "group": "navigation@3"
+        },
+        {
+          "command": "atGrafana.clearAlertFilter",
+          "when": "view == atGrafana.alerts && atGrafana.alertFilterActive",
+          "group": "navigation@4"
         },
         {
           "command": "atGrafana.manageInstances",
