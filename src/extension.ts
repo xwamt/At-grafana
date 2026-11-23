@@ -99,7 +99,16 @@ export function activate(context: vscode.ExtensionContext): void {
   // Task 4.1's http.Server only binds on the first Webview panel open
   // (DashboardPanel/AlertDetailPanel call proxy.start(), itself idempotent)
   // — not eagerly here — per ADR-003's "not always-on" framing.
-  const grafanaEmbedProxy = new GrafanaEmbedProxy({ configManager, certTrustStore, log });
+  const grafanaEmbedProxy = new GrafanaEmbedProxy({
+    configManager,
+    certTrustStore,
+    log,
+    copy: {
+      authRejectedMessage: t(
+        'Grafana rejected this request because the Service Account Token is invalid or lacks permission. Update the token for this instance in the AT Grafana sidebar, then retry.'
+      )
+    }
+  });
   // One folders-promise cache shared by both trees, so a full refresh fetches
   // `/api/folders` once per instance instead of twice (PERF-04).
   const sharedGrafanaReads = new SharedGrafanaReads();
@@ -112,18 +121,25 @@ export function activate(context: vscode.ExtensionContext): void {
     configManager,
     (instance) => createGrafanaClient(configManager, instance, certTrustStore, log),
     {
+      workspaceState: context.workspaceState,
       sharedReads: sharedGrafanaReads,
       getRefreshIntervalSeconds: () =>
         vscode.workspace.getConfiguration('atGrafana').get<number>('alerts.refreshIntervalSeconds', 0) ?? 0
     }
   );
-  const refreshTreeViews = (): void => {
-    dashboardTreeProvider.refresh();
-    alertTreeProvider.refresh();
+  const refreshTreeViews = (instanceId?: string): void => {
+    dashboardTreeProvider.refresh(instanceId);
+    alertTreeProvider.refresh(instanceId);
     // Form save / instance edits must drop the embed proxy's instance+token
     // cache (PERF-02) so the next dashboard request reads the new SecretStorage
-    // token instead of replaying a rotated credential.
-    grafanaEmbedProxy.invalidateAll();
+    // token instead of replaying a rotated credential. Scope the invalidation
+    // to one instance when the edit named one: every other instance's cached
+    // credentials and rewrites stay valid.
+    if (instanceId === undefined) {
+      grafanaEmbedProxy.invalidateAll();
+    } else {
+      grafanaEmbedProxy.invalidateInstance(instanceId);
+    }
   };
   // MCP activate order: detectHostApp → syncPackagedHub → BridgeServer.start (publish) →
   // ensureAtSeriesConfig → install/uninstall commands. Shutdown (via `deactivate`
@@ -200,6 +216,20 @@ export function activate(context: vscode.ExtensionContext): void {
           DashboardPanel.open(grafanaEmbedProxy, panelInstanceId, panelUid, panelTitle, slug, panelSearch),
         undefined,
         search,
+        { interactiveTls: false }
+      );
+    },
+    openAlertRuleInIde: async ({ instanceId, uid, title }) => {
+      await openGrafanaEmbedPanel(
+        configManager,
+        certTrustStore,
+        instanceId,
+        uid,
+        title ?? t('Alert Rule'),
+        (panelInstanceId, panelUid, panelTitle) =>
+          AlertDetailPanel.open(grafanaEmbedProxy, panelInstanceId, panelUid, panelTitle),
+        undefined,
+        undefined,
         { interactiveTls: false }
       );
     }
@@ -341,7 +371,13 @@ export function activate(context: vscode.ExtensionContext): void {
   const editInstanceCommand = vscode.commands.registerCommand('atGrafana.editInstance', async (arg?: unknown) => {
     const instance = await requireInstance(arg);
     if (instance) {
-      await GrafanaInstanceFormPanel.open(context, configManager, refreshTreeViews, instance, certTrustStore);
+      await GrafanaInstanceFormPanel.open(
+        context,
+        configManager,
+        (instanceId?: string) => refreshTreeViews(instanceId ?? instance.id),
+        instance,
+        certTrustStore
+      );
     }
   });
 
@@ -366,7 +402,7 @@ export function activate(context: vscode.ExtensionContext): void {
           ? t('Agent access for "{label}" is now on.', { label: instance.label })
           : t('Agent access for "{label}" is now off.', { label: instance.label })
       );
-      refreshTreeViews();
+      refreshTreeViews(instance.id);
     }
   );
 
@@ -398,6 +434,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const alertTreeView = vscode.window.createTreeView<GrafanaTreeItem>('atGrafana.alerts', {
     treeDataProvider: alertTreeProvider
   });
+  alertTreeProvider.attachTreeView(alertTreeView);
   const updateAlertBadge = (firingCount: number): void => {
     try {
       alertTreeView.badge =
@@ -426,6 +463,36 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   const clearDashboardFilterCommand = vscode.commands.registerCommand('atGrafana.clearDashboardFilter', () => {
     dashboardTreeProvider.clearFilter();
+  });
+  const filterAlertsCommand = vscode.commands.registerCommand('atGrafana.filterAlerts', async () => {
+    const value = await vscode.window.showInputBox({
+      prompt: t('Filter alert rules by title'),
+      placeHolder: t('e.g. CPU'),
+      value: alertTreeProvider.getFilter() ?? ''
+    });
+    if (value === undefined) {
+      return;
+    }
+    alertTreeProvider.setFilter(value);
+    const selected = await vscode.window.showQuickPick(
+      [
+        { label: t('Firing'), value: 'firing' as const },
+        { label: t('Pending'), value: 'pending' as const },
+        { label: t('Normal'), value: 'normal' as const },
+        { label: t('Unknown'), value: 'unknown' as const },
+        { label: t('Paused'), value: 'paused' as const }
+      ],
+      {
+        canPickMany: true,
+        placeHolder: t('Filter by alert state (optional)')
+      }
+    );
+    if (selected !== undefined) {
+      alertTreeProvider.setStateFilter(selected.map((item) => item.value));
+    }
+  });
+  const clearAlertFilterCommand = vscode.commands.registerCommand('atGrafana.clearAlertFilter', () => {
+    alertTreeProvider.clearFilter();
   });
 
   const openDashboardCommand = vscode.commands.registerCommand(
@@ -521,6 +588,8 @@ export function activate(context: vscode.ExtensionContext): void {
     refreshAlertsCommand,
     filterDashboardsCommand,
     clearDashboardFilterCommand,
+    filterAlertsCommand,
+    clearAlertFilterCommand,
     openDashboardCommand,
     openAlertRuleCommand
   );
@@ -666,7 +735,7 @@ async function openGrafanaEmbedPanel(
 async function manageInstances(
   context: vscode.ExtensionContext,
   configManager: GrafanaInstanceConfigManager,
-  onChanged: () => void,
+  onChanged: (instanceId?: string) => void,
   certTrustStore: GrafanaCertTrustStore
 ): Promise<void> {
   const instances = await configManager.listInstances();
@@ -708,7 +777,7 @@ async function manageInstances(
 async function deleteInstanceWithConfirmation(
   configManager: GrafanaInstanceConfigManager,
   instance: GrafanaInstanceConfig,
-  onChanged: () => void
+  onChanged: (instanceId?: string) => void
 ): Promise<void> {
   const answer = await vscode.window.showWarningMessage(
     t('Delete Grafana instance "{label}"?', { label: instance.label }),
@@ -717,7 +786,7 @@ async function deleteInstanceWithConfirmation(
   );
   if (answer === t('Delete')) {
     await configManager.deleteInstance(instance.id);
-    onChanged();
+    onChanged(instance.id);
   }
 }
 

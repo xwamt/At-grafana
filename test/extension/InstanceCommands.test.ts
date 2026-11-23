@@ -139,7 +139,9 @@ describe('atGrafana instance commands', () => {
       'atGrafana.toggleAgentAccess',
       'atGrafana.openInBrowser',
       'atGrafana.copyGrafanaUrl',
-      'atGrafana.forgetTrustedCertificate'
+      'atGrafana.forgetTrustedCertificate',
+      'atGrafana.filterAlerts',
+      'atGrafana.clearAlertFilter'
     ]) {
       expect(registeredCommands.has(command), command).toBe(true);
     }

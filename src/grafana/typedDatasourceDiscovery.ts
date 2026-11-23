@@ -1,3 +1,5 @@
+import { normalizeDatasourceTimestamp } from './QueryLimits';
+
 export const DISCOVERY_LIST_MAX = 200;
 
 /**
@@ -36,13 +38,13 @@ export interface PrometheusLabelValuesInput extends DiscoveryTimeRange {
   matcher?: string;
 }
 
-function timeQuery(input: DiscoveryTimeRange): Record<string, string> {
+function timeQuery(input: DiscoveryTimeRange, nowMs: number): Record<string, string> {
   const query: Record<string, string> = {};
   if (input.start !== undefined) {
-    query.start = input.start;
+    query.start = normalizeDatasourceTimestamp(input.start, nowMs);
   }
   if (input.end !== undefined) {
-    query.end = input.end;
+    query.end = normalizeDatasourceTimestamp(input.end, nowMs);
   }
   return query;
 }
@@ -54,26 +56,26 @@ function assertLabel(label: string): string {
   return label;
 }
 
-export function buildPrometheusMetricNamesCall(input: DiscoveryTimeRange): DatasourceProxyCall {
-  return { method: 'GET', path: 'api/v1/label/__name__/values', query: timeQuery(input) };
+export function buildPrometheusMetricNamesCall(input: DiscoveryTimeRange, nowMs = Date.now()): DatasourceProxyCall {
+  return { method: 'GET', path: 'api/v1/label/__name__/values', query: timeQuery(input, nowMs) };
 }
 
-export function buildPrometheusLabelValuesCall(input: PrometheusLabelValuesInput): DatasourceProxyCall {
+export function buildPrometheusLabelValuesCall(input: PrometheusLabelValuesInput, nowMs = Date.now()): DatasourceProxyCall {
   const label = assertLabel(input.label);
-  const query = timeQuery(input);
+  const query = timeQuery(input, nowMs);
   if (input.matcher !== undefined) {
     query['match[]'] = input.matcher;
   }
   return { method: 'GET', path: `api/v1/label/${label}/values`, query };
 }
 
-export function buildLokiLabelNamesCall(input: DiscoveryTimeRange): DatasourceProxyCall {
-  return { method: 'GET', path: 'loki/api/v1/labels', query: timeQuery(input) };
+export function buildLokiLabelNamesCall(input: DiscoveryTimeRange, nowMs = Date.now()): DatasourceProxyCall {
+  return { method: 'GET', path: 'loki/api/v1/labels', query: timeQuery(input, nowMs) };
 }
 
-export function buildLokiLabelValuesCall(input: { label: string } & DiscoveryTimeRange): DatasourceProxyCall {
+export function buildLokiLabelValuesCall(input: { label: string } & DiscoveryTimeRange, nowMs = Date.now()): DatasourceProxyCall {
   const label = assertLabel(input.label);
-  return { method: 'GET', path: `loki/api/v1/label/${label}/values`, query: timeQuery(input) };
+  return { method: 'GET', path: `loki/api/v1/label/${label}/values`, query: timeQuery(input, nowMs) };
 }
 
 export function projectDiscoveryValues(raw: unknown, regex?: string): { values: string[]; truncated?: true } {

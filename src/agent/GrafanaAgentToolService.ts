@@ -139,6 +139,12 @@ export interface GrafanaAgentToolServiceDependencies {
     title?: string;
     search?: string;
   }) => Promise<void>;
+  /**
+   * Optional IDE opener for `grafana_generate_deeplink` with
+   * `kind: 'alertRule', openInIde: true`, injected by `src/extension.ts` so
+   * this class stays vscode-free.
+   */
+  openAlertRuleInIde?: (args: { instanceId: string; uid: string; title?: string }) => Promise<void>;
 }
 
 /** Raw, unresolved `atGrafana.queryLimits.*` values; `undefined` means "not configured," resolved via QueryLimits.ts. */
@@ -250,7 +256,9 @@ export class GrafanaAgentToolService {
             });
           });
         case 'grafana_list_folders':
-          return await this.withAuthorizedClient(grafanaListFoldersSchema, args, (client) => client.getFolders());
+          return await this.withAuthorizedClient(grafanaListFoldersSchema, args, (client, parsed) =>
+            this.listFolders(client, parsed)
+          );
         case 'grafana_list_alert_rules':
           return await this.withAuthorizedClient(grafanaListAlertRulesSchema, args, (client, parsed) =>
             this.listAlertRules(client, parsed)
@@ -281,8 +289,20 @@ export class GrafanaAgentToolService {
           return await this.withAuthorizedClient(grafanaGenerateDeeplinkSchema, args, async (_client, parsed) => {
             const instance = await this.deps.configManager.getInstance(parsed.instanceId);
             const grafanaUrl = buildGrafanaDeeplink(instance!.url, parsed);
-            if (parsed.kind !== 'dashboard' || parsed.openInIde !== true) {
+            if (parsed.kind === 'explore' || parsed.openInIde !== true) {
               return { grafanaUrl, openedInIde: false };
+            }
+            if (parsed.kind === 'alertRule') {
+              const alertOpener = this.deps.openAlertRuleInIde;
+              if (!alertOpener) {
+                return { grafanaUrl, openedInIde: false, message: 'IDE opener is not available.' };
+              }
+              try {
+                await alertOpener({ instanceId: parsed.instanceId, uid: parsed.uid, title: parsed.title });
+                return { grafanaUrl, openedInIde: true };
+              } catch (error) {
+                return { grafanaUrl, openedInIde: false, message: formatError(error) };
+              }
             }
             const opener = this.deps.openDashboardInIde;
             if (!opener) {
@@ -450,9 +470,12 @@ export class GrafanaAgentToolService {
     };
   }
 
+  /** Grafana's own default page size for `/api/search`; a full page means more may exist. */
+  private static readonly DEFAULT_LISTING_PAGE_SIZE = 1000;
+
   private async listDashboards(
     client: GrafanaApiClientLike,
-    parsed: { query?: string; tag?: string; folderUid?: string }
+    parsed: { query?: string; tag?: string; folderUid?: string; limit?: number; page?: number }
   ): Promise<unknown> {
     // Near-duplicate of DashboardTreeProvider's folder grouping by design:
     // the tree provider groups into a UI-tree shape (folder nodes with
@@ -460,23 +483,81 @@ export class GrafanaAgentToolService {
     // needs a flat, JSON-serializable list instead, so sharing code would
     // mean threading a shape parameter through the tree provider's cache
     // just to satisfy this one other caller. See docs/plans Task 5.1.
-    const [dashboards, folders] = await Promise.all([
-      client.search({
-        type: 'dash-db',
-        query: parsed.query,
-        tag: parsed.tag,
-        folderUid: parsed.folderUid
-      }),
-      client.getFolders()
-    ]);
+    const searchQuery: {
+      type: 'dash-db';
+      query?: string;
+      tag?: string;
+      folderUid?: string;
+      limit?: number;
+      page?: number;
+    } = {
+      type: 'dash-db',
+      query: parsed.query,
+      tag: parsed.tag,
+      folderUid: parsed.folderUid
+    };
+    if (parsed.limit !== undefined) {
+      searchQuery.limit = parsed.limit;
+    }
+    if (parsed.page !== undefined) {
+      searchQuery.page = parsed.page;
+    }
+
+    const [dashboards, folders] = await Promise.all([client.search(searchQuery), client.getFolders()]);
     const folderTitleByUid = new Map(folders.map((folder) => [folder.uid, folder.title]));
-    return dashboards.map((dashboard) => ({
+    const items = dashboards.map((dashboard) => ({
       uid: dashboard.uid,
       title: dashboard.title,
       tags: dashboard.tags ?? [],
       folderUid: dashboard.folderUid,
       folderTitle: dashboard.folderUid ? folderTitleByUid.get(dashboard.folderUid) : undefined
     }));
+    const effectiveLimit = parsed.limit ?? GrafanaAgentToolService.DEFAULT_LISTING_PAGE_SIZE;
+    const truncated = dashboards.length >= effectiveLimit;
+    // Backwards compatibility: callers that did not ask for pagination keep
+    // receiving a bare array for the ordinary (small-instance) case. Only an
+    // explicit limit/page request or a full page -- where rows may have been
+    // left behind -- switches to an envelope that can carry `truncated`.
+    if (parsed.limit === undefined && parsed.page === undefined && !truncated) {
+      return items;
+    }
+    return {
+      dashboards: items,
+      truncated,
+      ...(truncated
+        ? {
+            message:
+              `Grafana returned a full page of ${effectiveLimit} dashboard(s); more may exist. ` +
+              'Use page/limit to walk the remaining pages.'
+          }
+        : {})
+    };
+  }
+
+  private async listFolders(
+    client: GrafanaApiClientLike,
+    parsed: { limit?: number; page?: number }
+  ): Promise<unknown> {
+    const effectiveLimit = parsed.limit ?? GrafanaAgentToolService.DEFAULT_LISTING_PAGE_SIZE;
+    const folders =
+      parsed.limit === undefined && parsed.page === undefined
+        ? await client.getFolders()
+        : await client.getFolders({ limit: parsed.limit, page: parsed.page });
+    const truncated = folders.length >= effectiveLimit;
+    if (parsed.limit === undefined && parsed.page === undefined && !truncated) {
+      return folders;
+    }
+    return {
+      folders,
+      truncated,
+      ...(truncated
+        ? {
+            message:
+              `Grafana returned a full page of ${effectiveLimit} folder(s); more may exist. ` +
+              'Use page/limit to walk the remaining pages.'
+          }
+        : {})
+    };
   }
 
   private async listAlertRules(

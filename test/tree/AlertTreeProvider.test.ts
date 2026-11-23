@@ -205,6 +205,106 @@ describe('AlertTreeProvider', () => {
     expect(callCount).toBe(2);
   });
 
+  it('filters rules by title and state, hides empty groups, and restores on clear', async () => {
+    const inst = instance();
+    const client: AlertApiClient = {
+      listAlertRules: async () => [
+        rule({ uid: 'r1', title: 'CPU high', folderUid: 'f1', ruleGroup: 'g-a' }),
+        rule({ uid: 'r2', title: 'CPU normal', folderUid: 'f1', ruleGroup: 'g-a' }),
+        rule({ uid: 'r3', title: 'Disk pending', folderUid: 'f2', ruleGroup: 'g-b' })
+      ],
+      listAlertRuleStates: async () => [
+        state({ uid: 'r1', state: 'firing', group: 'g-a' }),
+        state({ uid: 'r2', state: 'normal', group: 'g-a' }),
+        state({ uid: 'r3', state: 'pending', group: 'g-b' })
+      ],
+      getAllFolders: async () => folders
+    };
+    const provider = new AlertTreeProvider({ listInstances: async () => [inst] }, async () => client);
+    const [instanceItem] = await provider.getChildren();
+
+    provider.setFilter('cpu');
+    let groups = (await provider.getChildren(instanceItem)) as AlertGroupTreeItem[];
+    expect(groups).toHaveLength(1);
+    let rules = (await provider.getChildren(groups[0])) as AlertRuleTreeItem[];
+    expect(rules.map((item) => item.rule.uid)).toEqual(['r1', 'r2']);
+
+    provider.setStateFilter(['firing']);
+    groups = (await provider.getChildren(instanceItem)) as AlertGroupTreeItem[];
+    expect(groups).toHaveLength(1);
+    expect(groups[0].worstState).toBe('firing');
+    rules = (await provider.getChildren(groups[0])) as AlertRuleTreeItem[];
+    expect(rules.map((item) => item.rule.uid)).toEqual(['r1']);
+
+    provider.clearFilter();
+    groups = (await provider.getChildren(instanceItem)) as AlertGroupTreeItem[];
+    expect(groups).toHaveLength(2);
+    expect(provider.getFilter()).toBeUndefined();
+    expect(provider.getStateFilter()).toBeUndefined();
+  });
+
+  it('shows a filter-specific empty message when nothing matches', async () => {
+    const inst = instance();
+    const client: AlertApiClient = {
+      listAlertRules: async () => [rule({ uid: 'r1', title: 'CPU high', folderUid: 'f1', ruleGroup: 'g-a' })],
+      listAlertRuleStates: async () => [state({ uid: 'r1', state: 'normal', group: 'g-a' })],
+      getAllFolders: async () => folders
+    };
+    const provider = new AlertTreeProvider({ listInstances: async () => [inst] }, async () => client);
+    const [instanceItem] = await provider.getChildren();
+
+    provider.setFilter('does-not-exist');
+    const children = await provider.getChildren(instanceItem);
+
+    expect(children).toHaveLength(1);
+    expect(children[0]).toBeInstanceOf(MessageTreeItem);
+    expect((children[0] as MessageTreeItem).label).toBe('No alert rules match the current filter.');
+  });
+
+  it('keeps the firing badge count at the full unfiltered total', async () => {
+    const inst = instance();
+    const client: AlertApiClient = {
+      listAlertRules: async () => [
+        rule({ uid: 'r1', title: 'CPU high', folderUid: 'f1', ruleGroup: 'g-a' }),
+        rule({ uid: 'r2', title: 'Disk high', folderUid: 'f1', ruleGroup: 'g-a' })
+      ],
+      listAlertRuleStates: async () => [
+        state({ uid: 'r1', state: 'firing', group: 'g-a' }),
+        state({ uid: 'r2', state: 'firing', group: 'g-a' })
+      ],
+      getAllFolders: async () => folders
+    };
+    const provider = new AlertTreeProvider({ listInstances: async () => [inst] }, async () => client);
+    const [instanceItem] = await provider.getChildren();
+    await provider.getChildren(instanceItem);
+
+    provider.setFilter('cpu');
+    await provider.getChildren(instanceItem);
+
+    expect(provider.getFiringCount()).toBe(2);
+  });
+
+  it('refresh(instanceId) only invalidates that instance, leaving other caches warm', async () => {
+    const instances = [instance({ id: 'a', label: 'A' }), instance({ id: 'b', label: 'B' })];
+    const calls = new Map<string, number>();
+    const provider = new AlertTreeProvider({ listInstances: async () => instances }, async (inst) => {
+      calls.set(inst.id, (calls.get(inst.id) ?? 0) + 1);
+      return { listAlertRules: async () => [], listAlertRuleStates: async () => [], getAllFolders: async () => [] };
+    });
+
+    const [a, b] = (await provider.getChildren()) as InstanceTreeItem[];
+    await provider.getChildren(a);
+    await provider.getChildren(b);
+    expect(calls.get('a')).toBe(1);
+    expect(calls.get('b')).toBe(1);
+
+    provider.refresh('a');
+    await provider.getChildren(a);
+    await provider.getChildren(b);
+    expect(calls.get('a')).toBe(2);
+    expect(calls.get('b')).toBe(1);
+  });
+
   it('treats a paused rule with no live state as paused (ranked normal), not unknown (UX-18)', async () => {
     const inst = instance();
     const client: AlertApiClient = {
@@ -227,6 +327,30 @@ describe('AlertTreeProvider', () => {
     expect(pausedItem?.rule.isPaused).toBe(true);
     expect(pausedItem?.rule.state).toBe('normal');
     expect(pausedItem?.description).toBe('paused');
+  });
+
+  it('filters to only paused rules when the Paused state is selected', async () => {
+    const inst = instance();
+    const client: AlertApiClient = {
+      listAlertRules: async () => [
+        rule({ uid: 'r1', title: 'Paused rule', folderUid: 'f1', ruleGroup: 'g-a', isPaused: true }),
+        rule({ uid: 'r2', title: 'Active rule', folderUid: 'f1', ruleGroup: 'g-a' })
+      ],
+      // Grafana omits paused rules from live state; r2 is present and normal.
+      listAlertRuleStates: async () => [state({ uid: 'r2', state: 'normal', group: 'g-a' })],
+      getAllFolders: async () => folders
+    };
+    const provider = new AlertTreeProvider({ listInstances: async () => [inst] }, async () => client);
+    const [instanceItem] = await provider.getChildren();
+
+    provider.setStateFilter(['paused']);
+    expect(provider.getStateFilter()).toEqual(['paused']);
+
+    const groups = (await provider.getChildren(instanceItem)) as AlertGroupTreeItem[];
+    expect(groups).toHaveLength(1);
+    const items = (await provider.getChildren(groups[0])) as AlertRuleTreeItem[];
+    expect(items.map((item) => item.rule.uid)).toEqual(['r1']);
+    expect(items[0].rule.isPaused).toBe(true);
   });
 
   it('counts firing rules across instances and fires onDidChangeFiringCount (UX-11)', async () => {

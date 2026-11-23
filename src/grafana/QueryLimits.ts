@@ -143,6 +143,15 @@ const RFC3339_PREFIX_PATTERN = /^\d{4}-\d{2}-\d{2}T/;
 const NUMERIC_PATTERN = /^\d+(\.\d+)?$/;
 
 /**
+ * Relative time expressions accepted by the Grafana UI and by this module's
+ * normalization layer: `now`, or `now-<duration>` with a single duration
+ * component (`now-1h`, `now-30m`, `now-1.5h`). Prometheus's and Loki's HTTP
+ * APIs do not accept these literals themselves, so they must be resolved
+ * before a request leaves the extension.
+ */
+const RELATIVE_TIME_PATTERN = /^now(?:-(\d+(?:\.\d+)?(?:ms|s|m|h|d|w|y)))?$/;
+
+/**
  * Recognizes exactly three `start`/`end` value shapes, matching the formats
  * Prometheus's and Loki's query APIs commonly accept: RFC3339 timestamps
  * (`2026-07-29T00:00:00Z`), Unix seconds (`1690000000`, optionally
@@ -204,6 +213,78 @@ function formatTimestamp(epochMs: number, format: TimestampFormat): string {
       // value is exactly representable as a double, the nanosecond one is not.
       return (BigInt(Math.round(epochMs)) * NANOS_PER_MS).toString();
   }
+}
+
+/**
+ * Resolves a Grafana relative-time expression (`now`, `now-1h`, ...) to an
+ * epoch-millisecond value. Returns `undefined` when `raw` is not a relative
+ * expression, so callers can fall through to the absolute formats.
+ *
+ * Exported for direct unit testing and for callers that need the raw epoch
+ * value (e.g. diagnostics) rather than the normalized string form.
+ */
+export function parseRelativeTimestamp(raw: string, nowMs = Date.now()): number | undefined {
+  const trimmed = raw.trim();
+  if (trimmed === 'now') {
+    return nowMs;
+  }
+  const match = RELATIVE_TIME_PATTERN.exec(trimmed);
+  if (!match) {
+    return undefined;
+  }
+  const durationSeconds = parseDurationSeconds(match[1] ?? '');
+  if (durationSeconds === undefined) {
+    return undefined;
+  }
+  return nowMs - durationSeconds * 1000;
+}
+
+/**
+ * Normalizes one `start`/`end`/`time` value for a Prometheus or Loki HTTP
+ * API request.
+ *
+ * Prometheus accepts Unix seconds or RFC3339 and rejects epoch milliseconds;
+ * Loki's `query_range` treats a 13-digit number as nanoseconds, placing the
+ * query near 1970 rather than at the intended instant. The Grafana UI (and
+ * this plugin's tools) also accept relative expressions such as `now-1h`.
+ * This function closes that unit mismatch at the boundary where a query is
+ * built, while leaving `clampQueryTimeRange` itself format-preserving (its
+ * existing contract, exercised by unit tests):
+ *
+ * - RFC3339: returned verbatim.
+ * - Unix seconds: returned verbatim (fractional values preserved).
+ * - Unix nanoseconds (Loki): returned verbatim, precision preserved.
+ * - Unix milliseconds: converted to floor(epochMs / 1000) as a string.
+ * - `now` / `now-<duration>`: resolved against `nowMs` and converted to
+ *   Unix seconds.
+ * - Anything unrecognized: returned verbatim, so an unusual datasource gets
+ *   the upstream error it deserves instead of a silently invented value.
+ */
+export function normalizeDatasourceTimestamp(raw: string, nowMs = Date.now()): string {
+  const relativeEpochMs = parseRelativeTimestamp(raw, nowMs);
+  if (relativeEpochMs !== undefined) {
+    return String(Math.floor(relativeEpochMs / 1000));
+  }
+  const parsed = parseTimestamp(raw);
+  if (!parsed || parsed.format !== 'unix-ms') {
+    return raw;
+  }
+  return String(Math.floor(parsed.epochMs / 1000));
+}
+
+/**
+ * Applies `normalizeDatasourceTimestamp` to the timestamp-bearing query keys
+ * of a recognized Prom/Loki endpoint. Keys that are absent stay absent.
+ */
+function normalizeEndpointTimestamps(query: Record<string, string>, nowMs: number): Record<string, string> {
+  const next = { ...query };
+  for (const key of ['start', 'end', 'time'] as const) {
+    const value = next[key];
+    if (value !== undefined) {
+      next[key] = normalizeDatasourceTimestamp(value, nowMs);
+    }
+  }
+  return next;
 }
 
 export interface QueryTimeRangeClampResult {
@@ -356,6 +437,14 @@ export function planQueryLimits(input: QueryLimitPlanInput): QueryLimitPlan {
   const adjustments: QueryLimitAdjustment[] = [];
   let query = input.query ? { ...input.query } : undefined;
   let body = input.body;
+
+  // Normalize millisecond/relative timestamps before the range clamp runs:
+  // `clampQueryTimeRange` is deliberately format-preserving and cannot
+  // evaluate `now-1h` against a caller-supplied clock, so doing this first
+  // is what lets relative expressions participate in the max-range cap.
+  if (query) {
+    query = normalizeEndpointTimestamps(query, input.now);
+  }
 
   if (kind === 'prometheus-range' || kind === 'loki-range') {
     const ranged = applyRangeLimits(query ?? {}, input.limits, input.now, adjustments, body);

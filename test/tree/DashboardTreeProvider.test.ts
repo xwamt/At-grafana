@@ -292,6 +292,27 @@ describe('DashboardTreeProvider', () => {
     alertProvider.dispose();
   });
 
+  it('refresh(instanceId) only invalidates that instance, leaving other caches warm', async () => {
+    const instances = [instance({ id: 'a', label: 'A' }), instance({ id: 'b', label: 'B' })];
+    const calls = new Map<string, number>();
+    const provider = new DashboardTreeProvider({ listInstances: async () => instances }, async (inst) => {
+      calls.set(inst.id, (calls.get(inst.id) ?? 0) + 1);
+      return { getAllFolders: async () => [], searchAll: async () => [] };
+    });
+
+    const [a, b] = (await provider.getChildren()) as InstanceTreeItem[];
+    await provider.getChildren(a);
+    await provider.getChildren(b);
+    expect(calls.get('a')).toBe(1);
+    expect(calls.get('b')).toBe(1);
+
+    provider.refresh('a');
+    await provider.getChildren(a);
+    await provider.getChildren(b);
+    expect(calls.get('a')).toBe(2);
+    expect(calls.get('b')).toBe(1);
+  });
+
   it('surfaces a root-level listInstances error as a single ErrorTreeItem without throwing', async () => {
     const provider = new DashboardTreeProvider(
       {

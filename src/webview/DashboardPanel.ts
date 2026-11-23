@@ -65,7 +65,12 @@ export class DashboardPanel {
       title,
       proxyOrigin: origin,
       iframeSrc: proxy.buildDashboardUrl(instanceId, uid, slug, search),
-      language: vscode.env.language
+      language: vscode.env.language,
+      copy: {
+        loading: t('Loading Grafana…'),
+        loadFailed: t('Grafana did not load in this panel. Check that the instance is reachable, then retry.'),
+        retry: t('Retry')
+      }
     });
   }
 }

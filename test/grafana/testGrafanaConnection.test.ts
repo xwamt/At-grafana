@@ -30,6 +30,15 @@ describe('testGrafanaConnection', () => {
     await expect(testGrafanaConnection(url, 'token')).resolves.toEqual({ ok: true });
   });
 
+  it('preserves a reverse-proxy subpath when building the health URL', async () => {
+    const url = await listen((req, res) => {
+      expect(req.url).toBe('/grafana/api/health');
+      res.writeHead(200).end('{"database":"ok"}');
+    });
+
+    await expect(testGrafanaConnection(`${url}/grafana`, 'token')).resolves.toEqual({ ok: true });
+  });
+
   it('classifies 401/403 responses as an auth failure', async () => {
     const url = await listen((_req, res) => {
       res.writeHead(401).end();

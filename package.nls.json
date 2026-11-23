@@ -12,6 +12,8 @@
   "atGrafana.command.filterDashboards.title": "AT Grafana: Filter Dashboards",
   "atGrafana.command.clearDashboardFilter.title": "AT Grafana: Clear Dashboard Filter",
   "atGrafana.command.refreshAlerts.title": "AT Grafana: Refresh Alerts",
+  "atGrafana.command.filterAlerts.title": "AT Grafana: Filter Alerts",
+  "atGrafana.command.clearAlertFilter.title": "AT Grafana: Clear Alert Filter",
   "atGrafana.command.openDashboard.title": "AT Grafana: Open Dashboard",
   "atGrafana.command.openAlertRule.title": "AT Grafana: Open Alert Rule",
   "atGrafana.command.forgetTrustedCertificate.title": "AT Grafana: Forget Trusted Certificate",

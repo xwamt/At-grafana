@@ -80,6 +80,21 @@ describe('GrafanaApiClient dashboards', () => {
     expect(parsed.searchParams.get('folderUIDs')).toBe('folder-1');
   });
 
+  it('search() forwards limit and page for Agent-driven pagination', async () => {
+    let seen: string | undefined;
+    server = await listen((req, res) => {
+      seen = req.url;
+      res.writeHead(200, { 'content-type': 'application/json' }).end('[]');
+    });
+    const client = new GrafanaApiClient({ baseUrl: server.url, token: 'tok' });
+
+    await client.search({ type: 'dash-db', limit: 100, page: 3 });
+
+    const parsed = new URL(seen ?? '/', 'http://grafana.invalid');
+    expect(parsed.searchParams.get('limit')).toBe('100');
+    expect(parsed.searchParams.get('page')).toBe('3');
+  });
+
   it('search() classifies a 401 as auth', async () => {
     server = await listen((_req, res) => res.writeHead(401).end());
     const client = new GrafanaApiClient({ baseUrl: server.url, token: 'tok' });
@@ -104,6 +119,22 @@ describe('GrafanaApiClient dashboards', () => {
     const client = new GrafanaApiClient({ baseUrl: server.url, token: 'tok' });
 
     await expect(client.getFolders()).resolves.toEqual([{ uid: 'f1', title: 'Infra', parentUid: undefined }]);
+  });
+
+  it('getFolders() forwards limit and page', async () => {
+    let seen: string | undefined;
+    server = await listen((req, res) => {
+      seen = req.url;
+      res.writeHead(200, { 'content-type': 'application/json' }).end('[]');
+    });
+    const client = new GrafanaApiClient({ baseUrl: server.url, token: 'tok' });
+
+    await client.getFolders({ limit: 50, page: 2 });
+
+    const parsed = new URL(seen ?? '/', 'http://grafana.invalid');
+    expect(parsed.pathname).toBe('/api/folders');
+    expect(parsed.searchParams.get('limit')).toBe('50');
+    expect(parsed.searchParams.get('page')).toBe('2');
   });
 
   it('getFolders() classifies a 403 as auth', async () => {

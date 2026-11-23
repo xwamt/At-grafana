@@ -47,8 +47,16 @@ export interface GrafanaAlertRuleState {
 }
 
 export interface GrafanaAlertHistoryEntry {
+  /** Epoch milliseconds. */
   time: number;
+  /** Current/new state of the transition when the backend reports one (`next`/`current`). */
   state?: string;
+  /** Previous state of the transition (annotation state-history backend). */
+  previous?: string;
+  /** Raw annotation text (annotation state-history backend). */
+  text?: string;
+  /** Parsed annotation `data` JSON (annotation state-history backend). */
+  data?: unknown;
   labels?: Record<string, string>;
 }
 
@@ -130,19 +138,21 @@ export class GrafanaAlertsApi {
   }
 
   /**
-   * Best-effort against Grafana's state-history query endpoint
-   * (`GET /api/v1/rules/history?ruleUID=:uid`), which requires the
-   * built-in Loki-backed annotations/history backend. UNVERIFIED against a
-   * live Grafana instance: the Go route declares the response as
-   * `{ results: <data.Frame> }`, but Grafana's own frontend RTK client
-   * queries the same path expecting a raw `DataFrameJSON`
-   * (`{ schema: { fields }, data: { values } }`) with no `results`
-   * wrapper. We defensively accept either envelope and look up `time` /
-   * `current|state|line` / `labels` fields by name, but the exact field
-   * names have NOT been confirmed against a running Grafana — flagged in
-   * Task 2.1's final report as needing verification against a real
-   * instance. Unexpected shapes throw `invalid-response` rather than
-   * silently returning wrong data.
+   * Grafana's state-history query endpoint
+   * (`GET /api/v1/rules/history?ruleUID=:uid`).
+   *
+   * Verified against Grafana `13.0.1+security-01` with the default
+   * `annotations` state-history backend. That backend returns a DataFrame
+   * with fields `time`, `text`, `prev`, `next`, `data`; the Loki backend
+   * returns `time`, `line`, `labels`. Both envelopes (`{ results: <frame> }`
+   * and a raw frame) are accepted.
+   *
+   * The annotation backend also passes annotation epoch milliseconds into
+   * `time.Unix(..., 0)` (which expects seconds), so its serialized `time`
+   * values are 1000x too large. `normalizeHistoryTime` corrects that to
+   * epoch milliseconds, which is the documented shape of this method.
+   * Unexpected shapes throw `invalid-response` rather than silently
+   * returning wrong data.
    */
   async getAlertRuleHistory(uid: string, query: GrafanaAlertHistoryQuery = {}): Promise<GrafanaAlertHistoryEntry[]> {
     const raw = await this.http.requestJson<unknown>('GET', '/api/v1/rules/history', {
@@ -154,7 +164,10 @@ export class GrafanaAlertsApi {
       },
       maxResponseBytes: MANAGEMENT_MAX_RESPONSE_BYTES
     });
-    return parseHistoryFrame(raw);
+    const entries = parseHistoryFrame(raw);
+    // Grafana's annotation state-history backend ignores `limit` in its
+    // annotation query; enforce the caller's requested cap client-side.
+    return query.limit !== undefined && query.limit > 0 ? entries.slice(0, query.limit) : entries;
   }
 }
 
@@ -200,7 +213,7 @@ function parseHistoryFrame(raw: unknown): GrafanaAlertHistoryEntry[] {
   ) {
     throw new GrafanaApiError(
       'invalid-response',
-      'Grafana /api/v1/rules/history returned an unrecognized shape (this endpoint is unverified against a live instance).'
+      'Grafana /api/v1/rules/history returned an unrecognized shape.'
     );
   }
   const fieldNames = frame.schema.fields.map((field) => (isRecord(field) && typeof field.name === 'string' ? field.name.toLowerCase() : ''));
@@ -209,26 +222,106 @@ function parseHistoryFrame(raw: unknown): GrafanaAlertHistoryEntry[] {
   if (timeIndex === -1 || !Array.isArray(values[timeIndex])) {
     throw new GrafanaApiError('invalid-response', 'Grafana /api/v1/rules/history frame is missing a time field.');
   }
-  const stateIndex = fieldNames.findIndex((name) => name === 'current' || name === 'state' || name === 'line');
+  // `next` / `prev` are the annotation-backend field names; `current` /
+  // `state` / `line` cover the Loki backend and older defensive shapes.
+  const stateIndex = fieldNames.findIndex((name) => name === 'next' || name === 'current' || name === 'state' || name === 'line');
+  const previousIndex = fieldNames.findIndex((name) => name === 'prev' || name === 'previous');
+  const textIndex = fieldNames.indexOf('text');
+  const dataIndex = fieldNames.indexOf('data');
   const labelsIndex = fieldNames.indexOf('labels');
   const timeColumn = values[timeIndex] as unknown[];
   const stateColumn = stateIndex >= 0 ? (values[stateIndex] as unknown[]) : undefined;
+  const previousColumn = previousIndex >= 0 ? (values[previousIndex] as unknown[]) : undefined;
+  const textColumn = textIndex >= 0 ? (values[textIndex] as unknown[]) : undefined;
+  const dataColumn = dataIndex >= 0 ? (values[dataIndex] as unknown[]) : undefined;
   const labelsColumn = labelsIndex >= 0 ? (values[labelsIndex] as unknown[]) : undefined;
+  const stateFieldName = stateIndex >= 0 ? fieldNames[stateIndex] : undefined;
 
   const entries: GrafanaAlertHistoryEntry[] = [];
   for (let row = 0; row < timeColumn.length; row++) {
-    const time = timeColumn[row];
-    if (typeof time !== 'number') {
+    const rawTime = timeColumn[row];
+    if (typeof rawTime !== 'number') {
       continue;
     }
-    const state = stateColumn?.[row];
-    entries.push({
-      time,
-      state: typeof state === 'string' ? state : undefined,
-      labels: toStringRecord(labelsColumn?.[row])
-    });
+    const entry: GrafanaAlertHistoryEntry = { time: normalizeHistoryTime(rawTime) };
+
+    const rawState = stateColumn?.[row];
+    if (typeof rawState === 'string') {
+      if (stateFieldName === 'line') {
+        // Loki backend: `line` is the full JSON transition record, not a
+        // plain state string.
+        const parsedLine = parseJsonValue(rawState);
+        if (isRecord(parsedLine)) {
+          if (typeof parsedLine.current === 'string') {
+            entry.state = parsedLine.current;
+          }
+          if (typeof parsedLine.previous === 'string') {
+            entry.previous = parsedLine.previous;
+          }
+          if (isRecord(parsedLine.labels)) {
+            entry.labels = toStringRecord(parsedLine.labels);
+          }
+        } else {
+          entry.state = rawState;
+        }
+      } else {
+        entry.state = rawState;
+      }
+    }
+
+    const rawPrevious = previousColumn?.[row];
+    if (entry.previous === undefined && typeof rawPrevious === 'string') {
+      entry.previous = rawPrevious;
+    }
+    const rawText = textColumn?.[row];
+    if (typeof rawText === 'string') {
+      entry.text = rawText;
+    }
+    const rawData = dataColumn?.[row];
+    if (rawData !== undefined) {
+      entry.data = typeof rawData === 'string' ? parseJsonValue(rawData) : rawData;
+    }
+    if (entry.labels === undefined) {
+      entry.labels = toHistoryRecord(labelsColumn?.[row]);
+    }
+    entries.push(entry);
   }
   return entries;
+}
+
+/**
+ * Normalizes the various epoch magnitudes a state-history frame can carry
+ * into epoch milliseconds. The annotation backend in Grafana 13 passes
+ * millisecond annotation epochs to `time.Unix(..., 0)` (seconds), producing
+ * values 1000x too large; a real microsecond/legacy value is handled the
+ * same way. Nanosecond values are reduced to milliseconds as well.
+ */
+function normalizeHistoryTime(value: number): number {
+  if (!Number.isFinite(value)) {
+    return value;
+  }
+  if (value >= 1e17) {
+    return Math.round(value / 1e6);
+  }
+  if (value >= 1e14) {
+    return Math.round(value / 1e3);
+  }
+  return value;
+}
+
+function parseJsonValue(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+function toHistoryRecord(value: unknown): Record<string, string> | undefined {
+  if (typeof value === 'string') {
+    return toStringRecord(parseJsonValue(value));
+  }
+  return toStringRecord(value);
 }
 
 function unwrapHistoryFrame(raw: unknown): unknown {

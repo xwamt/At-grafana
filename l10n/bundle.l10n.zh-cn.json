@@ -96,5 +96,21 @@
   "Grafana URL copied to the clipboard.": "Grafana 链接已复制到剪贴板。",
   "{count} firing alert rules": "{count} 条告警规则触发中",
   "Invalid Grafana URL.": "无效的 Grafana 地址。",
-  "The TLS certificate for {hostPort} is not trusted yet. Open this instance once in the AT Grafana sidebar (or run Test Connection in the instance form) to confirm its fingerprint.": "{hostPort} 的 TLS 证书尚未被信任。请在 AT Grafana 侧边栏中打开一次该实例（或在实例表单中运行「测试连接」）以确认其证书指纹。"
+  "The TLS certificate for {hostPort} is not trusted yet. Open this instance once in the AT Grafana sidebar (or run Test Connection in the instance form) to confirm its fingerprint.": "{hostPort} 的 TLS 证书尚未被信任。请在 AT Grafana 侧边栏中打开一次该实例（或在实例表单中运行「测试连接」）以确认其证书指纹。",
+  "Enter a Service Account Token before testing.": "测试连接前请先填写 Service Account Token。",
+  "A Service Account Token is required to verify authentication.": "验证身份需要填写 Service Account Token。",
+  "Loading Grafana…": "正在加载 Grafana…",
+  "Grafana did not load in this panel. Check that the instance is reachable, then retry.": "Grafana 未能在此面板中加载。请检查实例是否可访问，然后重试。",
+  "Retry": "重试",
+  "Grafana rejected this request because the Service Account Token is invalid or lacks permission. Update the token for this instance in the AT Grafana sidebar, then retry.": "Grafana 拒绝了此请求：Service Account Token 无效或权限不足。请在 AT Grafana 侧边栏中更新该实例的 Token，然后重试。",
+  "No alert rules match the current filter.": "没有告警规则匹配当前过滤条件。",
+  "States: {states}": "状态：{states}",
+  "Filter alert rules by title": "按标题过滤告警规则",
+  "e.g. CPU": "例如 CPU",
+  "Firing": "触发中",
+  "Pending": "等待中",
+  "Normal": "正常",
+  "Unknown": "未知",
+  "Filter by alert state (optional)": "按告警状态过滤（可选）",
+  "Paused": "已暂停"
 }

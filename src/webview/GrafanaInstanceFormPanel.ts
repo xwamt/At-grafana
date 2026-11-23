@@ -20,8 +20,16 @@ interface InstanceFormMessageOptions {
   testConnection?: (url: string, token: string | undefined) => Promise<GrafanaConnectionTestResult>;
 }
 
-/** The one method of GrafanaApiClient the connection test needs; injectable so tests never open a socket. */
-type HealthProbeClient = Pick<GrafanaApiClient, 'health'>;
+/**
+ * The GrafanaApiClient methods the connection test needs; injectable so tests
+ * never open a socket. `search` is optional for backwards compatibility with
+ * older fakes: when present it adds a lighter-weight authenticated probe on
+ * top of `/api/health` (which many Grafana deployments serve unauthenticated).
+ */
+type HealthProbeClient = Pick<GrafanaApiClient, 'health'> & Partial<Pick<GrafanaApiClient, 'search'>>;
+
+type InstanceConfigManagerLike = Pick<GrafanaInstanceConfigManager, 'createInstance' | 'updateInstance'> &
+  Partial<Pick<GrafanaInstanceConfigManager, 'getToken'>>;
 
 export type TofuHealthClientFactory = (
   url: string,
@@ -48,9 +56,22 @@ export function createTofuConnectionTester(
   createClient: TofuHealthClientFactory = defaultHealthClientFactory
 ): (url: string, token: string | undefined) => Promise<GrafanaConnectionTestResult> {
   return async (url, token) => {
+    if (!token || token.trim().length === 0) {
+      return {
+        ok: false,
+        reason: 'auth',
+        message: t('A Service Account Token is required to verify authentication.')
+      };
+    }
     try {
       const client = createClient(url, token, createInteractiveCertVerifier(certTrustStore));
       await client.health();
+      // `/api/health` is unauthenticated on many Grafana instances, so a bare
+      // health probe would report success for an empty or under-privileged
+      // token. One minimal authenticated search request distinguishes the two.
+      if (typeof client.search === 'function') {
+        await client.search({ type: 'dash-db', limit: 1 });
+      }
       return { ok: true };
     } catch (error) {
       if (error instanceof GrafanaApiError) {
@@ -67,7 +88,7 @@ export class GrafanaInstanceFormPanel {
   static async open(
     context: vscode.ExtensionContext,
     configManager: GrafanaInstanceConfigManager,
-    onSaved: () => void,
+    onSaved: (instanceId?: string) => void,
     existing?: GrafanaInstanceConfig,
     certTrustStore?: GrafanaCertTrustStore
   ): Promise<void> {
@@ -108,13 +129,13 @@ export class GrafanaInstanceFormPanel {
 export async function handleInstanceFormMessage(
   message: InstanceFormMessage,
   existing: GrafanaInstanceConfig | undefined,
-  configManager: Pick<GrafanaInstanceConfigManager, 'createInstance' | 'updateInstance'>,
-  onSaved: () => void,
+  configManager: InstanceConfigManagerLike,
+  onSaved: (instanceId?: string) => void,
   panel: Pick<vscode.WebviewPanel, 'dispose' | 'webview'>,
   options: InstanceFormMessageOptions = {}
 ): Promise<boolean> {
   if (message.type === 'testConnection' && message.payload) {
-    await handleConnectionTest(message.payload, panel, options);
+    await handleConnectionTest(message.payload, existing, configManager, panel, options);
     return true;
   }
 
@@ -147,10 +168,11 @@ export async function handleInstanceFormMessage(
 
     if (existing) {
       await configManager.updateInstance(existing.id, { label, url, allowBackgroundAccess }, token);
+      onSaved(existing.id);
     } else {
       await configManager.createInstance({ label, url, token, allowBackgroundAccess });
+      onSaved();
     }
-    onSaved();
     panel.dispose();
   } catch (error) {
     await panel.webview.postMessage({ type: 'error', payload: formatError(error) });
@@ -161,15 +183,30 @@ export async function handleInstanceFormMessage(
 
 async function handleConnectionTest(
   payload: SubmitPayload,
+  existing: GrafanaInstanceConfig | undefined,
+  configManager: InstanceConfigManagerLike,
   panel: Pick<vscode.WebviewPanel, 'webview'>,
   options: InstanceFormMessageOptions
 ): Promise<void> {
   const url = optionalString(payload.url);
-  const token = optionalString(payload.token);
+  // In edit mode the password field is intentionally blank for "keep the
+  // saved token", so fall back to SecretStorage before probing.
+  let token = optionalString(payload.token);
+  if (token === undefined && existing) {
+    token = optionalString(await configManager.getToken?.(existing.id));
+  }
   if (!url || !isValidGrafanaUrl(url)) {
     await panel.webview.postMessage({
       type: 'connectionTestResult',
       payload: { ok: false, message: t('Enter a valid Grafana URL before testing.') }
+    });
+    return;
+  }
+
+  if (!options.testConnection && !token) {
+    await panel.webview.postMessage({
+      type: 'connectionTestResult',
+      payload: { ok: false, message: t('Enter a Service Account Token before testing.') }
     });
     return;
   }

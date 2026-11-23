@@ -38,7 +38,10 @@ export function testGrafanaConnection(
   return new Promise((resolve) => {
     let target: URL;
     try {
-      target = new URL('/api/health', url);
+      // Relative resolution against a trailing-slash base preserves any
+      // reverse-proxy subpath (e.g. https://host/grafana -> /grafana/api/health),
+      // matching GrafanaHttpClient.buildUrl.
+      target = new URL('api/health', `${url.replace(/\/+$/, '')}/`);
     } catch {
       resolve({ ok: false, reason: 'error', message: 'Invalid Grafana URL.' });
       return;

@@ -4,19 +4,19 @@
 
 AT Grafana 是 **AT 系列** VS Code / Cursor 扩展的一员（同系列还有 `at-terminal-series`、`at-jumpserver-series`）。它把 Grafana 的 dashboard 与 Unified Alerting 原生集成到 IDE，并通过共享的 [`@at-series/mcp-hub`](https://www.npmjs.com/package/@at-series/mcp-hub) Protocol v1，把只读的 Grafana 配置元数据以及数据源查询（Prometheus、Loki 等）提供给 Agent。
 
-**当前版本：`0.1.4`** —— MCP 目录对齐为 17 个只读工具（类型化 Prom/Loki、discovery、annotations、deeplink）。自动化验证：typecheck + **709** 项测试。见 [`releases/0.1.4.md`](releases/0.1.4.md)。针对真实 Grafana / 真实 MCP 客户端的冒烟项仍见 [`releases/0.1.0.md`](releases/0.1.0.md)。
+**当前版本：`0.1.5`** —— MCP 目录对齐为 17 个只读工具（类型化 Prom/Loki、discovery、annotations、deeplink）。自动化验证：typecheck + 全量 Vitest 测试套件（49+ 个测试文件）。见 [`releases/0.1.5.md`](releases/0.1.5.md)。针对真实 Grafana / 真实 MCP 客户端的冒烟项仍见 [`releases/0.1.0.md`](releases/0.1.0.md)。
 
 ## 功能
 
 - **多实例配置** — label、URL、Grafana Service Account Token（9.1+）；Token 存在 VS Code `SecretStorage`，不写明文配置
 - **TLS Trust-On-First-Use** — 首次连接确认证书指纹；指纹变更后拒绝连接
 - **Dashboards 侧边栏** — 文件夹树、标题过滤、刷新；点击在 Webview 中打开
-- **Alerts 侧边栏** — Unified Alerting 规则与实时状态，按文件夹分组，Firing 置顶
-- **原生嵌入页面** — 通过仅绑定 `127.0.0.1` 的本地反向代理注入 `Authorization`，在 Webview 中打开可交互的原生 Grafana dashboard / 告警详情（Token 不会出现在 Webview 网络层）
+- **Alerts 侧边栏** — Unified Alerting 规则与实时状态，按文件夹分组，Firing 置顶；支持标题/状态过滤（含 **Paused**）与单实例局部刷新
+- **原生嵌入页面** — 通过仅绑定 `127.0.0.1` 的本地反向代理注入 `Authorization`，在 Webview 中打开可交互的原生 Grafana dashboard / 告警详情（Token 不会出现在 Webview 网络层）；代理强制只读方法与路径白名单，兼容反向代理子路径，并支持 gzip/br/deflate 上游响应
 - **按实例的 Agent 开关** — 「允许 Agent 后台访问」（默认关）；仅开启的实例对 MCP 工具可见
 - **17 个 MCP 工具**（全部 `risk: read`，安装 AT Series MCP 配置后自动批准）：
   - 发现：`grafana_list_instances`
-  - 管理：`grafana_list_dashboards`（可选 `query` / `tag` / `folderUid`）、`grafana_get_dashboard`（缺省 `fields: "targets"`；完整 model 需传 `fields: "full"`）、`grafana_list_folders`、`grafana_list_alert_rules`（可选 `states`）、`grafana_get_alert_rule`、`grafana_get_alert_history`、`grafana_list_annotations`、`grafana_generate_deeplink`（`openInIde` 缺省 false）
+  - 管理：`grafana_list_dashboards`（可选 `query` / `tag` / `folderUid`，以及 `limit` / `page` 分页）、`grafana_get_dashboard`（缺省 `fields: "targets"`；完整 model 需传 `fields: "full"`）、`grafana_list_folders`（可选 `limit` / `page`）、`grafana_list_alert_rules`（可选 `states`）、`grafana_get_alert_rule`、`grafana_get_alert_history`（支持 annotation 与 Loki 状态历史后端）、`grafana_list_annotations`、`grafana_generate_deeplink`（`openInIde` 缺省 false；支持 dashboard 与告警规则）
   - 监控：`grafana_list_datasources`、`grafana_query_prometheus`、`grafana_query_loki`、`grafana_list_prometheus_metric_names`、`grafana_list_prometheus_label_values`、`grafana_list_loki_label_names`、`grafana_list_loki_label_values`，以及作为兜底的 `grafana_query_datasource`。优先用类型化 Prom/Loki 工具；通用代理仅 `GET`/`POST`，`path` 被限制在 `/api/datasources/proxy/uid/<uid>/` 之内，无法触达 Grafana 自身 API；超限结果带 `truncated: true`
 - **共享 AT Series Hub** — Cursor / Kiro / Continue 共用一条 `AT Series` MCP 入口，不单独再建插件专属 MCP server
 
@@ -34,7 +34,7 @@ AT Grafana 是 **AT 系列** VS Code / Cursor 扩展的一员（同系列还有 
 
    ```bash
    npm install
-   npm run package   # 生成 at-grafana-0.1.4.vsix
+   npm run package   # 生成 at-grafana-0.1.5.vsix
    ```
 
 2. 在 VS Code / Cursor：**扩展 → ⋯ → 从 VSIX 安装…**，选择生成的文件。
@@ -83,7 +83,7 @@ npm run package
 | --- | --- |
 | [`features.zh-CN.md`](features.zh-CN.md)（[English](features.md)） | 功能概览 |
 | [`usage.zh-CN.md`](usage.zh-CN.md)（[English](usage.md)） | 配置实例、开启 Agent、连接 MCP |
-| [`releases/0.1.4.md`](releases/0.1.4.md) | 当前版本发布说明（HTTPS keep-alive 修复、WAF User-Agent、嵌入代理缓存） |
+| [`releases/0.1.5.md`](releases/0.1.5.md) | 当前版本发布说明（P0/P1 修复、只读代理加固、告警体验、Grafana 13 历史兼容） |
 | [`releases/0.1.3.md`](releases/0.1.3.md) | 0.1.3 版本发布说明（17 工具 MCP 目录） |
 | [`releases/0.1.0.md`](releases/0.1.0.md) | V1 验收记录（Definition of Done） |
 | [`requirements.md`](requirements.md) | 完整需求规格（中文） |

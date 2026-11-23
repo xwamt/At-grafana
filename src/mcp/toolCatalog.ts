@@ -74,7 +74,9 @@ export const AT_GRAFANA_TOOL_CATALOG: ToolCatalogEntry[] = [
     title: 'List Grafana dashboards',
     description:
       'List dashboards on a Grafana instance (uid, title, tags, folder). Optional query, tag, and folderUid ' +
-      'narrow Grafana /api/search -- prefer a query over listing everything on a large instance.' +
+      'narrow Grafana /api/search -- prefer a query over listing everything on a large instance. Optional limit ' +
+      '(max 1000) and page walk large instances; a full page returns { dashboards, truncated, message } instead ' +
+      'of a bare array.' +
       MANAGEMENT_FAMILY_SUFFIX,
     risk: 'read',
     inputSchema: GRAFANA_LIST_DASHBOARDS_INPUT_SCHEMA
@@ -93,7 +95,9 @@ export const AT_GRAFANA_TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     name: 'grafana_list_folders',
     title: 'List Grafana folders',
-    description: `List the dashboard folder structure on a Grafana instance.${MANAGEMENT_FAMILY_SUFFIX}`,
+    description:
+      `List the dashboard folder structure on a Grafana instance. Optional limit (max 1000) and page walk large ` +
+      `instances; a full page returns { folders, truncated, message } instead of a bare array.${MANAGEMENT_FAMILY_SUFFIX}`,
     risk: 'read',
     inputSchema: GRAFANA_LIST_FOLDERS_INPUT_SCHEMA
   },
@@ -144,8 +148,8 @@ export const AT_GRAFANA_TOOL_CATALOG: ToolCatalogEntry[] = [
     description:
       'Build a Grafana dashboard, Explore, or alert-rule (kind alertRule, by rule uid) URL from the instance base ' +
       'URL. Always returns grafanaUrl. Explore accepts an optional expr pre-filled into the first query. Optional ' +
-      'openInIde (default false) opens the AT Grafana Webview for dashboards only and requires the instance TLS ' +
-      'fingerprint to already be trusted in the sidebar; Explore and alertRule are URL-only.' +
+      'openInIde (default false) opens the AT Grafana Webview for dashboards and alert rules when the instance TLS ' +
+      'fingerprint is already trusted in the sidebar; Explore is URL-only.' +
       MANAGEMENT_FAMILY_SUFFIX,
     risk: 'read',
     inputSchema: GRAFANA_GENERATE_DEEPLINK_INPUT_SCHEMA

@@ -111,7 +111,30 @@ export interface GrafanaEmbedProxyDependencies {
    * place the reason can be recorded. Never consulted for a decision.
    */
   log?: AtGrafanaLog;
+  /**
+   * Optional user-visible copy. This module never imports `vscode`, so the
+   * extension host translates strings through `t()` and injects them here.
+   * Every field falls back to the English default, keeping standalone unit
+   * tests and other embedders working unchanged.
+   */
+  copy?: Partial<GrafanaEmbedProxyCopy>;
 }
+
+/**
+ * User-visible text rendered inside the embed iframe's error pages. Kept as
+ * data (not `vscode.l10n` calls) because this module is deliberately
+ * `vscode`-free; see `GrafanaEmbedProxyDependencies.copy`.
+ */
+export interface GrafanaEmbedProxyCopy {
+  /** Shown instead of Grafana's own login page when a document request gets 401/403. */
+  authRejectedMessage: string;
+}
+
+const DEFAULT_EMBED_PROXY_COPY: GrafanaEmbedProxyCopy = {
+  authRejectedMessage:
+    'Grafana rejected this request because the Service Account Token is invalid or lacks permission. ' +
+    'Update the token for this instance in the AT Grafana sidebar, then retry.'
+};
 
 /**
  * Resource ceilings for the proxy. These are not tuning knobs for throughput
@@ -494,6 +517,20 @@ export class GrafanaEmbedProxy {
         return;
       }
 
+      // Read-only boundary: Grafana's Text panel supports raw HTML and the
+      // proxied document's CSP still permits inline/eval scripts, so an
+      // iframe script must not be able to turn its same-origin access into
+      // authenticated PUT/DELETE/PATCH/POST writes against Grafana. Validate
+      // against the *normalized* target path so `/api/ds/query/../dashboards/db`
+      // cannot slip past a prefix check.
+      if (!isAllowedEmbedProxyMethodAndPath(request.method, relativePathWithinOrigin(realOrigin, targetUrl.pathname))) {
+        this.log.warn(
+          `embed-proxy: blocked non-read-only ${request.method ?? 'GET'} ${targetUrl.pathname} for instance ${instance.id}`
+        );
+        respondError(response, 403, 'Write operations are disabled in AT Grafana read-only embed view.');
+        return;
+      }
+
       // Claimed only now, once the request is known to be headed upstream, so
       // that rejected and unroutable requests cannot exhaust the budget.
       if (!this.acquireRequestSlot(response)) {
@@ -699,7 +736,7 @@ export class GrafanaEmbedProxy {
     // client's own Accept-Encoding passes upstream untouched and Grafana may
     // compress. If the heuristic under-predicts and a compressed rewritable
     // body arrives anyway, relayResponse gunzips before rewriting.
-    if (isLikelyRewritableRequest(clientRequest.headers, targetUrl.pathname)) {
+    if (isLikelyRewritableRequest(clientRequest.headers, relativePathWithinOrigin(realOrigin, targetUrl.pathname))) {
       outgoingHeaders['accept-encoding'] = 'identity';
     }
 
@@ -889,10 +926,26 @@ export class GrafanaEmbedProxy {
 
     const location = firstHeaderValue(proxyResponse.headers.location);
     if (location) {
-      headersOut.location = rewriteAbsoluteReferences(location, realOrigin, proxyBase);
+      headersOut.location = rewriteProxiedLocation(location, realOrigin, proxyBase);
     }
 
     const contentType = firstHeaderValue(proxyResponse.headers['content-type']);
+    const statusCode = proxyResponse.statusCode ?? 0;
+    if ((statusCode === 401 || statusCode === 403) && /^text\/html\b/i.test(contentType ?? '')) {
+      // Grafana answers an expired/under-privileged token for a document
+      // route with its login page. This proxy holds a Service Account Token,
+      // not a cookie session, so that page can never be satisfied inside the
+      // iframe -- it is an unbreakable login loop. Replace it with an
+      // actionable explanation instead.
+      proxyResponse.resume();
+      respondError(
+        clientResponse,
+        statusCode,
+        this.deps.copy?.authRejectedMessage ?? DEFAULT_EMBED_PROXY_COPY.authRejectedMessage
+      );
+      return;
+    }
+
     if (REWRITABLE_CONTENT_TYPE_PATTERN.test(contentType ?? '')) {
       const contentEncoding = (firstHeaderValue(proxyResponse.headers['content-encoding']) ?? 'identity').toLowerCase();
       let bodySource: NodeJS.ReadableStream = proxyResponse;
@@ -903,11 +956,18 @@ export class GrafanaEmbedProxy {
         // rewritten body uncompressed.
         delete headersOut['content-encoding'];
         bodySource = proxyResponse.pipe(zlib.createGunzip());
+      } else if (contentEncoding === 'br') {
+        // CDNs / reverse proxies can ignore `Accept-Encoding: identity`.
+        delete headersOut['content-encoding'];
+        bodySource = proxyResponse.pipe(zlib.createBrotliDecompress());
+      } else if (contentEncoding === 'deflate') {
+        delete headersOut['content-encoding'];
+        bodySource = proxyResponse.pipe(zlib.createInflate());
       } else if (contentEncoding !== 'identity') {
-        // br/zstd/deflate: no decompressor wired up. Piping the compressed
-        // body through unrewritten beats corrupting it with a text rewrite;
-        // absolute-origin references inside it stay unrewritten, which the
-        // Webview CSP then blocks rather than leaks.
+        // Unknown compression (e.g. zstd): piping the compressed body through
+        // unrewritten beats corrupting it with a text rewrite; absolute-origin
+        // references inside it stay unrewritten, which the Webview CSP then
+        // blocks rather than leaks.
         this.log.warn(
           `embed-proxy: passing through a ${contentEncoding}-encoded rewritable response unrewritten (instance ${instanceId})`
         );
@@ -1331,12 +1391,90 @@ export function parseEmbedReferrer(
  */
 export function buildTargetUrl(origin: URL, remainingPath: string, search: string): URL {
   const target = new URL(origin.toString());
-  target.pathname = remainingPath;
+  const basePath = origin.pathname.replace(/\/+$/, '');
+  if (basePath.length > 0) {
+    // Preserve a reverse-proxy subpath (`https://ops.internal/grafana`).
+    // Setting `pathname` to the bare remaining path used to discard
+    // `/grafana`, 404ing every asset and route for subpath deployments.
+    // Some upstream redirects already carry the full appSubUrl, hence the
+    // "already prefixed" branch.
+    const combinedPath =
+      remainingPath === basePath || remainingPath.startsWith(`${basePath}/`)
+        ? remainingPath
+        : `${basePath}${remainingPath.startsWith('/') ? remainingPath : `/${remainingPath}`}`;
+    target.pathname = combinedPath;
+    // Node's URL normalizes `..` for us; after that the result must still be
+    // inside the configured subpath or the request is trying to escape it.
+    if (target.pathname !== basePath && !target.pathname.startsWith(`${basePath}/`)) {
+      throw new Error('Resolved proxy target escaped the configured instance subpath.');
+    }
+  } else {
+    target.pathname = remainingPath;
+  }
   target.search = search;
   if (target.protocol !== origin.protocol || target.host !== origin.host) {
     throw new Error('Resolved proxy target escaped the configured instance origin.');
   }
   return target;
+}
+
+/** The configured origin's subpath without a trailing slash; `''` for a root deployment. */
+function basePathOf(origin: URL): string {
+  return origin.pathname.replace(/\/+$/, '');
+}
+
+/**
+ * Maps a normalized target pathname back to the path relative to the
+ * instance's configured origin, i.e. the shape `parseProxyRoute` produced
+ * before `buildTargetUrl` re-attached the `/grafana` prefix. Used by the
+ * read-only allowlist and the rewritable-request heuristic, both of which
+ * reason in Grafana-relative terms.
+ */
+export function relativePathWithinOrigin(origin: URL, pathname: string): string {
+  const basePath = basePathOf(origin);
+  if (basePath && (pathname === basePath || pathname.startsWith(`${basePath}/`))) {
+    return pathname.slice(basePath.length) || '/';
+  }
+  return pathname;
+}
+
+/**
+ * The embed proxy's read-only method/path allowlist.
+ *
+ * Grafana's web UI needs `POST` for a small set of query/telemetry endpoints
+ * (`/api/ds/query` and the datasource proxy are how panels fetch data; the
+ * frontend metrics beacon is not a write). Everything else that mutates
+ * Grafana -- saving dashboards, editing folders, provisioning alert rules,
+ * deleting annotations -- uses `POST` on other paths or `PUT`/`DELETE`/
+ * `PATCH`, and is refused before an upstream socket is opened.
+ *
+ * `remainingPath` must already be normalized and relative to the instance's
+ * origin (see `relativePathWithinOrigin`); a traversal segment therefore
+ * shows up as its destination path, not as an allowlisted prefix.
+ */
+export function isAllowedEmbedProxyMethodAndPath(method: string | undefined, remainingPath: string): boolean {
+  const normalizedMethod = (method ?? 'GET').toUpperCase();
+  if (normalizedMethod === 'GET' || normalizedMethod === 'HEAD' || normalizedMethod === 'OPTIONS') {
+    return true;
+  }
+  if (normalizedMethod !== 'POST') {
+    return false;
+  }
+  // Collapse repeated leading slashes so `//api/ds/query` cannot miss (or
+  // spoof) the prefix checks below.
+  const path = `/${remainingPath.replace(/^\/+/, '')}`;
+  // Defense in depth: callers already pass a normalized target pathname, but
+  // this pure guard must not bless a traversal segment on its own.
+  if (path.split('/').some((segment) => segment === '..' || segment === '.')) {
+    return false;
+  }
+  return (
+    path === '/api/ds/query' ||
+    path.startsWith('/api/datasources/proxy/') ||
+    path.startsWith('/api/datasources/uid/') ||
+    path.startsWith('/api/prometheus/') ||
+    path === '/api/frontend-metrics'
+  );
 }
 
 /** File extensions whose responses carry the rewritable content types (HTML/JS/CSS). */
@@ -1429,16 +1567,44 @@ export function injectProxyBaseTag(html: string, proxyBase: string): string {
 
 export function rewriteAbsoluteReferences(text: string, realOrigin: URL, proxyBase: string): string {
   const hostPort = realOrigin.host;
-  const httpsForm = `https://${hostPort}`;
-  const httpForm = `http://${hostPort}`;
-  const protocolRelativeForm = `//${hostPort}`;
+  const basePath = basePathOf(realOrigin);
+  let result = text;
+
+  // Subpath deployments need the longer forms replaced first: replacing
+  // `https://host` before `https://host/grafana` would leave `/grafana`
+  // dangling after the proxy base and produce duplicated/missing prefixes.
+  if (basePath.length > 0) {
+    result = splitJoin(result, `https://${hostPort}${basePath}`, proxyBase);
+    result = splitJoin(result, `http://${hostPort}${basePath}`, proxyBase);
+    result = splitJoin(result, `//${hostPort}${basePath}`, proxyBase);
+  }
 
   // Longest/most-specific forms first so a subsequent protocol-relative pass
   // doesn't double-process what an absolute-form pass already replaced.
-  let result = splitJoin(text, httpsForm, proxyBase);
-  result = splitJoin(result, httpForm, proxyBase);
-  result = splitJoin(result, protocolRelativeForm, proxyBase);
+  result = splitJoin(result, `https://${hostPort}`, proxyBase);
+  result = splitJoin(result, `http://${hostPort}`, proxyBase);
+  result = splitJoin(result, `//${hostPort}`, proxyBase);
   return result;
+}
+
+/**
+ * Rewrites a `Location` redirect header for the embedded view. Absolute URLs
+ * go through the same origin substitution as response bodies, but Grafana
+ * behind a reverse proxy also emits path-only redirects carrying its
+ * `appSubUrl` (`/grafana/d/abc/my-dash`); those have to be rebased onto the
+ * proxy's instance prefix or the iframe navigates to a path the proxy does
+ * not serve.
+ */
+export function rewriteProxiedLocation(location: string, realOrigin: URL, proxyBase: string): string {
+  const rewrittenAbsolute = rewriteAbsoluteReferences(location, realOrigin, proxyBase);
+  if (rewrittenAbsolute !== location) {
+    return rewrittenAbsolute;
+  }
+  const basePath = basePathOf(realOrigin);
+  if (basePath.length > 0 && (location === basePath || location.startsWith(`${basePath}/`) || location.startsWith(`${basePath}?`))) {
+    return `${proxyBase}${location.slice(basePath.length)}`;
+  }
+  return location;
 }
 
 function splitJoin(text: string, search: string, replacement: string): string {

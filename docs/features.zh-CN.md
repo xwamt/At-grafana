@@ -16,19 +16,19 @@ AT Grafana 把 Grafana 的 dashboard 与告警规则原生集成到 IDE 内，�
 ## 侧边栏树形界面
 
 - **Dashboards** 视图：按 Grafana 文件夹结构展示，支持名称过滤。点击某个 dashboard 会在 Webview 中打开。
-- **Alerts** 视图：展示全部 Unified Alerting 规则及当前状态，按文件夹分组，**Firing（触发中）**规则置顶排序。点击某条规则会在 Webview 中打开其详情。
-- 两个视图都提供刷新命令；Dashboards 视图额外支持标题过滤。
+- **Alerts** 视图：展示全部 Unified Alerting 规则及当前状态，按文件夹分组，**Firing（触发中）**规则置顶排序。点击某条规则会在 Webview 中打开其详情。过滤命令支持标题关键字与状态多选（含 **Paused（已暂停）**）；Firing 徽标始终反映全量真实触发数。
+- 两个视图都提供刷新命令；单实例刷新只清理该实例缓存，编辑或切换实例 B 不会触发实例 A 重新请求。
 
 ## 嵌入式 Dashboard 与告警详情页
 
-点击某个 dashboard 或告警规则，会在 VS Code Webview 中打开**真实、完全可交互的原生 Grafana 页面**——面板缩放、tooltip、原生时间范围选择器均与浏览器直接打开时完全一致。其实现方式是扩展宿主起一个仅绑定 `127.0.0.1` 的本地反向代理，由扩展端注入 Service Account Token；该 token 不会被发送到 Webview，也不会出现在 Webview 自身发出的任何网络请求中。
+点击某个 dashboard 或告警规则，会在 VS Code Webview 中打开**真实、完全可交互的原生 Grafana 页面**——面板缩放、tooltip、原生时间范围选择器均与浏览器直接打开时完全一致。其实现方式是扩展宿主起一个仅绑定 `127.0.0.1` 的本地反向代理，由扩展端注入 Service Account Token；该 token 不会被发送到 Webview，也不会出现在 Webview 自身发出的任何网络请求中。代理强制只读方法与路径白名单（同源 iframe 脚本无法通过 `PUT`/`DELETE`/`PATCH` 或非查询 `POST` 写 Grafana）、保留 `https://host/grafana` 这类反向代理子路径、对 gzip/br/deflate 响应先解压再重写，并在文档请求返回 401/403 时显示可操作的 Token 更新指引页而不是 Grafana 登录页。
 
 ## MCP 工具目录（面向 Agent）
 
 共 17 个工具，全部 `risk: read`，安装 AT Series MCP 配置后自动进入 autoApprove —— 无需逐个工具手动批准。分三组：
 
 - **发现类** —— `grafana_list_instances` 只会返回已开启后台访问的实例，且从不包含 token。
-- **管理类工具** —— `grafana_list_dashboards`（可选 `query` / `tag` / `folderUid`）、`grafana_get_dashboard`、`grafana_list_folders`、`grafana_list_alert_rules`（可选 `states`：`firing` / `pending` / `normal` / `unknown`）、`grafana_get_alert_rule`、`grafana_get_alert_history`、`grafana_list_annotations`、`grafana_generate_deeplink`（`openInIde` 缺省 false；Explore 只返回 URL）。服务于想知道「**配置了什么**」的 Agent：有哪些 dashboard/文件夹、某个面板实际查询的是什么（`grafana_get_dashboard` 缺省 `fields: "targets"`；完整 model 需传 `fields: "full"`）、某条告警规则如何定义以及历史上是如何触发的、发布窗口 annotation、以及可打开的 Grafana URL。
+- **管理类工具** —— `grafana_list_dashboards`（可选 `query` / `tag` / `folderUid`，以及 `limit` / `page` 分页）、`grafana_get_dashboard`、`grafana_list_folders`（可选 `limit` / `page`）、`grafana_list_alert_rules`（可选 `states`：`firing` / `pending` / `normal` / `unknown`）、`grafana_get_alert_rule`、`grafana_get_alert_history`（支持 Grafana 的 annotation 与 Loki 状态历史后端）、`grafana_list_annotations`、`grafana_generate_deeplink`（`openInIde` 缺省 false；支持 dashboard 与告警规则；Explore 只返回 URL）。服务于想知道「**配置了什么**」的 Agent：有哪些 dashboard/文件夹、某个面板实际查询的是什么（`grafana_get_dashboard` 缺省 `fields: "targets"`；完整 model 需传 `fields: "full"`）、某条告警规则如何定义以及历史上是如何触发的、发布窗口 annotation、以及可打开的 Grafana URL。
 - **监控数据类工具** —— `grafana_list_datasources`、`grafana_query_prometheus`、`grafana_query_loki`、`grafana_list_prometheus_metric_names`、`grafana_list_prometheus_label_values`、`grafana_list_loki_label_names`、`grafana_list_loki_label_values`，以及作为兜底的 `grafana_query_datasource`。优先用类型化 Prometheus/Loki 工具；写查询前用四个 list 工具发现 metric/label。服务于想知道「**实际发生了什么**」的 Agent：查询某个数据源背后真实的 PromQL/LogQL 数据。
 
 `grafana_query_datasource` 是其它数据源类型或不寻常路径的通用代理。它只放行 `GET`/`POST`（绝不允许写操作），并把 `path` 限制在 `/api/datasources/proxy/uid/<datasourceUid>/` 之内——`..`、`\` 与百分号编码的分隔符一律拒绝，拼接后还会在 URL 规范化之后重新校验一次前缀，因此即便 Agent 被注入的输入牵引，也无法借这个工具触达 Grafana 自身的 API。此外还强制执行可配置的时间范围与返回体积上限——超限的请求会在结果中标记 `truncated: true` 并被截断，而不是直接失败，方便 Agent 缩小查询范围后重试。

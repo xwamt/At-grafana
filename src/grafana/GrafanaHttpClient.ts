@@ -309,7 +309,13 @@ export class GrafanaHttpClient {
         {
           method,
           headers,
-          timeout: this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+          // With a certVerifier the request cannot be written until the user
+          // answers the TOFU prompt, which may legitimately take minutes.
+          // Starting the socket timeout at construction would destroy the
+          // socket mid-prompt and turn a slow human decision into a `network`
+          // error (which also auto-retried and re-prompted). The timer is
+          // started in `onVerified`, i.e. once the request actually begins.
+          ...(usesCertVerifier ? {} : { timeout: this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS }),
           // HTTPS goes through the shared keep-alive pool (PERF-01); plain
           // HTTP keeps Node's default global-agent behavior untouched.
           agent: isHttps ? sharedGrafanaHttpsAgent : undefined,
@@ -359,7 +365,12 @@ export class GrafanaHttpClient {
       if (usesCertVerifier && certVerifier) {
         // Deferred write: nothing leaves the process until verify() settles.
         attachCertVerification(request, target.hostname, portOf(target), certVerifier, {
-          onVerified: () => writeAndEnd(request, bodyText),
+          onVerified: () => {
+            // Arm the normal network read/write timeout only now that the
+            // TLS fingerprint has been confirmed and the request is sent.
+            request.setTimeout(this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+            writeAndEnd(request, bodyText);
+          },
           onRejected: (error) => request.destroy(error)
         });
         return;
